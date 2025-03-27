@@ -46,14 +46,15 @@ settings = {
 }
 users = ["alice", "bob", "charlie"]
 permissions = [
-{
-    user   = "alice"
-    access = "full"
-}
 	{
-    user   = "bob"
-    access = "read-only"
-}]
+		user   = "alice"
+		access = "full"
+	}
+	{
+		user   = "bob"
+		access = "read-only"
+	}
+]
 ten = 10
 calc = ten + 5
 defaultUser = credentials.username

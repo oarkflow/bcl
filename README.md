@@ -83,7 +83,14 @@ text = "Current version: ${version}"
 - **Function Support:**
 ```go
 bcl.RegisterFunction("upper", func(params ...any) (any, error) {
-    // ...existing function implementation...
+    if len(params) == 0 {
+        return nil, errors.New("At least one param required")
+    }
+    str, ok := params[0].(string)
+    if !ok {
+        str = fmt.Sprint(params[0])
+    }
+    return strings.ToUpper(str), nil
 })
 ```
 - **Unary and Binary Operators:**
@@ -92,7 +99,7 @@ negNumber = -10
 notTrue   = !false
 calc      = 20 + 5 * 2
 ```
-- **Block and Map Structures:**
+- **Block Structures:**
 ```bcl
 database db1 {
     host     = "127.0.0.1"
@@ -100,6 +107,32 @@ database db1 {
     username = "user"
     password = "pass"
 }
+```
+- **Map Structures:**
+```bcl
+settings = {
+    debug     = true
+    timeout   = 30
+    rateLimit = 100
+}
+```
+- **Slice Examples (Primitive Types):**
+```bcl
+fruits = ["apple", "banana", "cherry"]
+numbers = [1, 2, 3, 4, 5]
+```
+- **Slice Examples (Objects):**
+```bcl
+users = [
+    {
+        name = "Alice"
+        age  = 30
+    }
+    {
+        name = "Bob"
+        age  = 25
+    }
+]
 ```
 - **Environment Variable Lookup:**
 ```bcl
@@ -144,6 +177,115 @@ Comments are supported and can be added using the hash symbol:
 ```bcl
 # This is a comment and will be ignored by the parser.
 appName = "SampleApp"
+```
+
+## All-In-One Example
+
+Below is a comprehensive configuration example that demonstrates maps, slices, blocks, external file inclusion, multi-line strings, dynamic expressions, environment variable lookup, function calls, and control structures:
+
+```bcl
+appName = "Boilerplate"
+version = 1.2
+@include "credentials.bcl"
+@include "https://raw.githubusercontent.com/oarkflow/proj/config.bcl"
+
+# Block example for server configuration
+server main {
+    host   = "localhost"
+    port   = 8080
+    secure = false
+}
+
+# Block example for database configuration
+database db1 {
+    host     = "127.0.0.1"
+    port     = 5432
+    username = "user"
+    password = "pass"
+}
+
+# Map example for settings (note: maps are different from blocks)
+settings = {
+    debug     = true
+    timeout   = 30
+    rateLimit = 100
+}
+
+# Slice example for users list
+users = ["alice", "bob", "charlie"]
+
+# Multi-line string using heredoc
+description = <<EOF
+This configuration demonstrates:
+- External file inclusion via URL
+- Blocks vs maps vs slices
+- Dynamic expression evaluation
+- Function calls and env variable lookup
+EOF
+
+# Dynamic expression using a registered function and env lookup
+greeting = "Welcome to ${upper(appName)}"
+envInfo  = "Home directory: ${env.HOME}"
+
+# Control structure example based on settings
+IF (settings.debug) {
+    logLevel = "verbose"
+} ELSE {
+    logLevel = "normal"
+}
+```
+
+## Unmarshal & MarshalAST Examples
+
+### Unmarshal from a String
+```go
+import (
+    "fmt"
+    "github.com/oarkflow/bcl"
+)
+
+func exampleUnmarshalString() {
+    configStr := `
+appName = "Boilerplate"
+version = 1.2
+greeting = "Welcome to ${upper(appName)}"
+`
+    var cfg map[string]any
+    nodes, err := bcl.Unmarshal([]byte(configStr), &cfg)
+    if err != nil {
+        fmt.Println("Error:", err)
+        return
+    }
+    fmt.Println("Unmarshaled Config:", cfg)
+    fmt.Println("Marshaled AST:")
+    fmt.Println(bcl.MarshalAST(nodes))
+}
+```
+
+### Unmarshal from a File
+```go
+import (
+    "fmt"
+    "os"
+    "github.com/oarkflow/bcl"
+)
+
+func exampleUnmarshalFile() {
+    data, err := os.ReadFile("config.bcl")
+    if err != nil {
+        fmt.Println("Error reading file:", err)
+        return
+    }
+    var cfg map[string]any
+    nodes, err := bcl.Unmarshal(data, &cfg)
+    if err != nil {
+        fmt.Println("Error unmarshaling:", err)
+        return
+    }
+    fmt.Println("Unmarshaled Config from file:", cfg)
+    fmt.Println("Marshaled AST:")
+    fmt.Println(bcl.MarshalAST(nodes))
+}
 ```
 
 For more details, please review the source code and usage examples provided in the repository.
