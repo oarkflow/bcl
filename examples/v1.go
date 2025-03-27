@@ -23,6 +23,7 @@ func main() {
 appName = "Boilerplate"
 version = 1.2
 @include "credentials.bcl"
+@include "https://raw.githubusercontent.com/github-linguist/linguist/refs/heads/main/samples/HCL/example.hcl"
 server main {
     host   = "localhost"
     port   = 8080
@@ -69,6 +70,7 @@ doubleNeg = -(-5)
 negCalc = -calc
 // ---- New examples for env lookup ----
 envHome = "${env.HOME}"
+envHome = "${upper(envHome)}"
 defaultShell = "${env.SHELL:/bin/bash}"
 IF (settings.debug) {
     logLevel = "verbose"

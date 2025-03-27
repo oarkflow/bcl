@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/oarkflow/bcl"
 )
@@ -46,6 +48,16 @@ type Config struct {
 }
 
 func main() {
+	bcl.RegisterFunction("upper", func(params ...any) (any, error) {
+		if len(params) == 0 {
+			return nil, errors.New("At least one param required")
+		}
+		str, ok := params[0].(string)
+		if !ok {
+			str = fmt.Sprint(params[0])
+		}
+		return strings.ToUpper(str), nil
+	})
 	// Set an environment variable for interpolation.
 	_ = os.Setenv("APP_NAME", "dev")
 
