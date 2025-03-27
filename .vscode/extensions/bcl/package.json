@@ -1,0 +1,25 @@
+{
+    "name": "bcl",
+    "displayName": "bcl",
+    "description": "Block Configuration Language",
+    "version": "0.0.1",
+    "engines": {
+        "vscode": "^1.98.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "contributes": {
+        "languages": [ {
+                "id": "bcl",
+                "aliases": [ "bcl", "bcl" ],
+                "extensions": [ ".bcl" ],
+                "configuration": "./language-configuration.json"
+            } ],
+        "grammars": [ {
+                "language": "bcl",
+                "scopeName": "source.bcl",
+                "path": "./syntaxes/bcl.tmLanguage.json"
+            } ]
+    }
+}

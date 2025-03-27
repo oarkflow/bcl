@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Make exec for setup.sh",
+            "command": "chmod +x setup.sh",
+            "request": "launch",
+            "type": "node-terminal"
+        },
+        {
+            "name": "Installan extension BCL",
+            "command": "./setup.sh",
+            "request": "launch",
+            "type": "node-terminal"
+        }
+    ]
+}

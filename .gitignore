@@ -1,0 +1,10 @@
+/bcl
+*.bcl
+*.bcb
+/cov
+/cov.html
+/tr[0-9]
+/misc/
+.idea
+.qodo
+.history
