@@ -35,33 +35,8 @@ go run examples/main.go
 ```
 The tool will read the configuration, evaluate expressions, perform dynamic interpolation, and output the processed configuration.
 
-### Complete Usage Example
 
-Create a configuration file (e.g., `config.bcl`) with:
-```bcl
-appName = "Boilerplate"
-version = 1.2
-@include "credentials.bcl"
 
-server main {
-    host   = "localhost"
-    port   = 8080
-    secure = false
-}
-
-greeting = "Welcome to ${upper(appName)}"
-calc     = 10 + 5
-
-IF (settings.debug) {
-    logLevel = "verbose"
-} ELSE {
-    logLevel = "normal"
-}
-```
-Then run:
-```bash
-go run examples/main.go
-```
 Expected output includes the unmarshaled configuration and the AST.
 
 ## Features
