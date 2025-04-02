@@ -37,19 +37,14 @@ func (a *AssignmentNode) Eval(env *Environment) (any, error) {
 }
 
 func (a *AssignmentNode) ToBCL(indent string) string {
-	// if include, ok := a.Value.(*IncludeNode); ok {
-	// 	var sb strings.Builder
-	// 	sb.WriteString(fmt.Sprintf("%s%s = {\n", indent, a.VarName))
-	// 	for _, node := range include.Nodes {
-	// 		sb.WriteString(node.ToBCL(indent+"    ") + "\n")
-	// 	}
-	// 	sb.WriteString(fmt.Sprintf("%s}", indent))
-	// 	return sb.String()
-	// }
-	if include, ok := a.Value.(*IncludeNode); ok {
-		return fmt.Sprintf("%s%s = %s", indent, a.VarName, include.ToBCL(""))
-	}
-	return fmt.Sprintf("%s%s = %s", indent, a.VarName, a.Value.ToBCL(""))
+	// optimized to reduce string allocations
+	var sb strings.Builder
+	sb.Grow(len(indent) + len(a.VarName) + 16)
+	sb.WriteString(indent)
+	sb.WriteString(a.VarName)
+	sb.WriteString(" = ")
+	sb.WriteString(a.Value.ToBCL(""))
+	return sb.String()
 }
 
 type BlockNode struct {
@@ -88,15 +83,22 @@ func (b *BlockNode) Eval(env *Environment) (any, error) {
 func (b *BlockNode) ToBCL(indent string) string {
 	lbl := b.Label
 	if strings.ContainsAny(lbl, " \t") {
-		lbl = fmt.Sprintf("\"%s\"", lbl)
+		lbl = "\"" + lbl + "\""
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s%s %s {\n", indent, b.Type, lbl))
+	// preallocate capacity with an estimate
+	sb.Grow(len(indent) + len(b.Type) + len(lbl) + len(b.Props)*32 + 16)
+	sb.WriteString(indent)
+	sb.WriteString(b.Type)
+	sb.WriteString(" ")
+	sb.WriteString(lbl)
+	sb.WriteString(" {\n")
 	for _, p := range b.Props {
 		sb.WriteString(p.ToBCL(indent + "    "))
-		sb.WriteString("\n")
+		sb.WriteByte('\n')
 	}
-	sb.WriteString(fmt.Sprintf("%s}", indent))
+	sb.WriteString(indent)
+	sb.WriteByte('}')
 	return sb.String()
 }
 
@@ -861,7 +863,20 @@ func (t *TernaryNode) Eval(env *Environment) (any, error) {
 }
 
 func (t *TernaryNode) ToBCL(indent string) string {
-	return fmt.Sprintf("%s%s ? %s : %s", indent, t.Condition.ToBCL(""), t.TrueExpr.ToBCL(""), t.FalseExpr.ToBCL(""))
+	var sb strings.Builder
+	// estimate capacity using lengths of each part
+	tCond := t.Condition.ToBCL("")
+	tTrue := t.TrueExpr.ToBCL("")
+	tFalse := t.FalseExpr.ToBCL("")
+	total := len(indent) + len(tCond) + len(tTrue) + len(tFalse) + 8
+	sb.Grow(total)
+	sb.WriteString(indent)
+	sb.WriteString(tCond)
+	sb.WriteString(" ? ")
+	sb.WriteString(tTrue)
+	sb.WriteString(" : ")
+	sb.WriteString(tFalse)
+	return sb.String()
 }
 
 // NEW: GroupNode to preserve parentheses

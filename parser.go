@@ -314,31 +314,32 @@ func (p *Parser) parseInclude() (Node, error) {
 }
 
 func (p *Parser) parseFileName() (string, error) {
-	var name string
+	var nameBuilder strings.Builder
 	if p.curr.typ == STRING {
-		name = p.curr.value
+		nameBuilder.WriteString(p.curr.value)
 		p.nextToken()
-		return name, nil
+		return nameBuilder.String(), nil
 	} else if p.curr.typ == IDENT {
-		name = p.curr.value
+		nameBuilder.WriteString(p.curr.value)
 		p.nextToken()
+		// consume subsequent tokens to form the full file name
 		for (p.curr.typ == OPERATOR && p.curr.value == ".") || p.curr.typ == IDENT {
 			if p.curr.typ == OPERATOR && p.curr.value == "." {
-				name += "."
+				nameBuilder.WriteByte('.')
 				p.nextToken()
 				if p.curr.typ != IDENT {
 					return "", fmt.Errorf("expected identifier after dot in file name, got %v", p.curr.value)
 				}
-				name += p.curr.value
+				nameBuilder.WriteString(p.curr.value)
 				p.nextToken()
 			} else if p.curr.typ == IDENT {
-				name += p.curr.value
+				nameBuilder.WriteString(p.curr.value)
 				p.nextToken()
 			} else {
 				break
 			}
 		}
-		return name, nil
+		return nameBuilder.String(), nil
 	}
 	return "", fmt.Errorf("expected file name, got %v", p.curr.value)
 }

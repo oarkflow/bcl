@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
-	
+
 	"github.com/oarkflow/date"
 )
 
@@ -191,8 +191,13 @@ func assignValue(src, dest reflect.Value) error {
 
 func writeAssignments(indent string, entries []*AssignmentNode) string {
 	var sb strings.Builder
+	// rough estimate for capacity to avoid re-allocations
+	sb.Grow(len(entries) * (len(indent) + 16))
 	for _, entry := range entries {
-		sb.WriteString(indent + "    " + entry.ToBCL("") + "\n")
+		sb.WriteString(indent)
+		sb.WriteString("    ")
+		sb.WriteString(entry.ToBCL(""))
+		sb.WriteByte('\n')
 	}
 	return sb.String()
 }

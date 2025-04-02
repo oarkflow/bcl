@@ -28,7 +28,7 @@ func UnmarshalBCL(data []byte, v any) ([]Node, error) {
 			return nodes, err
 		}
 	}
-	
+
 	for key, val := range topEnv.vars {
 		if m, ok := val.(map[string]any); ok {
 			var blocks []any
@@ -39,7 +39,7 @@ func UnmarshalBCL(data []byte, v any) ([]Node, error) {
 					}
 				}
 			}
-			
+
 			if len(blocks) >= 1 {
 				topEnv.vars[key] = blocks
 				for _, block := range blocks {
@@ -130,6 +130,8 @@ func marshalValue(val reflect.Value, indent string) (string, error) {
 		return marshalValue(val.Elem(), indent)
 	case reflect.Struct:
 		var sb strings.Builder
+		// estimate capacity based on number of fields and indent length
+		sb.Grow((val.NumField() + 1) * (len(indent) + 32))
 		sb.WriteString("{\n")
 		typ := val.Type()
 		for i := 0; i < val.NumField(); i++ {
@@ -154,6 +156,7 @@ func marshalValue(val reflect.Value, indent string) (string, error) {
 		return sb.String(), nil
 	case reflect.Map:
 		var sb strings.Builder
+		sb.Grow(128)
 		sb.WriteString("{\n")
 		for _, key := range val.MapKeys() {
 			k, err := marshalValue(key, "")
