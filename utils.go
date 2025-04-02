@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
+
+	"github.com/oarkflow/date"
 )
 
 func flattenBlocksRecursively(vars any) {
@@ -72,6 +75,18 @@ func assignValue(src, dest reflect.Value) error {
 			dest.Set(reflect.New(dest.Type().Elem()))
 		}
 		return assignValue(src, dest.Elem())
+	}
+	// NEW: Special handling for time.Time (struct) conversion from string
+	if dest.Kind() == reflect.Struct && dest.Type() == reflect.TypeOf(time.Time{}) {
+		if str, ok := src.Interface().(string); ok {
+			t, err := date.Parse(str)
+			if err != nil {
+				return fmt.Errorf("cannot parse time: %v", err)
+			}
+			dest.Set(reflect.ValueOf(t))
+			return nil
+		}
+		return fmt.Errorf("expected string for time conversion but got %T", src.Interface())
 	}
 	switch dest.Kind() {
 	case reflect.Struct:
@@ -148,9 +163,14 @@ func assignValue(src, dest reflect.Value) error {
 			return fmt.Errorf("cannot convert %T to float", src.Interface())
 		}
 	case reflect.Bool:
-		if v, ok := src.Interface().(bool); ok {
+		switch v := src.Interface().(type) {
+		case bool:
 			dest.SetBool(v)
-		} else {
+		case int:
+			dest.SetBool(v != 0)
+		case float64:
+			dest.SetBool(v != 0)
+		default:
 			return fmt.Errorf("cannot convert %T to bool", src.Interface())
 		}
 	case reflect.String:

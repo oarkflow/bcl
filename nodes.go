@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect" // NEW: for equality checks in new operators
 	"strconv"
 	"strings"
 )
@@ -36,14 +37,17 @@ func (a *AssignmentNode) Eval(env *Environment) (any, error) {
 }
 
 func (a *AssignmentNode) ToBCL(indent string) string {
+	// if include, ok := a.Value.(*IncludeNode); ok {
+	// 	var sb strings.Builder
+	// 	sb.WriteString(fmt.Sprintf("%s%s = {\n", indent, a.VarName))
+	// 	for _, node := range include.Nodes {
+	// 		sb.WriteString(node.ToBCL(indent+"    ") + "\n")
+	// 	}
+	// 	sb.WriteString(fmt.Sprintf("%s}", indent))
+	// 	return sb.String()
+	// }
 	if include, ok := a.Value.(*IncludeNode); ok {
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("%s%s = {\n", indent, a.VarName))
-		for _, node := range include.Nodes {
-			sb.WriteString(node.ToBCL(indent+"    ") + "\n")
-		}
-		sb.WriteString(fmt.Sprintf("%s}", indent))
-		return sb.String()
+		return fmt.Sprintf("%s%s = %s", indent, a.VarName, include.ToBCL(""))
 	}
 	return fmt.Sprintf("%s%s = %s", indent, a.VarName, a.Value.ToBCL(""))
 }
@@ -355,8 +359,9 @@ type ArithmeticNode struct {
 }
 
 func (a *ArithmeticNode) Eval(env *Environment) (any, error) {
-
-	if a.Op == "or" || a.Op == "and" {
+	// NEW: Handle equality and additional relational operators before existing cases
+	switch a.Op {
+	case "==":
 		leftVal, err := a.Left.Eval(env)
 		if err != nil {
 			return nil, err
@@ -365,13 +370,25 @@ func (a *ArithmeticNode) Eval(env *Environment) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if lb, ok := leftVal.(bool); ok {
-			if rb, ok := rightVal.(bool); ok {
-				if a.Op == "and" {
-					return lb && rb, nil
-				}
-				return lb || rb, nil
-			}
+		return reflect.DeepEqual(leftVal, rightVal), nil
+	case "!=":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		return !reflect.DeepEqual(leftVal, rightVal), nil
+	case ">":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
 		}
 		lf, err := toFloat(leftVal)
 		if err != nil {
@@ -381,53 +398,245 @@ func (a *ArithmeticNode) Eval(env *Environment) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if a.Op == "and" {
-			return (lf != 0) && (rf != 0), nil
+		return lf > rf, nil
+	case ">=":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
 		}
-		return (lf != 0) || (rf != 0), nil
-	}
-
-	leftVal, err := a.Left.Eval(env)
-	if err != nil {
-		return nil, err
-	}
-	rightVal, err := a.Right.Eval(env)
-	if err != nil {
-		return nil, err
-	}
-	lf, err := toFloat(leftVal)
-	if err != nil {
-		return nil, err
-	}
-	rf, err := toFloat(rightVal)
-	if err != nil {
-		return nil, err
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
+		return lf >= rf, nil
+	case "<=":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
+		return lf <= rf, nil
 	}
 	switch a.Op {
 	case "+", "add":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
 		return lf + rf, nil
 	case "-", "subtract":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
 		return lf - rf, nil
 	case "*", "multiply":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
 		return lf * rf, nil
 	case "/", "divide":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
 		if rf == 0 {
 			return nil, errors.New("division by zero")
 		}
 		return lf / rf, nil
-	case "mod":
+	case "%", "mod":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
 		return float64(int(lf) % int(rf)), nil
 	case "<":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
 		return lf < rf, nil
 	case "&":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
 		return int(lf) & int(rf), nil
 	case "|":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
 		return int(lf) | int(rf), nil
 	case "^":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
 		return int(lf) ^ int(rf), nil
 	case ">>":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
 		return int(lf) >> int(rf), nil
 	case "<<":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
 		return int(lf) << int(rf), nil
 	default:
 		return nil, fmt.Errorf("unknown operator %s", a.Op)

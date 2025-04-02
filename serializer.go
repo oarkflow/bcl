@@ -112,7 +112,11 @@ func marshalValue(val reflect.Value, indent string) (string, error) {
 	if !val.IsValid() {
 		return "null", nil
 	}
-
+	if val.CanInterface() {
+		if node, ok := val.Interface().(Node); ok {
+			return node.ToBCL(indent), nil
+		}
+	}
 	switch val.Kind() {
 	case reflect.Interface:
 		if val.IsNil() {

@@ -168,7 +168,7 @@ func (p *Parser) nextToken() {
 
 func (p *Parser) expect(typ Token) (tokenInfo, error) {
 	if p.curr.typ != typ {
-		return tokenInfo{}, fmt.Errorf("expected token type %v but got %v (%v)", typ, p.curr.typ, p.curr.value)
+		return tokenInfo{}, fmt.Errorf("expected token type %d but got %d (%v) at offset %d in file %s", typ, p.curr.typ, p.curr.value, p.offset, p.scanner.Filename)
 	}
 	tok := p.curr
 	p.nextToken()
@@ -422,6 +422,32 @@ func (f *FunctionNode) ToBCL(indent string) string {
 	return fmt.Sprintf("%s%s(%s)", indent, f.FuncName, strings.Join(argsStr, ", "))
 }
 
+// NEW: parseEnvLookup to handle dynamic env lookup expressions
+func (p *Parser) parseEnvLookup() (Node, error) {
+	// p.curr is "env"
+	envNode := &IdentifierNode{Name: "env"}
+	p.nextToken() // consume "env"
+	// If no dot follows, just return the identifier.
+	if p.curr.typ != DOT {
+		return envNode, nil
+	}
+	p.nextToken() // consume "."
+	// Now, combine tokens (IDENT, COLON, DOT, OPERATOR) into one string.
+	var parts []string
+	// Require first part to be an identifier.
+	if p.curr.typ != IDENT {
+		return nil, fmt.Errorf("expected identifier after 'env.' but got %v", p.curr.value)
+	}
+	parts = append(parts, p.curr.value)
+	p.nextToken()
+	// Consume subsequent tokens that can form the full lookup (e.g. "SHELL:/bin/bash").
+	for p.curr.typ == DOT || p.curr.typ == IDENT || p.curr.typ == OPERATOR {
+		parts = append(parts, p.curr.value)
+		p.nextToken()
+	}
+	return &DotAccessNode{Left: envNode, Right: strings.Join(parts, "")}, nil
+}
+
 func (p *Parser) parsePrimary() (Node, error) {
 	if p.curr.typ == OPERATOR && p.curr.value == "<<" {
 		return p.parseHeredoc()
@@ -454,6 +480,10 @@ func (p *Parser) parsePrimary() (Node, error) {
 		p.nextToken()
 		return &PrimitiveNode{Value: b}, nil
 	case IDENT:
+		// NEW: Special handling for env lookup
+		if p.curr.value == "env" {
+			return p.parseEnvLookup()
+		}
 		ident := p.curr.value
 		p.nextToken()
 		if p.curr.typ == LPAREN {
@@ -648,33 +678,62 @@ func (p *Parser) parseControl() (Node, error) {
 	p.nextToken()
 	var condition Node
 	if keyword != "ELSE" {
-		_, err := p.expect(LPAREN)
-		if err != nil {
-			return nil, err
-		}
-		cond, err := p.parseExpression()
-		if err != nil {
-			return nil, err
-		}
-		condition = cond
-		_, err = p.expect(RPAREN)
-		if err != nil {
-			return nil, err
+		// If a left parenthesis is present, use it to enclose the condition,
+		// otherwise parse the expression directly.
+		if p.curr.typ == LPAREN {
+			_, err := p.expect(LPAREN)
+			if err != nil {
+				return nil, err
+			}
+			cond, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			condition = cond
+			_, err = p.expect(RPAREN)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			cond, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			condition = cond
 		}
 	}
-	_, err := p.expect(LBRACE)
+
+	// Allow the block to start with either LBRACE or LPAREN.
+	var blockStart Token
+	if p.curr.typ == LBRACE {
+		blockStart = LBRACE
+	} else if p.curr.typ == LPAREN {
+		blockStart = LPAREN
+	} else {
+		return nil, fmt.Errorf("expected block start token (\"{\" or \"(\") but got %v", p.curr.value)
+	}
+	_, err := p.expect(blockStart)
 	if err != nil {
 		return nil, err
 	}
+
+	// Set the corresponding block end token.
+	var blockEnd Token
+	if blockStart == LBRACE {
+		blockEnd = RBRACE
+	} else {
+		blockEnd = RPAREN
+	}
+
 	var body []Node
-	for p.curr.typ != RBRACE && p.curr.typ != EOF {
+	for p.curr.typ != blockEnd && p.curr.typ != EOF {
 		stmt, err := p.parseStatement()
 		if err != nil {
 			return nil, err
 		}
 		body = append(body, stmt)
 	}
-	_, err = p.expect(RBRACE)
+	_, err = p.expect(blockEnd)
 	if err != nil {
 		return nil, err
 	}

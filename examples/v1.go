@@ -22,7 +22,7 @@ func main() {
 	var input = `
 appName = "Boilerplate"
 version = 1.2
-@include "credentials.bcl"
+credentials = @include "credentials.bcl"
 @include "https://raw.githubusercontent.com/github-linguist/linguist/refs/heads/main/samples/HCL/example.hcl"
 server main {
     host   = "localhost"
@@ -61,15 +61,15 @@ defaultUser = credentials.username
 defaultHost = server."main".host
 defaultServer = server."main1 server"
 fallbackServer = server.main
-// ---- New dynamic expression examples ----
+// ---- Dynamic expression examples ----
 greeting = "Welcome to ${upper(appName)}"
 dynamicCalc = "The sum is ${calc}"
-// ---- New examples for unary operator expressions ----
+// ---- Unary operator expressions ----
 negNumber = -10
 notTrue = !true
 doubleNeg = -(-5)
 negCalc = -calc
-// ---- New examples for env lookup ----
+// ---- Environment lookup examples ----
 envHome = "${env.HOME}"
 envHome = "${upper(envHome)}"
 defaultShell = "${env.SHELL:/bin/bash}"
@@ -78,8 +78,16 @@ IF (settings.debug) {
 } ELSE {
     logLevel = "normal"
 }
-	// Fix heredoc: Add an extra newline after the <<EOF marker.
-	line = <<EOF
+// ---- Ternary operator example ----
+ternaryExample = true ? "Yes" : "No"
+// ---- Switch-case construct example ----
+priority = SWITCH (calc) {
+    CASE 15: message = "Fifteen calculated"
+    CASE 10: message = "Ten calculated"
+    DEFAULT: message = "Unknown"
+}
+// Fix heredoc: Add an extra newline after the <<EOF marker.
+line = <<EOF
 This is # test.
 yet another test
 EOF
