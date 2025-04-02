@@ -62,7 +62,7 @@ func main() {
 	_ = os.Setenv("APP_NAME", "dev")
 
 	// Read configuration from file "config.bcl".
-	cfg, err := os.ReadFile("workflow.bcl")
+	cfg, err := os.ReadFile("main.bcl")
 	if err != nil {
 		panic(err)
 	}

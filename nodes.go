@@ -552,7 +552,7 @@ func (c *CommentNode) ToBCL(indent string) string {
 	return indent + c.Text
 }
 
-// NEW: Add UnaryNode to support unary operators
+// UnaryNode to support unary operators
 type UnaryNode struct {
 	Op    string
 	Child Node
@@ -580,7 +580,7 @@ func (u *UnaryNode) Eval(env *Environment) (any, error) {
 	}
 }
 
-// Updated UnaryNode.ToBCL to insert space after '!' operator
+// ToBCL to insert space after '!' operator
 func (u *UnaryNode) ToBCL(indent string) string {
 	// For logical negation add a space to avoid token merging issues (e.g., "! true")
 	if u.Op == "!" {

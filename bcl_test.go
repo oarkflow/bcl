@@ -104,7 +104,7 @@ var jsonConfig = []byte(`[
 func BenchmarkCustomMarshalUnmarshal(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		var ast []map[string]any
-		err := Unmarshal(bclConfig, &ast)
+		_, err := Unmarshal(bclConfig, &ast)
 		if err != nil {
 			b.Fatal(err)
 		}

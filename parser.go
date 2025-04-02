@@ -11,11 +11,17 @@ import (
 	"text/scanner"
 )
 
+type ParserConfig struct {
+	Filename   string
+	Whitespace uint64
+	Mode       uint
+}
+
 type Parser struct {
 	scanner  scanner.Scanner
 	curr     tokenInfo
 	input    string
-	offset   int // new: current offset into p.input
+	offset   int
 	lastLine int
 }
 
@@ -35,26 +41,39 @@ func NewParser(input string) *Parser {
 	return p
 }
 
+func NewParserWithConfig(input string, cfg ParserConfig) *Parser {
+	var s scanner.Scanner
+	s.Init(strings.NewReader(input))
+	s.Filename = cfg.Filename
+	s.Whitespace = cfg.Whitespace
+	s.Mode = cfg.Mode
+	p := &Parser{
+		scanner:  s,
+		input:    input,
+		offset:   0,
+		lastLine: 1,
+	}
+	p.nextToken()
+	return p
+}
+
 func (p *Parser) nextToken() {
 	r := p.scanner.Scan()
 	text := p.scanner.TokenText()
-	p.offset = int(p.scanner.Pos().Offset) // update offset
-
+	p.offset = int(p.scanner.Pos().Offset)
 	switch text {
 	case "&", "|", "^":
 		p.curr = tokenInfo{typ: OPERATOR, value: text}
 		p.lastLine = p.scanner.Pos().Line
 		return
 	}
-
 	if text == "<" && p.scanner.Peek() == '<' {
 		p.scanner.Next()
 		p.curr = tokenInfo{typ: OPERATOR, value: "<<"}
-		p.offset = int(p.scanner.Pos().Offset) // update offset
+		p.offset = int(p.scanner.Pos().Offset)
 		p.lastLine = p.scanner.Pos().Line
 		return
 	}
-
 	if len(text) > 0 && text[0] == '\'' {
 		if len(text) >= 2 && text[len(text)-1] == '\'' {
 			inner := text[1 : len(text)-1]
@@ -67,7 +86,6 @@ func (p *Parser) nextToken() {
 		p.lastLine = p.scanner.Pos().Line
 		return
 	}
-
 	if len(text) > 0 && text[0] == '`' {
 		if len(text) >= 2 && text[len(text)-1] == '`' {
 			p.curr = tokenInfo{typ: STRING, value: text[1 : len(text)-1]}
@@ -78,13 +96,11 @@ func (p *Parser) nextToken() {
 		p.lastLine = p.scanner.Pos().Line
 		return
 	}
-
 	if r == scanner.Comment {
 		p.curr = tokenInfo{typ: COMMENT, value: text}
 		p.lastLine = p.scanner.Pos().Line
 		return
 	}
-
 	if r == '#' {
 		var b strings.Builder
 		b.WriteString("#")
@@ -95,7 +111,6 @@ func (p *Parser) nextToken() {
 		p.lastLine = p.scanner.Pos().Line
 		return
 	}
-
 	switch r {
 	case scanner.EOF:
 		p.curr = tokenInfo{typ: EOF, value: ""}
@@ -134,7 +149,6 @@ func (p *Parser) nextToken() {
 			p.curr = tokenInfo{typ: RPAREN, value: text}
 		case ",":
 			p.curr = tokenInfo{typ: COMMA, value: text}
-		// NEW: Include "!" as an operator
 		case "+", "-", "*", "/", "!":
 			p.curr = tokenInfo{typ: OPERATOR, value: text}
 		case "@":
@@ -326,7 +340,6 @@ func (p *Parser) parseExpression() (Node, error) {
 	return p.parseBinaryExpression(0)
 }
 
-// NEW: Add parseUnary method in Parser
 func (p *Parser) parseUnary() (Node, error) {
 	if p.curr.typ == OPERATOR && (p.curr.value == "-" || p.curr.value == "!") {
 		op := p.curr.value
@@ -340,9 +353,8 @@ func (p *Parser) parseUnary() (Node, error) {
 	return p.parsePrimary()
 }
 
-// Modify binary expression parsing to call parseUnary instead of parsePrimary
 func (p *Parser) parseBinaryExpression(minPrec int) (Node, error) {
-	left, err := p.parseUnary() // changed from p.parsePrimary()
+	left, err := p.parseUnary()
 	if err != nil {
 		return nil, err
 	}
@@ -490,12 +502,10 @@ func (p *Parser) parsePrimary() (Node, error) {
 	}
 }
 
-// Modify getOperator to support relational operator "<"
 func (p *Parser) getOperator(tok tokenInfo) (string, bool) {
 	if tok.typ == OPERATOR {
 		return tok.value, true
 	}
-	// NEW: Support '<' operator when token type is LANGLE
 	if tok.typ == LANGLE {
 		return "<", true
 	}
@@ -513,37 +523,26 @@ func (p *Parser) getOperator(tok tokenInfo) (string, bool) {
 }
 
 func (p *Parser) parseHeredoc() (Node, error) {
-	// Save the current offset before consuming the heredoc marker.
 	heredocStartOffset := p.offset
-
-	// Consume the "<<" operator.
 	p.nextToken()
 	delimTok, err := p.expect(IDENT)
 	if err != nil {
 		return nil, err
 	}
 	delimiter := delimTok.value
-
-	// Now, use the saved offset to locate the end of the marker line.
 	markerLine := p.input[heredocStartOffset:p.offset]
-	// Find the newline that ends the marker line.
 	newlineIdx := strings.Index(markerLine, "\n")
 	if newlineIdx == -1 {
 		return nil, fmt.Errorf("expected newline after heredoc marker, got marker: %q", markerLine)
 	}
-	// The heredoc content starts on the line after the marker.
 	contentStart := heredocStartOffset + newlineIdx + 1
-
 	remaining := p.input[contentStart:]
-	// Split the remaining text into lines.
 	lines := strings.Split(remaining, "\n")
-
 	var contentLines []string
 	var consumedLines int
-	// Read lines until we find a line that (trimmed) exactly matches the delimiter.
 	for i, line := range lines {
 		if strings.TrimSpace(line) == delimiter {
-			consumedLines = i + 1 // include the delimiter line
+			consumedLines = i + 1
 			break
 		}
 		contentLines = append(contentLines, line)
@@ -552,14 +551,10 @@ func (p *Parser) parseHeredoc() (Node, error) {
 		return nil, fmt.Errorf("heredoc delimiter %s not found", delimiter)
 	}
 	content := strings.Join(contentLines, "\n")
-
-	// Compute new offset: add the lengths of the consumed lines (including newlines)
 	newOffset := contentStart
 	for i := 0; i < consumedLines; i++ {
-		newOffset += len(lines[i]) + 1 // +1 for the newline
+		newOffset += len(lines[i]) + 1
 	}
-
-	// Update our parser's offset and reinitialize the scanner with the remaining input.
 	p.offset = newOffset
 	var s scanner.Scanner
 	s.Init(strings.NewReader(p.input[newOffset:]))
@@ -568,7 +563,6 @@ func (p *Parser) parseHeredoc() (Node, error) {
 	s.Mode |= scanner.ScanComments
 	p.scanner = s
 	p.nextToken()
-
 	return &PrimitiveNode{Value: content}, nil
 }
 
