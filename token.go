@@ -64,19 +64,19 @@ var operatorPrecedence = map[string]int{
 	"-":        2,
 	"add":      2,
 	"subtract": 2,
-	"<":        1,
-	"<=":       1,
-	">":        1,
-	">=":       1,
-	"==":       1,
-	"!=":       1,
+	"<":        2, // changed from 1 to 2
+	"<=":       2, // changed from 1 to 2
+	">":        2, // changed from 1 to 2
+	">=":       2, // changed from 1 to 2
+	"==":       2, // changed from 1 to 2
+	"!=":       2, // changed from 1 to 2
 	"<<":       2,
 	">>":       2,
 	"&":        1,
 	"^":        1,
 	"|":        1,
-	"or":       1,
-	"and":      1,
+	"||":       1,
+	"&&":       1,
 }
 
 func getPrecedence(op string) int {

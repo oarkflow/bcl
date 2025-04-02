@@ -244,6 +244,10 @@ func (p *PrimitiveNode) Eval(env *Environment) (any, error) {
 func (p *PrimitiveNode) ToBCL(indent string) string {
 	switch v := p.Value.(type) {
 	case string:
+		if strings.Contains(v, "\n") {
+			// Use heredoc when the string contains a newline.
+			return fmt.Sprintf("<<EOF\n%s\nEOF", v)
+		}
 		return fmt.Sprintf("\"%s\"", v)
 	default:
 		return fmt.Sprintf("%v", v)
@@ -547,6 +551,43 @@ func (a *ArithmeticNode) Eval(env *Environment) (any, error) {
 			return nil, err
 		}
 		return lf < rf, nil
+	case "||":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lb, ok := leftVal.(bool)
+		if !ok {
+			return nil, fmt.Errorf("left operand of || is not bool")
+		}
+		rb, ok := rightVal.(bool)
+		fmt.Println(rightVal)
+		if !ok {
+			return nil, fmt.Errorf("right operand of || is not bool")
+		}
+		return lb || rb, nil
+	case "&&":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		lb, ok := leftVal.(bool)
+		if !ok {
+			return nil, fmt.Errorf("left operand of && is not bool")
+		}
+		rb, ok := rightVal.(bool)
+		if !ok {
+			return nil, fmt.Errorf("right operand of && is not bool")
+		}
+		return lb && rb, nil
 	case "&":
 		leftVal, err := a.Left.Eval(env)
 		if err != nil {
@@ -821,4 +862,18 @@ func (t *TernaryNode) Eval(env *Environment) (any, error) {
 
 func (t *TernaryNode) ToBCL(indent string) string {
 	return fmt.Sprintf("%s%s ? %s : %s", indent, t.Condition.ToBCL(""), t.TrueExpr.ToBCL(""), t.FalseExpr.ToBCL(""))
+}
+
+// NEW: GroupNode to preserve parentheses
+type GroupNode struct {
+	Child Node
+}
+
+func (g *GroupNode) Eval(env *Environment) (any, error) {
+	return g.Child.Eval(env)
+}
+
+func (g *GroupNode) ToBCL(indent string) string {
+	// Always output the group with parentheses.
+	return fmt.Sprintf("(%s)", g.Child.ToBCL(""))
 }

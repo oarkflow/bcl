@@ -61,6 +61,35 @@ func (p *Parser) nextToken() {
 	r := p.scanner.Scan()
 	text := p.scanner.TokenText()
 	p.offset = int(p.scanner.Pos().Offset)
+	// NEW: Handle "||" and "&&" after scanning a token
+	if text == "|" || text == "&" {
+		if peek := p.scanner.Peek(); peek == rune(text[0]) {
+			// Consume the next rune to form "||" or "&&"
+			p.scanner.Next()
+			if text == "|" {
+				p.curr = tokenInfo{typ: OPERATOR, value: "||"}
+			} else {
+				p.curr = tokenInfo{typ: OPERATOR, value: "&&"}
+			}
+			p.lastLine = p.scanner.Pos().Line
+			return
+		}
+	}
+	// NEW: Handle "||" and "&&" multi-character logical operators.
+	if p.scanner.Peek() != scanner.EOF {
+		if p.scanner.TokenText() == "|" && p.scanner.Peek() == '|' {
+			p.scanner.Next()
+			p.curr = tokenInfo{typ: OPERATOR, value: "||"}
+			p.lastLine = p.scanner.Pos().Line
+			return
+		}
+		if p.scanner.TokenText() == "&" && p.scanner.Peek() == '&' {
+			p.scanner.Next()
+			p.curr = tokenInfo{typ: OPERATOR, value: "&&"}
+			p.lastLine = p.scanner.Pos().Line
+			return
+		}
+	}
 	switch text {
 	case "&", "|", "^":
 		p.curr = tokenInfo{typ: OPERATOR, value: text}
@@ -73,6 +102,26 @@ func (p *Parser) nextToken() {
 		p.offset = int(p.scanner.Pos().Offset)
 		p.lastLine = p.scanner.Pos().Line
 		return
+	}
+	// NEW: Handle "<=" operator
+	if text == "<" && p.scanner.Peek() == '=' {
+		p.scanner.Next()
+		p.curr = tokenInfo{typ: OPERATOR, value: "<="}
+		p.lastLine = p.scanner.Pos().Line
+		return
+	}
+	// NEW: Handle ">=" operator
+	if text == ">" && p.scanner.Peek() == '=' {
+		p.scanner.Next()
+		p.curr = tokenInfo{typ: OPERATOR, value: ">="}
+		p.lastLine = p.scanner.Pos().Line
+		return
+	}
+	switch text {
+	case "<":
+		p.curr = tokenInfo{typ: OPERATOR, value: text}
+	case ">":
+		p.curr = tokenInfo{typ: OPERATOR, value: text}
 	}
 	if len(text) > 0 && text[0] == '\'' {
 		if len(text) >= 2 && text[len(text)-1] == '\'' {
@@ -160,9 +209,9 @@ func (p *Parser) nextToken() {
 		case "@":
 			p.curr = tokenInfo{typ: AT, value: text}
 		case "<":
-			p.curr = tokenInfo{typ: LANGLE, value: text}
+			p.curr = tokenInfo{typ: OPERATOR, value: text}
 		case ">":
-			p.curr = tokenInfo{typ: RANGLE, value: text}
+			p.curr = tokenInfo{typ: OPERATOR, value: text}
 		case ".":
 			p.curr = tokenInfo{typ: DOT, value: text}
 		default:
@@ -547,7 +596,8 @@ func (p *Parser) parsePrimary() (Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		return expr, nil
+		// NEW: Wrap the parsed expression in a GroupNode so explicit parentheses are preserved.
+		return &GroupNode{Child: expr}, nil
 	case LBRACE:
 		return p.parseMap()
 	case LBRACKET:
@@ -561,25 +611,16 @@ func (p *Parser) parsePrimary() (Node, error) {
 
 func (p *Parser) getOperator(tok tokenInfo) (string, bool) {
 	if tok.typ == OPERATOR {
-		// Exclude ternary operator symbols from binary expressions.
+		// Exclude ternary operator symbols.
 		if tok.value == "?" || tok.value == ":" {
 			return "", false
 		}
 		return tok.value, true
 	}
-	if tok.typ == LANGLE {
-		return "<", true
-	}
 	if tok.typ == DOT {
 		return ".", true
 	}
-	if tok.typ == IDENT {
-		upper := strings.ToUpper(tok.value)
-		if upper == "OR" || upper == "AND" || upper == "MOD" || upper == "ADD" || upper == "SUBTRACT" ||
-			upper == "MULTIPLY" || upper == "DIVIDE" {
-			return strings.ToLower(tok.value), true
-		}
-	}
+	// ...existing code...
 	return "", false
 }
 
