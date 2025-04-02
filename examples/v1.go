@@ -22,7 +22,8 @@ func main() {
 	var input = `
 appName = "Boilerplate"
 version = 1.2
-@include "credentials.bcl"
+minVersion = version == 1.2 ? "dev":"prod"
+credentials = @include "credentials.bcl"
 @include "https://raw.githubusercontent.com/github-linguist/linguist/refs/heads/main/samples/HCL/example.hcl"
 server main {
     host   = "localhost"

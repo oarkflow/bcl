@@ -64,15 +64,19 @@ var operatorPrecedence = map[string]int{
 	"-":        2,
 	"add":      2,
 	"subtract": 2,
-	// NEW: Relational operator precedence (lower than + and -)
-	"<":   1,
-	"<<":  2,
-	">>":  2,
-	"&":   1,
-	"^":   1,
-	"|":   1,
-	"or":  1,
-	"and": 1,
+	"<":        1,
+	"<=":       1,
+	">":        1,
+	">=":       1,
+	"==":       1,
+	"!=":       1,
+	"<<":       2,
+	">>":       2,
+	"&":        1,
+	"^":        1,
+	"|":        1,
+	"or":       1,
+	"and":      1,
 }
 
 func getPrecedence(op string) int {

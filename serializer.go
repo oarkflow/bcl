@@ -28,7 +28,7 @@ func UnmarshalBCL(data []byte, v any) ([]Node, error) {
 			return nodes, err
 		}
 	}
-
+	
 	for key, val := range topEnv.vars {
 		if m, ok := val.(map[string]any); ok {
 			var blocks []any
@@ -39,7 +39,7 @@ func UnmarshalBCL(data []byte, v any) ([]Node, error) {
 					}
 				}
 			}
-
+			
 			if len(blocks) >= 1 {
 				topEnv.vars[key] = blocks
 				for _, block := range blocks {
@@ -112,7 +112,11 @@ func marshalValue(val reflect.Value, indent string) (string, error) {
 	if !val.IsValid() {
 		return "null", nil
 	}
-
+	if val.CanInterface() {
+		if node, ok := val.Interface().(Node); ok {
+			return node.ToBCL(indent), nil
+		}
+	}
 	switch val.Kind() {
 	case reflect.Interface:
 		if val.IsNil() {
