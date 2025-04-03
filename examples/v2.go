@@ -7,6 +7,10 @@ import (
 	"unicode/utf8"
 )
 
+// -------------------------
+// Token Definitions
+// -------------------------
+
 type TokenType string
 
 const (
@@ -21,65 +25,77 @@ const (
 	RPAREN              = ")"
 	LBRACE              = "{"
 	RBRACE              = "}"
-	SELECT    TokenType = "SELECT"
-	UPDATE    TokenType = "UPDATE"
-	DELETE    TokenType = "DELETE"
+	// migration commands
+	UP   TokenType = "UP"
+	DOWN TokenType = "DOWN"
+	// SQL commands
+	SELECT TokenType = "SELECT"
+	UPDATE TokenType = "UPDATE"
+	DELETE TokenType = "DELETE"
+	INSERT TokenType = "INSERT"
+	CREATE TokenType = "CREATE"
+	ALTER  TokenType = "ALTER"
+	DROP   TokenType = "DROP"
+	RENAME TokenType = "RENAME"
+	ADD    TokenType = "ADD"
+	CHANGE TokenType = "CHANGE"
 )
 
-const (
-	UPKeyword   = "up"
-	DOWNKeyword = "down"
-	CREATE      = "create"
-	TABLE       = "table"
-	INSERT      = "insert"
-	INTO        = "into"
-	VALUES      = "values"
-	ALTER       = "alter"
-	RENAME      = "rename"
-	ADD         = "add"
-	DROP        = "drop"
-	CHANGE      = "change"
-)
-
+// Additional keywords
 var keywords = map[string]TokenType{
-	UPKeyword:   TokenType("UP"),
-	DOWNKeyword: TokenType("DOWN"),
-	CREATE:      TokenType("CREATE"),
-	TABLE:       TokenType("TABLE"),
-	INSERT:      TokenType("INSERT"),
-	INTO:        TokenType("INTO"),
-	VALUES:      TokenType("VALUES"),
-	ALTER:       TokenType("ALTER"),
-	RENAME:      TokenType("RENAME"),
-	ADD:         TokenType("ADD"),
-	DROP:        TokenType("DROP"),
-	CHANGE:      TokenType("CHANGE"),
-	"select":    SELECT,
-	"update":    UPDATE,
-	"delete":    DELETE,
+	"up":         UP,
+	"down":       DOWN,
+	"select":     SELECT,
+	"update":     UPDATE,
+	"delete":     DELETE,
+	"insert":     INSERT,
+	"create":     CREATE,
+	"table":      IDENT, // table name is handled in parser; keyword here only matters in context.
+	"alter":      ALTER,
+	"drop":       DROP,
+	"rename":     RENAME,
+	"add":        ADD,
+	"change":     CHANGE,
+	"foreign":    IDENT, // for foreign key constraint
+	"key":        IDENT,
+	"constraint": IDENT,
+	"references": IDENT,
 }
 
 type Token struct {
 	Type    TokenType
 	Literal string
+	Line    int
+	Column  int
 }
 
 func LookupIdent(ident string) TokenType {
-	if tok, ok := keywords[strings.ToLower(ident)]; ok {
+	lower := strings.ToLower(ident)
+	if tok, ok := keywords[lower]; ok {
 		return tok
 	}
 	return IDENT
 }
 
+// -------------------------
+// Lexer Implementation
+// -------------------------
+
 type Lexer struct {
 	input        string
-	position     int
-	readPosition int
-	ch           rune
+	position     int  // current position in input (points to current char)
+	readPosition int  // current reading position in input (after current char)
+	ch           rune // current char under examination
+	line         int
+	column       int
 }
 
 func NewLexer(input string) *Lexer {
-	l := &Lexer{input: input}
+	l := &Lexer{
+		input:  input,
+		line:   1,
+		column: 0,
+	}
 	l.readChar()
 	return l
 }
@@ -93,6 +109,14 @@ func (l *Lexer) readChar() {
 	l.ch = r
 	l.position = l.readPosition
 	l.readPosition += size
+
+	// Update line and column counters.
+	if l.ch == '\n' {
+		l.line++
+		l.column = 0
+	} else {
+		l.column++
+	}
 }
 
 func (l *Lexer) peekChar() rune {
@@ -105,57 +129,107 @@ func (l *Lexer) peekChar() rune {
 
 func (l *Lexer) NextToken() Token {
 	var tok Token
-	l.skipWhitespace()
+	l.skipWhitespaceAndComments()
+	tok.Line = l.line
+	tok.Column = l.column
+
 	switch l.ch {
 	case '{':
-		tok = newToken(LBRACE, l.ch)
+		tok = newToken(LBRACE, l.ch, l.line, l.column)
 	case '}':
-		tok = newToken(RBRACE, l.ch)
+		tok = newToken(RBRACE, l.ch, l.line, l.column)
 	case '(':
-		tok = newToken(LPAREN, l.ch)
+		tok = newToken(LPAREN, l.ch, l.line, l.column)
 	case ')':
-		tok = newToken(RPAREN, l.ch)
+		tok = newToken(RPAREN, l.ch, l.line, l.column)
 	case ',':
-		tok = newToken(COMMA, l.ch)
+		tok = newToken(COMMA, l.ch, l.line, l.column)
 	case ';':
-		tok = newToken(SEMICOLON, l.ch)
-	case '"':
+		tok = newToken(SEMICOLON, l.ch, l.line, l.column)
+	case '"', '\'':
+		quote := l.ch
 		tok.Type = STRING
-		tok.Literal = l.readString()
+		tok.Literal = l.readString(quote)
+		tok.Line = l.line
+		tok.Column = l.column
+		// **Return immediately so that we don't call l.readChar() again.**
+		return tok
 	case 0:
 		tok.Literal = ""
 		tok.Type = EOF
 	default:
-		if isLetter(l.ch) {
+		if isLetter(l.ch) || l.ch == '_' {
+			startLine, startCol := l.line, l.column
 			literal := l.readIdentifier()
 			tok.Type = LookupIdent(literal)
 			tok.Literal = literal
+			tok.Line = startLine
+			tok.Column = startCol
 			return tok
 		} else if isDigit(l.ch) {
+			startLine, startCol := l.line, l.column
 			tok.Type = NUMBER
 			tok.Literal = l.readNumber()
+			tok.Line = startLine
+			tok.Column = startCol
 			return tok
 		} else {
-			tok = Token{Type: ILLEGAL, Literal: string(l.ch)}
+			tok = Token{Type: ILLEGAL, Literal: string(l.ch), Line: l.line, Column: l.column}
 		}
 	}
 	l.readChar()
 	return tok
 }
 
-func newToken(tokenType TokenType, ch rune) Token {
-	return Token{Type: tokenType, Literal: string(ch)}
+func newToken(tokenType TokenType, ch rune, line, col int) Token {
+	return Token{Type: tokenType, Literal: string(ch), Line: line, Column: col}
 }
 
-func (l *Lexer) skipWhitespace() {
-	for unicode.IsSpace(l.ch) {
+func (l *Lexer) skipWhitespaceAndComments() {
+	for {
+		// Skip whitespace characters.
+		for unicode.IsSpace(l.ch) {
+			l.readChar()
+		}
+		// Skip comments: support -- and /* */
+		if l.ch == '-' && l.peekChar() == '-' {
+			l.skipLineComment()
+			continue
+		}
+		if l.ch == '/' && l.peekChar() == '*' {
+			l.skipBlockComment()
+			continue
+		}
+		break
+	}
+}
+
+func (l *Lexer) skipLineComment() {
+	for l.ch != '\n' && l.ch != 0 {
+		l.readChar()
+	}
+}
+
+func (l *Lexer) skipBlockComment() {
+	// consume "/*"
+	l.readChar() // '/'
+	l.readChar() // '*'
+	for {
+		if l.ch == 0 {
+			break
+		}
+		if l.ch == '*' && l.peekChar() == '/' {
+			l.readChar() // '*'
+			l.readChar() // '/'
+			break
+		}
 		l.readChar()
 	}
 }
 
 func (l *Lexer) readIdentifier() string {
 	position := l.position
-	for isLetter(l.ch) || isDigit(l.ch) || l.ch == '_' || l.ch == '.' || l.ch == '"' {
+	for isLetter(l.ch) || isDigit(l.ch) || l.ch == '_' || l.ch == '.' {
 		l.readChar()
 	}
 	return l.input[position:l.position]
@@ -169,14 +243,41 @@ func (l *Lexer) readNumber() string {
 	return l.input[position:l.position]
 }
 
-func (l *Lexer) readString() string {
+func (l *Lexer) readString(quote rune) string {
+	// Skip opening quote.
 	l.readChar()
-	position := l.position
-	for l.ch != '"' && l.ch != 0 {
+	var sb strings.Builder
+	for {
+		if l.ch == quote {
+			break
+		}
+		if l.ch == '\\' { // handle escapes
+			l.readChar()
+			switch l.ch {
+			case 'n':
+				sb.WriteRune('\n')
+			case 't':
+				sb.WriteRune('\t')
+			case 'r':
+				sb.WriteRune('\r')
+			case '\\':
+				sb.WriteRune('\\')
+			case quote:
+				sb.WriteRune(quote)
+			default:
+				sb.WriteRune(l.ch)
+			}
+		} else if l.ch == 0 {
+			break
+		} else {
+			sb.WriteRune(l.ch)
+		}
 		l.readChar()
 	}
-	s := l.input[position:l.position]
-	return s
+	result := sb.String()
+	// Skip closing quote.
+	l.readChar()
+	return result
 }
 
 func isLetter(ch rune) bool {
@@ -187,26 +288,34 @@ func isDigit(ch rune) bool {
 	return unicode.IsDigit(ch)
 }
 
-type Migration struct {
-	Up   []Statement
-	Down []Statement
-}
+// -------------------------
+// AST and Parser Definitions
+// -------------------------
 
+// Statement represents a migration statement.
 type Statement interface {
 	statementNode()
 	String() string
 }
 
+// Migration holds the Up and Down blocks.
+type Migration struct {
+	Up          []Statement
+	Down        []Statement
+	ParseErrors []string
+}
+
+// SQLStatement is a generic SQL command.
 type SQLStatement struct {
 	Command string
 }
 
 func (s *SQLStatement) statementNode() {}
-
 func (s *SQLStatement) String() string {
 	return strings.TrimSpace(s.Command)
 }
 
+// ColumnDefinition holds column information.
 type ColumnDefinition struct {
 	Name        string
 	DataType    string
@@ -215,51 +324,42 @@ type ColumnDefinition struct {
 	Constraints []string
 	Comment     string
 	Mapping     string
+	// Foreign key clause (optional): "REFERENCES <table>(<col>)"
+	ForeignKey string
 }
 
+// CreateTableStatement represents a CREATE TABLE command.
 type CreateTableStatement struct {
-	TableName   string
-	Columns     []ColumnDefinition
-	Constraints []string
+	TableName        string
+	Columns          []ColumnDefinition
+	TableConstraints []string // e.g., primary key, foreign keys defined at table level.
 }
 
 func (cts *CreateTableStatement) statementNode() {}
-
 func (cts *CreateTableStatement) String() string {
 	cols := []string{}
 	for _, col := range cts.Columns {
-		s := fmt.Sprintf("%s %s", col.Name, col.DataType)
-		if col.Length != "" {
-			s += "(" + col.Length
-			if col.Precision != "" {
-				s += "," + col.Precision
-			}
-			s += ")"
-		}
-		if len(col.Constraints) > 0 {
-			s += " " + strings.Join(col.Constraints, " ")
-		}
-		if col.Comment != "" {
-			s += " COMMENT '" + col.Comment + "'"
-		}
-		if col.Mapping != "" {
-			s += " MAPPED AS " + col.Mapping
-		}
+		s := generateColumnSQL("generic", col)
 		cols = append(cols, s)
 	}
-	return fmt.Sprintf("CREATE TABLE %s (\n  %s\n)", cts.TableName, strings.Join(cols, ",\n  "))
+	all := strings.Join(cols, ",\n  ")
+	if len(cts.TableConstraints) > 0 {
+		all += ",\n  " + strings.Join(cts.TableConstraints, ",\n  ")
+	}
+	return fmt.Sprintf("CREATE TABLE %s (\n  %s\n)", cts.TableName, all)
 }
 
+// AlterTableStatement represents an ALTER TABLE command.
 type AlterTableStatement struct {
 	Command string
 }
 
 func (ats *AlterTableStatement) statementNode() {}
-
 func (ats *AlterTableStatement) String() string {
 	return strings.TrimSpace(ats.Command)
 }
 
+// Parser holds state for parsing tokens.
 type Parser struct {
 	l       *Lexer
 	curTok  Token
@@ -268,7 +368,10 @@ type Parser struct {
 }
 
 func NewParser(l *Lexer) *Parser {
-	p := &Parser{l: l}
+	p := &Parser{
+		l:      l,
+		errors: []string{},
+	}
 	p.nextToken()
 	p.nextToken()
 	return p
@@ -279,27 +382,40 @@ func (p *Parser) nextToken() {
 	p.peekTok = p.l.NextToken()
 }
 
+func (p *Parser) addError(msg string, tok Token) {
+	err := fmt.Sprintf("[Line %d, Col %d] %s", tok.Line, tok.Column, msg)
+	p.errors = append(p.errors, err)
+}
+
+func (p *Parser) Errors() []string {
+	return p.errors
+}
+
+// ParseMigration parses the entire migration file.
 func (p *Parser) ParseMigration() *Migration {
 	migration := &Migration{}
 	for p.curTok.Type != EOF {
-		switch p.curTok.Type {
-		case TokenType("UP"):
+		switch LookupIdent(p.curTok.Literal) {
+		case UP:
 			p.nextToken()
 			migration.Up = p.parseBlock()
-		case TokenType("DOWN"):
+		case DOWN:
 			p.nextToken()
 			migration.Down = p.parseBlock()
 		default:
+			// Skip tokens until we find a block marker.
 			p.nextToken()
 		}
 	}
+	migration.ParseErrors = p.errors
 	return migration
 }
 
+// parseBlock parses a block delimited by braces.
 func (p *Parser) parseBlock() []Statement {
 	stmts := []Statement{}
 	if p.curTok.Type != LBRACE {
-		p.errors = append(p.errors, "expected '{' at beginning of block")
+		p.addError("expected '{' at beginning of block", p.curTok)
 		return stmts
 	}
 	p.nextToken()
@@ -307,6 +423,11 @@ func (p *Parser) parseBlock() []Statement {
 		stmt := p.parseStatement()
 		if stmt != nil {
 			stmts = append(stmts, stmt)
+		} else {
+			// Attempt error recovery: skip until semicolon or RBRACE.
+			for p.curTok.Type != SEMICOLON && p.curTok.Type != RBRACE && p.curTok.Type != EOF {
+				p.nextToken()
+			}
 		}
 		if p.curTok.Type == SEMICOLON {
 			p.nextToken()
@@ -318,35 +439,25 @@ func (p *Parser) parseBlock() []Statement {
 	return stmts
 }
 
-func (p *Parser) expectPeek(t TokenType) bool {
-	if p.peekTok.Type == t {
-		p.nextToken()
-		return true
+// parseStatement decides what type of statement is next.
+func (p *Parser) parseStatement() Statement {
+	// Handle specific commands.
+	literalLower := strings.ToLower(p.curTok.Literal)
+	if literalLower == "create" && strings.ToLower(p.peekTok.Literal) == "table" {
+		return p.parseCreateTableStatement()
+	} else if literalLower == "alter" && strings.ToLower(p.peekTok.Literal) == "table" {
+		return p.parseAlterTableStatement()
+	} else if literalLower == "select" || literalLower == "update" ||
+		literalLower == "delete" || literalLower == "insert" {
+		return p.parseSQLStatement()
 	}
-	p.errors = append(p.errors, fmt.Sprintf("expected next token to be %s, got %s instead", t, p.peekTok.Type))
-	return false
+	// Fallback: treat as generic SQL.
+	return p.parseSQLStatement()
 }
 
-func (p *Parser) parseStatement() Statement {
-	if strings.ToLower(p.curTok.Literal) == "create" && strings.ToLower(p.peekTok.Literal) == "table" {
-		return p.parseCreateTableStatement()
-	} else if strings.ToLower(p.curTok.Literal) == "alter" && strings.ToLower(p.peekTok.Literal) == "table" {
-		return p.parseAlterTableStatement()
-	} else if lower := strings.ToLower(p.curTok.Literal); lower == "select" || lower == "update" || lower == "delete" || lower == "insert" {
-		var parts []string
-		for p.curTok.Type != SEMICOLON && p.curTok.Type != RBRACE && p.curTok.Type != EOF {
-			parts = append(parts, p.curTok.Literal)
-			p.nextToken()
-		}
-		return &SQLStatement{Command: strings.Join(parts, " ")}
-	}
+// parseSQLStatement parses a generic SQL statement.
+func (p *Parser) parseSQLStatement() Statement {
 	var parts []string
-	for p.curTok.Type == SEMICOLON {
-		p.nextToken()
-	}
-	if p.curTok.Type == RBRACE || p.curTok.Type == EOF {
-		return nil
-	}
 	for p.curTok.Type != SEMICOLON && p.curTok.Type != RBRACE && p.curTok.Type != EOF {
 		parts = append(parts, p.curTok.Literal)
 		p.nextToken()
@@ -355,59 +466,69 @@ func (p *Parser) parseStatement() Statement {
 	return &SQLStatement{Command: command}
 }
 
-func trimQuotes(s string) string {
-	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '`' && s[len(s)-1] == '`')) {
-		return s[1 : len(s)-1]
-	}
-	return s
-}
-
+// parseCreateTableStatement parses a CREATE TABLE command.
 func (p *Parser) parseCreateTableStatement() Statement {
+	// consume "create"
 	p.nextToken()
+	// consume "table"
 	p.nextToken()
-	tableName := p.curTok.Literal
-	tableName = trimQuotes(tableName)
+	tableName := trimQuotes(p.curTok.Literal)
 	p.nextToken()
+	// Expect LPAREN
 	if p.curTok.Type != LPAREN {
-		p.errors = append(p.errors, "expected '(' after table name")
+		p.addError("expected '(' after table name", p.curTok)
 		return nil
 	}
 	p.nextToken()
-	var columns []ColumnDefinition
+
+	columns := []ColumnDefinition{}
+	tableConstraints := []string{}
+	// Parse column definitions and/or table constraints until RPAREN.
 	for p.curTok.Type != RPAREN && p.curTok.Type != EOF {
-		col := p.parseColumnDefinition()
-		if col != nil {
-			columns = append(columns, *col)
+		// If token "constraint" or known table constraint keywords appear, parse table constraint.
+		if strings.ToLower(p.curTok.Literal) == "constraint" ||
+			(strings.ToLower(p.curTok.Literal) == "foreign" && strings.ToLower(p.peekTok.Literal) == "key") {
+			tc := p.parseTableConstraint()
+			if tc != "" {
+				tableConstraints = append(tableConstraints, tc)
+			}
+		} else {
+			col := p.parseColumnDefinition()
+			if col != nil {
+				columns = append(columns, *col)
+			}
 		}
+		// If comma, consume and continue.
 		if p.curTok.Type == COMMA {
 			p.nextToken()
-		} else if p.curTok.Type == IDENT || p.curTok.Type == STRING {
-
 		}
 	}
 	if p.curTok.Type == RPAREN {
 		p.nextToken()
 	}
 	return &CreateTableStatement{
-		TableName: tableName,
-		Columns:   columns,
+		TableName:        tableName,
+		Columns:          columns,
+		TableConstraints: tableConstraints,
 	}
 }
 
+// parseColumnDefinition parses one column definition.
 func (p *Parser) parseColumnDefinition() *ColumnDefinition {
 	col := &ColumnDefinition{}
 	if p.curTok.Type != IDENT && p.curTok.Type != STRING {
-		p.errors = append(p.errors, "expected column name")
+		p.addError("expected column name", p.curTok)
 		return nil
 	}
 	col.Name = trimQuotes(p.curTok.Literal)
 	p.nextToken()
 	if p.curTok.Type != IDENT && p.curTok.Type != STRING {
-		p.errors = append(p.errors, "expected data type for column "+col.Name)
+		p.addError(fmt.Sprintf("expected data type for column %s", col.Name), p.curTok)
 		return nil
 	}
 	col.DataType = p.curTok.Literal
 	p.nextToken()
+	// Handle optional length/precision
 	if p.curTok.Type == LPAREN {
 		p.nextToken()
 		if p.curTok.Type == NUMBER || p.curTok.Type == IDENT {
@@ -423,35 +544,98 @@ func (p *Parser) parseColumnDefinition() *ColumnDefinition {
 		}
 		if p.curTok.Type == RPAREN {
 			p.nextToken()
+		} else {
+			p.addError("expected ')' after length/precision", p.curTok)
 		}
 	}
+	// Parse constraints, comments, mapping and foreign key clause.
+constraintLoop:
 	for p.curTok.Type != COMMA && p.curTok.Type != RPAREN && p.curTok.Type != EOF {
 		lit := strings.ToLower(p.curTok.Literal)
-		if lit == "comment" {
+		switch lit {
+		case "comment":
 			p.nextToken()
 			if p.curTok.Type == STRING {
 				col.Comment = p.curTok.Literal
 				p.nextToken()
-				continue
+				continue constraintLoop
+			} else {
+				p.addError("expected string after comment", p.curTok)
 			}
-		}
-		if lit == "mapped" {
+		case "mapped":
 			p.nextToken()
 			if strings.ToLower(p.curTok.Literal) == "as" {
 				p.nextToken()
-				if p.curTok.Type == STRING || p.curTok.Type == IDENT {
+				if p.curTok.Type == IDENT || p.curTok.Type == STRING {
 					col.Mapping = p.curTok.Literal
 					p.nextToken()
-					continue
+					continue constraintLoop
+				} else {
+					p.addError("expected mapping identifier after 'mapped as'", p.curTok)
 				}
 			}
+		case "foreign":
+			// Parse foreign key clause: expect: foreign key references <table>(<col>)
+			p.nextToken() // skip 'foreign'
+			if strings.ToLower(p.curTok.Literal) != "key" {
+				p.addError("expected 'key' after 'foreign'", p.curTok)
+			} else {
+				p.nextToken() // skip 'key'
+			}
+			if strings.ToLower(p.curTok.Literal) != "references" {
+				p.addError("expected 'references' in foreign key clause", p.curTok)
+			} else {
+				p.nextToken() // skip 'references'
+			}
+			// Read referenced table.
+			refTable := trimQuotes(p.curTok.Literal)
+			p.nextToken()
+			// Expect LPAREN.
+			if p.curTok.Type != LPAREN {
+				p.addError("expected '(' after referenced table in foreign key clause", p.curTok)
+				return col
+			}
+			p.nextToken() // skip LPAREN
+			if p.curTok.Type != IDENT && p.curTok.Type != STRING {
+				p.addError("expected referenced column name", p.curTok)
+				return col
+			}
+			refCol := trimQuotes(p.curTok.Literal)
+			p.nextToken()
+			if p.curTok.Type != RPAREN {
+				p.addError("expected ')' after referenced column in foreign key clause", p.curTok)
+				return col
+			}
+			p.nextToken() // skip RPAREN
+			col.ForeignKey = fmt.Sprintf("REFERENCES %s(%s)", refTable, refCol)
+			break constraintLoop
+		default:
+			col.Constraints = append(col.Constraints, p.curTok.Literal)
+			p.nextToken()
 		}
-		col.Constraints = append(col.Constraints, p.curTok.Literal)
-		p.nextToken()
 	}
 	return col
 }
 
+// parseTableConstraint parses a table-level constraint as a raw string.
+func (p *Parser) parseTableConstraint() string {
+	var parts []string
+	for p.curTok.Type != COMMA && p.curTok.Type != RPAREN && p.curTok.Type != EOF {
+		parts = append(parts, p.curTok.Literal)
+		p.nextToken()
+	}
+	return strings.Join(parts, " ")
+}
+
+func trimQuotes(s string) string {
+	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') ||
+		(s[0] == '\'' && s[len(s)-1] == '\'')) {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// parseAlterTableStatement parses an ALTER TABLE command.
 func (p *Parser) parseAlterTableStatement() Statement {
 	var parts []string
 	for p.curTok.Type != SEMICOLON && p.curTok.Type != RBRACE && p.curTok.Type != EOF {
@@ -462,102 +646,15 @@ func (p *Parser) parseAlterTableStatement() Statement {
 	return &AlterTableStatement{Command: command}
 }
 
-func (p *Parser) Errors() []string {
-	return p.errors
-}
+// -------------------------
+// SQL Generation
+// -------------------------
 
-func GenerateSQL(stmts []Statement) []string {
-	queries := []string{}
-	for _, stmt := range stmts {
-		queries = append(queries, stmt.String())
-	}
-	return queries
-}
-
-func appendDelimiter(driver, command string) string {
-	switch strings.ToLower(driver) {
-	case "sqlserver":
-		if !strings.HasSuffix(strings.TrimSpace(command), "GO") {
-			return command + "\nGO"
-		}
-		return command
-	default:
-		if !strings.HasSuffix(strings.TrimSpace(command), ";") {
-			return command + ";"
-		}
-		return command
-	}
-}
-
-func convertStatement(driver, command string) string {
-	converted := command
-	switch strings.ToLower(driver) {
-	case "postgres":
-		converted = strings.ReplaceAll(converted, "autoincrement", "SERIAL")
-	case "mysql":
-		converted = strings.ReplaceAll(converted, "autoincrement", "AUTO_INCREMENT")
-	case "sqlserver":
-		converted = strings.ReplaceAll(converted, "autoincrement", "IDENTITY(1,1)")
-	}
-	return appendDelimiter(driver, converted)
-}
-
-func mapGenericDataType(driver string, col ColumnDefinition) string {
-	typ := strings.ToLower(col.DataType)
-	switch typ {
-	case "string":
-		if col.Length != "" {
-			return "string(" + col.Length + ")"
-		}
-		return "string"
-	case "number":
-		if col.Precision != "" {
-			l := col.Length
-			if l == "" {
-				l = "11"
-			}
-			return "number(" + l + "," + col.Precision + ")"
-		}
-		if col.Length != "" {
-			return "number(" + col.Length + ")"
-		}
-		return "number"
-	default:
-		if col.Length != "" {
-			if col.Precision != "" {
-				return typ + "(" + col.Length + "," + col.Precision + ")"
-			}
-			return typ + "(" + col.Length + ")"
-		}
-		return typ
-	}
-}
-
-func (cts *CreateTableStatement) ToSQL(driver string) string {
-	var colDefs []string
-	for _, col := range cts.Columns {
-		colDefs = append(colDefs, generateColumnSQL(driver, col))
-	}
-	return fmt.Sprintf("CREATE TABLE %s (\n  %s\n)", cts.TableName, strings.Join(colDefs, ",\n  "))
-}
-
-func GenerateSQLForDriver(driver string, stmts []Statement) []string {
-	var queries []string
-	for _, stmt := range stmts {
-		switch s := stmt.(type) {
-		case *CreateTableStatement:
-			queries = append(queries, appendDelimiter(driver, s.ToSQL(driver)))
-		default:
-			queries = append(queries, convertStatement(driver, stmt.String()))
-		}
-	}
-	return queries
-}
-
+// generateColumnSQL converts a column definition to SQL for a given driver.
 func generateColumnSQL(driver string, col ColumnDefinition) string {
 	auto := false
 	primary := false
-	var newConstraints []string
+	var constraints []string
 	for _, c := range col.Constraints {
 		lc := strings.ToLower(c)
 		if lc == "autoincrement" {
@@ -567,7 +664,7 @@ func generateColumnSQL(driver string, col ColumnDefinition) string {
 		if lc == "primary" || lc == "primary key" {
 			primary = true
 		}
-		newConstraints = append(newConstraints, c)
+		constraints = append(constraints, c)
 	}
 	var mappedType string
 	typ := strings.ToLower(col.DataType)
@@ -596,7 +693,7 @@ func generateColumnSQL(driver string, col ColumnDefinition) string {
 				mappedType = "INT AUTO_INCREMENT"
 			case "sqlite":
 				if primary {
-					return col.Name + " INTEGER PRIMARY KEY AUTOINCREMENT"
+					return fmt.Sprintf("%s INTEGER PRIMARY KEY AUTOINCREMENT", col.Name)
 				}
 				mappedType = "INTEGER"
 			case "sqlserver":
@@ -649,55 +746,147 @@ func generateColumnSQL(driver string, col ColumnDefinition) string {
 	default:
 		mappedType = col.DataType
 	}
-	sqlDef := col.Name + " " + mappedType
-	if len(newConstraints) > 0 {
-		sqlDef += " " + strings.Join(newConstraints, " ")
+	sqlDef := fmt.Sprintf("%s %s", col.Name, mappedType)
+	if len(constraints) > 0 {
+		sqlDef += " " + strings.Join(constraints, " ")
 	}
-	if col.Comment != "" {
+	if col.Comment != "" && strings.ToLower(driver) != "postgres" {
 		sqlDef += " COMMENT '" + col.Comment + "'"
 	}
 	if col.Mapping != "" {
 		sqlDef += " MAPPED AS " + col.Mapping
 	}
+	if col.ForeignKey != "" {
+		sqlDef += " " + col.ForeignKey
+	}
 	return sqlDef
 }
 
+// GenerateSQL converts a slice of statements to SQL strings.
+func GenerateSQL(stmts []Statement) []string {
+	queries := []string{}
+	for _, stmt := range stmts {
+		queries = append(queries, stmt.String())
+	}
+	return queries
+}
+
+// appendDelimiter adds the appropriate delimiter for a driver.
+func appendDelimiter(driver, command string) string {
+	switch strings.ToLower(driver) {
+	case "sqlserver":
+		if !strings.HasSuffix(strings.TrimSpace(command), "GO") {
+			return command + "\nGO"
+		}
+		return command
+	default:
+		if !strings.HasSuffix(strings.TrimSpace(command), ";") {
+			return command + ";"
+		}
+		return command
+	}
+}
+
+// convertStatement applies driver‑specific conversions.
+func convertStatement(driver, command string) string {
+	converted := command
+	switch strings.ToLower(driver) {
+	case "postgres":
+		converted = strings.ReplaceAll(converted, "autoincrement", "SERIAL")
+	case "mysql":
+		converted = strings.ReplaceAll(converted, "autoincrement", "AUTO_INCREMENT")
+	case "sqlserver":
+		converted = strings.ReplaceAll(converted, "autoincrement", "IDENTITY(1,1)")
+	}
+	return appendDelimiter(driver, converted)
+}
+
+// GenerateSQLForDriver generates SQL for a specific driver,
+// wrapping migration blocks in transactions where appropriate.
+func GenerateSQLForDriver(driver string, stmts []Statement) []string {
+	var queries []string
+	// Begin transaction wrapper if supported.
+	switch strings.ToLower(driver) {
+	case "postgres", "mysql":
+		queries = append(queries, "BEGIN;")
+	}
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *CreateTableStatement:
+			// Use driver-specific column mapping.
+			queries = append(queries, appendDelimiter(driver, GenerateCreateTableSQLForDriver(driver, s)))
+		default:
+			queries = append(queries, convertStatement(driver, stmt.String()))
+		}
+	}
+	// End transaction wrapper.
+	switch strings.ToLower(driver) {
+	case "postgres", "mysql":
+		queries = append(queries, "COMMIT;")
+	}
+	return queries
+}
+
+// GenerateCreateTableSQLForDriver converts a CreateTableStatement for a given driver.
+func GenerateCreateTableSQLForDriver(driver string, s *CreateTableStatement) string {
+	var colDefs []string
+	for _, col := range s.Columns {
+		colDefs = append(colDefs, generateColumnSQL(driver, col))
+	}
+	all := strings.Join(colDefs, ",\n  ")
+	if len(s.TableConstraints) > 0 {
+		all += ",\n  " + strings.Join(s.TableConstraints, ",\n  ")
+	}
+	return fmt.Sprintf("CREATE TABLE %s (\n  %s\n)", s.TableName, all)
+}
+
+// -------------------------
+// Main Function and Demo
+// -------------------------
+
 func main() {
 	input := `
+-- Migration example with enhanced syntax and comments.
 Up {
-    create table "test" (
+    create table "users" (
         id integer primary key autoincrement,
-        name string,
-        age integer(3) not null comment "user age" mapped as "age_db"
+        username string(50) not null,
+        email string(100) not null,
+        age integer,
+        -- Foreign key example inline:
+        group_id integer foreign key references "groups"(id),
+        comment "User information table"
     );
-    create table "test2" (
+    create table "groups" (
         id integer primary key autoincrement,
-        description string(255) comment "description of test2"
-        name string comment "description of test2"
+        name string(100) not null,
+        comment "User group table",
+        constraint pk_groups primary key (id),
+        constraint fk_group_users foreign key (id) references "users"(group_id)
     );
-    insert into "test" (name) values ('test');
-    insert into "test2" (description) values ('test2');
-    alter table "test" rename to "test3";
-    alter table "test" ( add column id integer primary key autoincrement, drop column name, change column id boolean );
+    insert into "users" (username, email) values ('alice', 'alice@example.com');
+    alter table "users" rename to "app_users";
 }
 
 Down {
-    alter table "test" ( drop column id, drop column name )
-    alter table "test3" rename to "test";
-    drop table "test3";
-    drop table "test2";
+    alter table "app_users" rename to "users";
+    drop table "users";
+    drop table "groups";
 }
 `
 	lexer := NewLexer(input)
 	parser := NewParser(lexer)
 	migration := parser.ParseMigration()
-	if len(parser.Errors()) > 0 {
+
+	if len(migration.ParseErrors) > 0 {
 		fmt.Println("Parser errors:")
-		for _, err := range parser.Errors() {
+		for _, err := range migration.ParseErrors {
 			fmt.Println(" -", err)
 		}
 		return
 	}
+
+	// Display raw migration SQL commands.
 	fmt.Println("---- UP SQL Statements ----")
 	upSQL := GenerateSQL(migration.Up)
 	for _, q := range upSQL {
@@ -708,6 +897,8 @@ Down {
 	for _, q := range downSQL {
 		fmt.Println(q)
 	}
+
+	// Generate driver-specific SQL.
 	drivers := []string{"postgres", "mysql", "sqlite", "sqlserver"}
 	for _, driver := range drivers {
 		fmt.Println("\n----", strings.ToUpper(driver), "UP SQL Statements ----")
