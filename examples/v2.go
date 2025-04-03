@@ -30,6 +30,11 @@ const (
 	RPAREN    = ")"
 	LBRACE    = "{"
 	RBRACE    = "}"
+
+	// ADD: New token definitions for additional statements.
+	SELECT TokenType = "SELECT"
+	UPDATE TokenType = "UPDATE"
+	DELETE TokenType = "DELETE"
 )
 
 // Keywords for the DSL. They are lower-cased for case-insensitive matching.
@@ -61,6 +66,10 @@ var keywords = map[string]TokenType{
 	ADD:         TokenType("ADD"),
 	DROP:        TokenType("DROP"),
 	CHANGE:      TokenType("CHANGE"),
+	// New entries with string keys:
+	"select": SELECT,
+	"update": UPDATE,
+	"delete": DELETE,
 }
 
 // Token represents a lexical token.
@@ -375,6 +384,14 @@ func (p *Parser) parseStatement() Statement {
 		return p.parseCreateTableStatement()
 	} else if strings.ToLower(p.curTok.Literal) == "alter" && strings.ToLower(p.peekTok.Literal) == "table" {
 		return p.parseAlterTableStatement()
+	} else if lower := strings.ToLower(p.curTok.Literal); lower == "select" || lower == "update" || lower == "delete" || lower == "insert" {
+		// Parse a DML statement until semicolon, RBRACE, or EOF.
+		var parts []string
+		for p.curTok.Type != SEMICOLON && p.curTok.Type != RBRACE && p.curTok.Type != EOF {
+			parts = append(parts, p.curTok.Literal)
+			p.nextToken()
+		}
+		return &SQLStatement{Command: strings.Join(parts, " ")}
 	}
 	// ...existing raw SQL statement parsing...
 	var parts []string
@@ -393,12 +410,21 @@ func (p *Parser) parseStatement() Statement {
 	return &SQLStatement{Command: command}
 }
 
+// Add helper to trim surrounding quotes from identifiers.
+func trimQuotes(s string) string {
+	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '`' && s[len(s)-1] == '`')) {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
 func (p *Parser) parseCreateTableStatement() Statement {
 	// current token: "create", next: "table"
 	p.nextToken() // skip "create"
 	p.nextToken() // skip "table"
-	// Next token: table name
+	// Next token: table name (allow quoted identifier)
 	tableName := p.curTok.Literal
+	tableName = trimQuotes(tableName) // <-- New: trim quotes
 	p.nextToken()
 	if p.curTok.Type != LPAREN {
 		p.errors = append(p.errors, "expected '(' after table name")
@@ -412,8 +438,12 @@ func (p *Parser) parseCreateTableStatement() Statement {
 		if col != nil {
 			columns = append(columns, *col)
 		}
+		// If a comma is present, skip it.
 		if p.curTok.Type == COMMA {
-			p.nextToken() // skip comma
+			p.nextToken()
+		} else if p.curTok.Type == IDENT || p.curTok.Type == STRING {
+			// Auto-handle missing comma, so continue without error.
+			// (No step needed here; the loop will continue.)
 		}
 	}
 	if p.curTok.Type == RPAREN {
@@ -427,13 +457,14 @@ func (p *Parser) parseCreateTableStatement() Statement {
 
 func (p *Parser) parseColumnDefinition() *ColumnDefinition {
 	col := &ColumnDefinition{}
-	if p.curTok.Type != IDENT {
+	// Allow identifier to be a quoted string.
+	if p.curTok.Type != IDENT && p.curTok.Type != STRING {
 		p.errors = append(p.errors, "expected column name")
 		return nil
 	}
-	col.Name = p.curTok.Literal
+	col.Name = trimQuotes(p.curTok.Literal) // <-- New: trim quotes on column name
 	p.nextToken()
-	if p.curTok.Type != IDENT {
+	if p.curTok.Type != IDENT && p.curTok.Type != STRING {
 		p.errors = append(p.errors, "expected data type for column "+col.Name)
 		return nil
 	}
