@@ -60,40 +60,23 @@ func NewParserWithConfig(input string, cfg ParserConfig) *Parser {
 func (p *Parser) nextToken() {
 	r := p.scanner.Scan()
 	text := p.scanner.TokenText()
-	p.offset = int(p.scanner.Pos().Offset)
-	// NEW: Handle "||" and "&&" after scanning a token
-	if text == "|" || text == "&" {
-		if peek := p.scanner.Peek(); peek == rune(text[0]) {
-			// Consume the next rune to form "||" or "&&"
-			p.scanner.Next()
-			if text == "|" {
-				p.curr = tokenInfo{typ: OPERATOR, value: "||"}
-			} else {
-				p.curr = tokenInfo{typ: OPERATOR, value: "&&"}
-			}
-			p.lastLine = p.scanner.Pos().Line
-			return
-		}
-	}
-	// NEW: Handle "||" and "&&" multi-character logical operators.
-	if p.scanner.Peek() != scanner.EOF {
-		if p.scanner.TokenText() == "|" && p.scanner.Peek() == '|' {
-			p.scanner.Next()
+	pos := p.scanner.Pos()
+	p.offset = int(pos.Offset)
+	// Consolidated: handle "||" and "&&" operators.
+	if (text == "|" || text == "&") && p.scanner.Peek() == rune(text[0]) {
+		p.scanner.Next()
+		if text == "|" {
 			p.curr = tokenInfo{typ: OPERATOR, value: "||"}
-			p.lastLine = p.scanner.Pos().Line
-			return
-		}
-		if p.scanner.TokenText() == "&" && p.scanner.Peek() == '&' {
-			p.scanner.Next()
+		} else {
 			p.curr = tokenInfo{typ: OPERATOR, value: "&&"}
-			p.lastLine = p.scanner.Pos().Line
-			return
 		}
+		p.lastLine = p.scanner.Pos().Line
+		return
 	}
 	switch text {
 	case "&", "|", "^":
 		p.curr = tokenInfo{typ: OPERATOR, value: text}
-		p.lastLine = p.scanner.Pos().Line
+		p.lastLine = pos.Line
 		return
 	}
 	if text == "<" && p.scanner.Peek() == '<' {
@@ -103,14 +86,14 @@ func (p *Parser) nextToken() {
 		p.lastLine = p.scanner.Pos().Line
 		return
 	}
-	// NEW: Handle "<=" operator
+	// Handle "<=" operator
 	if text == "<" && p.scanner.Peek() == '=' {
 		p.scanner.Next()
 		p.curr = tokenInfo{typ: OPERATOR, value: "<="}
 		p.lastLine = p.scanner.Pos().Line
 		return
 	}
-	// NEW: Handle ">=" operator
+	// Handle ">=" operator
 	if text == ">" && p.scanner.Peek() == '=' {
 		p.scanner.Next()
 		p.curr = tokenInfo{typ: OPERATOR, value: ">="}
@@ -151,12 +134,13 @@ func (p *Parser) nextToken() {
 		return
 	}
 	if r == '#' {
-		var b strings.Builder
-		b.WriteString("#")
+		sb := getBuilder(16)
+		sb.WriteString("#")
 		for ch := p.scanner.Peek(); ch != '\n' && ch != scanner.EOF; ch = p.scanner.Peek() {
-			b.WriteByte(byte(p.scanner.Next()))
+			sb.WriteByte(byte(p.scanner.Next()))
 		}
-		p.curr = tokenInfo{typ: COMMENT, value: b.String()}
+		p.curr = tokenInfo{typ: COMMENT, value: sb.String()}
+		putBuilder(sb)
 		p.lastLine = p.scanner.Pos().Line
 		return
 	}
@@ -183,7 +167,6 @@ func (p *Parser) nextToken() {
 	default:
 		switch text {
 		case "=":
-			// Check for equality operator "=="
 			if p.scanner.Peek() == '=' {
 				p.scanner.Next()
 				p.curr = tokenInfo{typ: OPERATOR, value: "=="}
@@ -208,12 +191,8 @@ func (p *Parser) nextToken() {
 			p.curr = tokenInfo{typ: OPERATOR, value: text}
 		case "@":
 			p.curr = tokenInfo{typ: AT, value: text}
-		case "<":
+		case ".", "<", ">":
 			p.curr = tokenInfo{typ: OPERATOR, value: text}
-		case ">":
-			p.curr = tokenInfo{typ: OPERATOR, value: text}
-		case ".":
-			p.curr = tokenInfo{typ: DOT, value: text}
 		default:
 			p.curr = tokenInfo{typ: IDENT, value: text}
 		}
@@ -314,32 +293,36 @@ func (p *Parser) parseInclude() (Node, error) {
 }
 
 func (p *Parser) parseFileName() (string, error) {
-	var nameBuilder strings.Builder
+	sb := getBuilder(16)
 	if p.curr.typ == STRING {
-		nameBuilder.WriteString(p.curr.value)
+		sb.WriteString(p.curr.value)
 		p.nextToken()
-		return nameBuilder.String(), nil
+		result := sb.String()
+		putBuilder(sb)
+		return result, nil
 	} else if p.curr.typ == IDENT {
-		nameBuilder.WriteString(p.curr.value)
+		sb.WriteString(p.curr.value)
 		p.nextToken()
-		// consume subsequent tokens to form the full file name
 		for (p.curr.typ == OPERATOR && p.curr.value == ".") || p.curr.typ == IDENT {
 			if p.curr.typ == OPERATOR && p.curr.value == "." {
-				nameBuilder.WriteByte('.')
+				sb.WriteByte('.')
 				p.nextToken()
 				if p.curr.typ != IDENT {
+					putBuilder(sb)
 					return "", fmt.Errorf("expected identifier after dot in file name, got %v", p.curr.value)
 				}
-				nameBuilder.WriteString(p.curr.value)
+				sb.WriteString(p.curr.value)
 				p.nextToken()
 			} else if p.curr.typ == IDENT {
-				nameBuilder.WriteString(p.curr.value)
+				sb.WriteString(p.curr.value)
 				p.nextToken()
 			} else {
 				break
 			}
 		}
-		return nameBuilder.String(), nil
+		result := sb.String()
+		putBuilder(sb)
+		return result, nil
 	}
 	return "", fmt.Errorf("expected file name, got %v", p.curr.value)
 }
@@ -392,7 +375,7 @@ func (p *Parser) parseBlock(typ, label string) (Node, error) {
 	return &BlockNode{Type: typ, Label: label, Props: props}, nil
 }
 
-// NEW: Modified parseExpression to support ternary operator
+// Modified parseExpression to support ternary operator
 func (p *Parser) parseExpression() (Node, error) {
 	expr, err := p.parseBinaryExpression(0)
 	if err != nil {
@@ -499,25 +482,20 @@ func (f *FunctionNode) ToBCL(indent string) string {
 	return fmt.Sprintf("%s%s(%s)", indent, f.FuncName, strings.Join(argsStr, ", "))
 }
 
-// NEW: parseEnvLookup to handle dynamic env lookup expressions
+// parseEnvLookup handles dynamic env lookup expressions
 func (p *Parser) parseEnvLookup() (Node, error) {
-	// p.curr is "env"
 	envNode := &IdentifierNode{Name: "env"}
 	p.nextToken() // consume "env"
-	// If no dot follows, just return the identifier.
 	if p.curr.typ != DOT {
 		return envNode, nil
 	}
 	p.nextToken() // consume "."
-	// Now, combine tokens (IDENT, COLON, DOT, OPERATOR) into one string.
 	var parts []string
-	// Require first part to be an identifier.
 	if p.curr.typ != IDENT {
 		return nil, fmt.Errorf("expected identifier after 'env.' but got %v", p.curr.value)
 	}
 	parts = append(parts, p.curr.value)
 	p.nextToken()
-	// Consume subsequent tokens that can form the full lookup (e.g. "SHELL:/bin/bash").
 	for p.curr.typ == DOT || p.curr.typ == IDENT || p.curr.typ == OPERATOR {
 		parts = append(parts, p.curr.value)
 		p.nextToken()
@@ -557,7 +535,6 @@ func (p *Parser) parsePrimary() (Node, error) {
 		p.nextToken()
 		return &PrimitiveNode{Value: b}, nil
 	case IDENT:
-		// NEW: Special handling for env lookup
 		if p.curr.value == "env" {
 			return p.parseEnvLookup()
 		}
@@ -597,7 +574,6 @@ func (p *Parser) parsePrimary() (Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		// NEW: Wrap the parsed expression in a GroupNode so explicit parentheses are preserved.
 		return &GroupNode{Child: expr}, nil
 	case LBRACE:
 		return p.parseMap()
@@ -612,7 +588,6 @@ func (p *Parser) parsePrimary() (Node, error) {
 
 func (p *Parser) getOperator(tok tokenInfo) (string, bool) {
 	if tok.typ == OPERATOR {
-		// Exclude ternary operator symbols.
 		if tok.value == "?" || tok.value == ":" {
 			return "", false
 		}
@@ -633,32 +608,41 @@ func (p *Parser) parseHeredoc() (Node, error) {
 		return nil, err
 	}
 	delimiter := delimTok.value
-	markerLine := p.input[heredocStartOffset:p.offset]
-	newlineIdx := strings.Index(markerLine, "\n")
+
+	// Find first newline character after heredoc marker
+	newlineIdx := strings.IndexByte(p.input[heredocStartOffset:], '\n')
 	if newlineIdx == -1 {
-		return nil, fmt.Errorf("expected newline after heredoc marker, got marker: %q", markerLine)
+		return nil, fmt.Errorf("expected newline after heredoc marker, got marker: %q", p.input[heredocStartOffset:])
 	}
 	contentStart := heredocStartOffset + newlineIdx + 1
-	remaining := p.input[contentStart:]
-	lines := strings.Split(remaining, "\n")
-	var contentLines []string
-	var consumedLines int
-	for i, line := range lines {
-		if strings.TrimSpace(line) == delimiter {
-			consumedLines = i + 1
+
+	// Use a loop with IndexByte to avoid splitting into all lines.
+	pos := contentStart
+	var delimPos int = -1
+	for {
+		nextNewline := strings.IndexByte(p.input[pos:], '\n')
+		if nextNewline == -1 {
 			break
 		}
-		contentLines = append(contentLines, line)
+		line := p.input[pos : pos+nextNewline]
+		if strings.TrimSpace(line) == delimiter {
+			delimPos = pos
+			break
+		}
+		pos += nextNewline + 1
 	}
-	if consumedLines == 0 {
+	if delimPos == -1 {
 		return nil, fmt.Errorf("heredoc delimiter %s not found", delimiter)
 	}
-	content := strings.Join(contentLines, "\n")
-	newOffset := contentStart
-	for i := 0; i < consumedLines; i++ {
-		newOffset += len(lines[i]) + 1
+	content := p.input[contentStart:delimPos]
+	// New offset is after the delimiter line (skip newline if any)
+	newOffset := delimPos + len(delimiter)
+	if newOffset < len(p.input) && p.input[newOffset] == '\n' {
+		newOffset++
 	}
 	p.offset = newOffset
+
+	// Reinitialize scanner with the remaining input (zero allocation on string slicing)
 	var s scanner.Scanner
 	s.Init(strings.NewReader(p.input[newOffset:]))
 	s.Filename = p.scanner.Filename
@@ -751,8 +735,6 @@ func (p *Parser) parseControl() (Node, error) {
 	p.nextToken()
 	var condition Node
 	if keyword != "ELSE" {
-		// If a left parenthesis is present, use it to enclose the condition,
-		// otherwise parse the expression directly.
 		if p.curr.typ == LPAREN {
 			_, err := p.expect(LPAREN)
 			if err != nil {
@@ -775,8 +757,6 @@ func (p *Parser) parseControl() (Node, error) {
 			condition = cond
 		}
 	}
-
-	// Allow the block to start with either LBRACE or LPAREN.
 	var blockStart Token
 	if p.curr.typ == LBRACE {
 		blockStart = LBRACE
@@ -789,15 +769,12 @@ func (p *Parser) parseControl() (Node, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// Set the corresponding block end token.
 	var blockEnd Token
 	if blockStart == LBRACE {
 		blockEnd = RBRACE
 	} else {
 		blockEnd = RPAREN
 	}
-
 	var body []Node
 	for p.curr.typ != blockEnd && p.curr.typ != EOF {
 		stmt, err := p.parseStatement()

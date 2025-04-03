@@ -7,7 +7,26 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 )
+
+// Reuse builders to reduce allocations
+var builderPool = sync.Pool{
+	New: func() interface{} {
+		return &strings.Builder{}
+	},
+}
+
+func getBuilder(capacity int) *strings.Builder {
+	b := builderPool.Get().(*strings.Builder)
+	b.Reset()
+	b.Grow(capacity)
+	return b
+}
+
+func putBuilder(b *strings.Builder) {
+	builderPool.Put(b)
+}
 
 type Node interface {
 	Eval(env *Environment) (any, error)
@@ -37,14 +56,15 @@ func (a *AssignmentNode) Eval(env *Environment) (any, error) {
 }
 
 func (a *AssignmentNode) ToBCL(indent string) string {
-	// optimized to reduce string allocations
-	var sb strings.Builder
-	sb.Grow(len(indent) + len(a.VarName) + 16)
+	capacity := len(indent) + len(a.VarName) + 16
+	sb := getBuilder(capacity)
 	sb.WriteString(indent)
 	sb.WriteString(a.VarName)
 	sb.WriteString(" = ")
 	sb.WriteString(a.Value.ToBCL(""))
-	return sb.String()
+	result := sb.String()
+	putBuilder(sb)
+	return result
 }
 
 type BlockNode struct {
@@ -85,9 +105,8 @@ func (b *BlockNode) ToBCL(indent string) string {
 	if strings.ContainsAny(lbl, " \t") {
 		lbl = "\"" + lbl + "\""
 	}
-	var sb strings.Builder
-	// preallocate capacity with an estimate
-	sb.Grow(len(indent) + len(b.Type) + len(lbl) + len(b.Props)*32 + 16)
+	capacity := len(indent) + len(b.Type) + len(lbl) + len(b.Props)*32 + 16
+	sb := getBuilder(capacity)
 	sb.WriteString(indent)
 	sb.WriteString(b.Type)
 	sb.WriteString(" ")
@@ -99,7 +118,9 @@ func (b *BlockNode) ToBCL(indent string) string {
 	}
 	sb.WriteString(indent)
 	sb.WriteByte('}')
-	return sb.String()
+	result := sb.String()
+	putBuilder(sb)
+	return result
 }
 
 type BlockContainerNode struct {
@@ -125,13 +146,15 @@ func (b *BlockContainerNode) Eval(env *Environment) (any, error) {
 }
 
 func (b *BlockContainerNode) ToBCL(indent string) string {
-	var sb strings.Builder
+	sb := getBuilder(32)
 	sb.WriteString(fmt.Sprintf("%s%s {\n", indent, b.Type))
 	for _, blockNode := range b.Blocks {
 		sb.WriteString("    " + blockNode.ToBCL(indent+"    ") + "\n")
 	}
 	sb.WriteString(fmt.Sprintf("%s}", indent))
-	return sb.String()
+	result := sb.String()
+	putBuilder(sb)
+	return result
 }
 
 type MapNode struct {
@@ -150,11 +173,13 @@ func (m *MapNode) Eval(env *Environment) (any, error) {
 }
 
 func (m *MapNode) ToBCL(indent string) string {
-	var sb strings.Builder
+	sb := getBuilder(32)
 	sb.WriteString("{\n")
 	sb.WriteString(writeAssignments(indent, m.Entries))
 	sb.WriteString(indent + "}")
-	return sb.String()
+	result := sb.String()
+	putBuilder(sb)
+	return result
 }
 
 type CombinedMapNode struct {
@@ -180,14 +205,16 @@ func (m *CombinedMapNode) Eval(env *Environment) (any, error) {
 }
 
 func (m *CombinedMapNode) ToBCL(indent string) string {
-	var sb strings.Builder
+	sb := getBuilder(32)
 	sb.WriteString("{\n")
 	sb.WriteString(writeAssignments(indent, m.Entries))
 	for _, block := range m.Blocks {
 		sb.WriteString(indent + "    " + block.ToBCL(indent+"    ") + "\n")
 	}
 	sb.WriteString(indent + "}")
-	return sb.String()
+	result := sb.String()
+	putBuilder(sb)
+	return result
 }
 
 type SliceNode struct {
@@ -216,11 +243,17 @@ func (s *SliceNode) ToBCL(indent string) string {
 			}
 			return fmt.Sprintf("[%s]", strings.Join(parts, ", "))
 		default:
+			sb := getBuilder(32)
+			sb.WriteString("[\n")
 			var parts []string
 			for _, el := range s.Elements {
 				parts = append(parts, el.ToBCL(indent+"    "))
 			}
-			return fmt.Sprintf("[\n%s\n%s]", strings.Join(parts, "\n"), indent)
+			sb.WriteString(strings.Join(parts, "\n"))
+			sb.WriteString("\n" + indent + "]")
+			result := sb.String()
+			putBuilder(sb)
+			return result
 		}
 	}
 	return "[]"
@@ -247,7 +280,6 @@ func (p *PrimitiveNode) ToBCL(indent string) string {
 	switch v := p.Value.(type) {
 	case string:
 		if strings.Contains(v, "\n") {
-			// Use heredoc when the string contains a newline.
 			return fmt.Sprintf("<<EOF\n%s\nEOF", v)
 		}
 		return fmt.Sprintf("\"%s\"", v)
@@ -257,7 +289,7 @@ func (p *PrimitiveNode) ToBCL(indent string) string {
 }
 
 func interpolateDynamic(s string, env *Environment) (string, error) {
-	var result strings.Builder
+	sb := getBuilder(len(s))
 	i := 0
 	for i < len(s) {
 		if i+1 < len(s) && s[i] == '$' && s[i+1] == '{' {
@@ -272,26 +304,31 @@ func interpolateDynamic(s string, env *Environment) (string, error) {
 				j++
 			}
 			if braceCount != 0 {
+				putBuilder(sb)
 				return "", fmt.Errorf("unmatched braces in dynamic expression")
 			}
 			exprStr := s[i+2 : j-1]
 			parser := NewParser(exprStr)
 			expr, err := parser.parseExpression()
 			if err != nil {
+				putBuilder(sb)
 				return "", err
 			}
 			val, err := expr.Eval(env)
 			if err != nil {
+				putBuilder(sb)
 				return "", err
 			}
-			result.WriteString(fmt.Sprintf("%v", val))
+			sb.WriteString(fmt.Sprintf("%v", val))
 			i = j
 		} else {
-			result.WriteByte(s[i])
+			sb.WriteByte(s[i])
 			i++
 		}
 	}
-	return result.String(), nil
+	result := sb.String()
+	putBuilder(sb)
+	return result, nil
 }
 
 type IdentifierNode struct {
@@ -351,11 +388,22 @@ func (d *DotAccessNode) Eval(env *Environment) (any, error) {
 }
 
 func (d *DotAccessNode) ToBCL(indent string) string {
-	quoted := d.Right
+	leftStr := d.Left.ToBCL("")
+	capacity := len(indent) + len(leftStr) + len(d.Right) + 10
+	sb := getBuilder(capacity)
+	sb.WriteString(indent)
+	sb.WriteString(leftStr)
+	sb.WriteByte('.')
 	if strings.ContainsAny(d.Right, " \t") {
-		quoted = fmt.Sprintf("\"%s\"", d.Right)
+		sb.WriteByte('"')
+		sb.WriteString(d.Right)
+		sb.WriteByte('"')
+	} else {
+		sb.WriteString(d.Right)
 	}
-	return fmt.Sprintf("%s%s.%s", indent, d.Left.ToBCL(""), quoted)
+	result := sb.String()
+	putBuilder(sb)
+	return result
 }
 
 type ArithmeticNode struct {
@@ -686,7 +734,19 @@ func (a *ArithmeticNode) Eval(env *Environment) (any, error) {
 }
 
 func (a *ArithmeticNode) ToBCL(indent string) string {
-	return fmt.Sprintf("%s%s %s %s", indent, a.Left.ToBCL(""), a.Op, a.Right.ToBCL(""))
+	leftStr := a.Left.ToBCL("")
+	rightStr := a.Right.ToBCL("")
+	capacity := len(indent) + len(leftStr) + len(a.Op) + len(rightStr) + 4
+	sb := getBuilder(capacity)
+	sb.WriteString(indent)
+	sb.WriteString(leftStr)
+	sb.WriteByte(' ')
+	sb.WriteString(a.Op)
+	sb.WriteByte(' ')
+	sb.WriteString(rightStr)
+	result := sb.String()
+	putBuilder(sb)
+	return result
 }
 
 func toFloat(val any) (float64, error) {
@@ -738,7 +798,7 @@ func (c *ControlNode) Eval(env *Environment) (any, error) {
 }
 
 func (c *ControlNode) ToBCL(indent string) string {
-	var sb strings.Builder
+	sb := getBuilder(64)
 	if c.Condition != nil {
 		sb.WriteString(fmt.Sprintf("%sIF (%s) {\n", indent, c.Condition.ToBCL("")))
 	} else {
@@ -752,7 +812,9 @@ func (c *ControlNode) ToBCL(indent string) string {
 	if c.Else != nil {
 		sb.WriteString(" " + c.Else.ToBCL(indent))
 	}
-	return sb.String()
+	result := sb.String()
+	putBuilder(sb)
+	return result
 }
 
 var includeCache = make(map[string][]Node)
@@ -840,7 +902,7 @@ func (u *UnaryNode) ToBCL(indent string) string {
 	return fmt.Sprintf("%s%s%s", indent, u.Op, u.Child.ToBCL(""))
 }
 
-// NEW: TernaryNode implementation for condition ? trueExpr : falseExpr
+// TernaryNode implementation for condition ? trueExpr : falseExpr
 type TernaryNode struct {
 	Condition Node
 	TrueExpr  Node
@@ -863,23 +925,23 @@ func (t *TernaryNode) Eval(env *Environment) (any, error) {
 }
 
 func (t *TernaryNode) ToBCL(indent string) string {
-	var sb strings.Builder
-	// estimate capacity using lengths of each part
 	tCond := t.Condition.ToBCL("")
 	tTrue := t.TrueExpr.ToBCL("")
 	tFalse := t.FalseExpr.ToBCL("")
-	total := len(indent) + len(tCond) + len(tTrue) + len(tFalse) + 8
-	sb.Grow(total)
+	capacity := len(indent) + len(tCond) + len(tTrue) + len(tFalse) + 8
+	sb := getBuilder(capacity)
 	sb.WriteString(indent)
 	sb.WriteString(tCond)
 	sb.WriteString(" ? ")
 	sb.WriteString(tTrue)
 	sb.WriteString(" : ")
 	sb.WriteString(tFalse)
-	return sb.String()
+	result := sb.String()
+	putBuilder(sb)
+	return result
 }
 
-// NEW: GroupNode to preserve parentheses
+// GroupNode to preserve parentheses
 type GroupNode struct {
 	Child Node
 }
