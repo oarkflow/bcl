@@ -35,6 +35,7 @@ type Operation struct {
 	DropMaterializedView []DropMaterializedView `json:"DropMaterializedView,omitempty"`
 	DropTable            []DropTable            `json:"DropTable,omitempty"`
 	DropSchema           []DropSchema           `json:"DropSchema,omitempty"`
+	RenameTable          []RenameTable          `json:"RenameTable,omitempty"`
 }
 
 type AlterTable struct {
@@ -113,6 +114,22 @@ type RenameColumn struct {
 	To   string `json:"to"`
 
 	Type string `json:"type,omitempty"`
+}
+
+type RenameTable struct {
+	OldName string `json:"old_name"`
+	NewName string `json:"new_name"`
+}
+
+func (rt RenameTable) ToSQL(dialect string) (string, error) {
+	switch dialect {
+	case DialectPostgres, DialectSQLite:
+		return fmt.Sprintf("ALTER TABLE %s RENAME TO %s;", rt.OldName, rt.NewName), nil
+	case DialectMySQL:
+		return fmt.Sprintf("RENAME TABLE %s TO %s;", rt.OldName, rt.NewName), nil
+	default:
+		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+	}
 }
 
 type DeleteData struct {
@@ -509,6 +526,13 @@ func (op Operation) ToSQL(dialect string) ([]string, error) {
 		}
 		queries = append(queries, q)
 	}
+	for _, rt := range op.RenameTable {
+		q, err := rt.ToSQL(dialect)
+		if err != nil {
+			return nil, err
+		}
+		queries = append(queries, q)
+	}
 	return queries, nil
 }
 
@@ -545,6 +569,13 @@ func wrapInTransactionWithConfig(queries []string, trans Transaction, dialect st
 			beginStmt = fmt.Sprintf("BEGIN TRANSACTION ISOLATION LEVEL %s;", trans.IsolationLevel)
 		} else {
 			beginStmt = "BEGIN;"
+		}
+	case DialectMySQL:
+		// Enhanced MySQL transaction configuration to support isolation level.
+		if trans.IsolationLevel != "" {
+			beginStmt = fmt.Sprintf("SET TRANSACTION ISOLATION LEVEL %s; START TRANSACTION;", trans.IsolationLevel)
+		} else {
+			beginStmt = "START TRANSACTION;"
 		}
 	default:
 		beginStmt = "BEGIN;"
