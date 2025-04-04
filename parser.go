@@ -328,10 +328,18 @@ func (p *Parser) parseFileName() (string, error) {
 }
 
 func (p *Parser) parseAssignment(varName string) (Node, error) {
+	// Accept ASSIGN, or an OPERATOR with ":" for assignment.
 	if p.curr.typ != ASSIGN {
-		return nil, fmt.Errorf("expected '=', got %v", p.curr.value)
+		if p.curr.typ == OPERATOR && p.curr.value == ":" {
+			p.nextToken()
+		} else if p.curr.typ == LBRACE {
+			// Allow implicit '=' when the value is a block literal.
+		} else {
+			return nil, fmt.Errorf("expected '=' after attribute name, got %v", p.curr.value)
+		}
+	} else {
+		p.nextToken()
 	}
-	p.nextToken()
 	expr, err := p.parseExpression()
 	if err != nil {
 		return nil, err
@@ -354,16 +362,45 @@ func (p *Parser) parseBlock(typ, label string) (Node, error) {
 			props = append(props, comment)
 			continue
 		}
+		// Expect a property key (IDENT)
 		if p.curr.typ != IDENT {
 			return nil, fmt.Errorf("expected property name, got %v", p.curr.value)
 		}
 		propName := p.curr.value
 		p.nextToken()
-		propNode, err := p.parseAssignment(propName)
-		if err != nil {
-			return nil, err
+		var propValue Node
+		if p.curr.typ == ASSIGN {
+			p.nextToken()
+			expr, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			propValue = expr
+		} else if p.curr.typ == LBRACE {
+			// shorthand block with empty label
+			n, err := p.parseBlock(propName, "")
+			if err != nil {
+				return nil, err
+			}
+			propValue = n
+		} else if p.curr.typ == IDENT || p.curr.typ == STRING {
+			// Use next token as a label then expect a block start.
+			lbl := p.curr.value
+			p.nextToken()
+			if p.curr.typ != LBRACE {
+				return nil, fmt.Errorf("expected '{' after label %s, got %v", lbl, p.curr.value)
+			}
+			n, err := p.parseBlock(propName, lbl)
+			if err != nil {
+				return nil, err
+			}
+			propValue = n
+		} else {
+			return nil, fmt.Errorf("unexpected token %v after property key %s", p.curr.value, propName)
 		}
-		props = append(props, propNode)
+		// Wrap the property value in an AssignmentNode so it gets assigned as a property.
+		assignment := &AssignmentNode{VarName: propName, Value: propValue}
+		props = append(props, assignment)
 		if p.curr.typ == COMMA {
 			p.nextToken()
 		}
@@ -679,22 +716,28 @@ func (p *Parser) parseMap() (Node, error) {
 			if err != nil {
 				return nil, err
 			}
-			if assign, ok := assignment.(*AssignmentNode); ok {
-				entries = append(entries, assign)
-			} else {
-				return nil, fmt.Errorf("expected assignment node")
+			entries = append(entries, assignment.(*AssignmentNode))
+		} else if p.curr.typ == LBRACE {
+			// shorthand block with empty label
+			block, err := p.parseBlock(key, "")
+			if err != nil {
+				return nil, err
 			}
-		} else {
-			var label string
-			if p.curr.typ == IDENT || p.curr.typ == STRING {
-				label = p.curr.value
-				p.nextToken()
+			blocks = append(blocks, block)
+		} else if p.curr.typ == IDENT || p.curr.typ == STRING {
+			// Grab the label and expect a block start.
+			label := p.curr.value
+			p.nextToken()
+			if p.curr.typ != LBRACE {
+				return nil, fmt.Errorf("expected '{' after label %s, got %v", label, p.curr.value)
 			}
 			block, err := p.parseBlock(key, label)
 			if err != nil {
 				return nil, err
 			}
 			blocks = append(blocks, block)
+		} else {
+			return nil, fmt.Errorf("unexpected token %v after key %s", p.curr.value, key)
 		}
 		if p.curr.typ == COMMA {
 			p.nextToken()
