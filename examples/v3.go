@@ -4,16 +4,23 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/oarkflow/bcl"
 )
 
+// ----------------------
+// Dialect Constants
+// ----------------------
 const (
 	DialectPostgres = "postgres"
 	DialectMySQL    = "mysql"
 	DialectSQLite   = "sqlite"
 )
 
+// ----------------------
+// Migration Configuration Types
+// ----------------------
 type Migration struct {
 	Name        string        `json:"name"`
 	Version     string        `json:"Version"`
@@ -25,10 +32,14 @@ type Migration struct {
 }
 
 type Operation struct {
-	Name         string         `json:"name"`
-	AlterTable   []AlterTable   `json:"AlterTable"`
-	DeleteData   []DeleteData   `json:"DeleteData"`
-	DropEnumType []DropEnumType `json:"DropEnumType"`
+	Name                 string                 `json:"name"`
+	AlterTable           []AlterTable           `json:"AlterTable"`
+	DeleteData           []DeleteData           `json:"DeleteData"`
+	DropEnumType         []DropEnumType         `json:"DropEnumType"`
+	DropRowPolicy        []DropRowPolicy        `json:"DropRowPolicy,omitempty"`
+	DropMaterializedView []DropMaterializedView `json:"DropMaterializedView,omitempty"`
+	DropTable            []DropTable            `json:"DropTable,omitempty"`
+	DropSchema           []DropSchema           `json:"DropSchema,omitempty"`
 }
 
 type AlterTable struct {
@@ -66,6 +77,8 @@ type DropColumn struct {
 type RenameColumn struct {
 	From string `json:"from"`
 	To   string `json:"to"`
+	// For MySQL, we now require the new column type to be provided.
+	Type string `json:"type,omitempty"`
 }
 
 type DeleteData struct {
@@ -76,6 +89,28 @@ type DeleteData struct {
 type DropEnumType struct {
 	Name     string `json:"name"`
 	IfExists bool   `json:"IfExists"`
+}
+
+type DropRowPolicy struct {
+	Name     string `json:"name"`
+	Table    string `json:"Table"`
+	IfExists bool   `json:"if_exists,omitempty"`
+}
+
+type DropMaterializedView struct {
+	Name     string `json:"name"`
+	IfExists bool   `json:"if_exists,omitempty"`
+}
+
+type DropTable struct {
+	Name    string `json:"name"`
+	Cascade bool   `json:"cascade,omitempty"`
+}
+
+type DropSchema struct {
+	Name     string `json:"name"`
+	Cascade  bool   `json:"cascade,omitempty"`
+	IfExists bool   `json:"if_exists,omitempty"`
 }
 
 type Transaction struct {
@@ -94,6 +129,10 @@ type Config struct {
 	Migrations []Migration `json:"Migration"`
 }
 
+// ----------------------
+// DataType Mapping Functions
+// ----------------------
+// mapDataType maps a generic type to a dialect-specific SQL type.
 func mapDataType(dialect, genericType string, size int, autoIncrement bool, primaryKey bool) string {
 	lowerType := strings.ToLower(genericType)
 	switch dialect {
@@ -126,9 +165,7 @@ func mapDataType(dialect, genericType string, size int, autoIncrement bool, prim
 			}
 			return "TEXT"
 		case "number":
-			if autoIncrement {
-				return "INT"
-			}
+			// For auto increment, the type remains INT and AUTO_INCREMENT is appended.
 			return "INT"
 		case "boolean":
 			return "TINYINT(1)"
@@ -148,7 +185,7 @@ func mapDataType(dialect, genericType string, size int, autoIncrement bool, prim
 			return "TEXT"
 		case "number":
 			if autoIncrement && primaryKey {
-				return "INTEGER"
+				return "INTEGER" // SQLite requires INTEGER PRIMARY KEY AUTOINCREMENT.
 			}
 			return "INTEGER"
 		case "boolean":
@@ -165,49 +202,70 @@ func mapDataType(dialect, genericType string, size int, autoIncrement bool, prim
 	}
 }
 
-func (a AddColumn) ToSQL(dialect, tableName string) (string, []string, error) {
+// ----------------------
+// SQL Generation Methods for Each Operation
+// ----------------------
+
+// AddColumn: Generates SQL for adding a column.
+// Returns the main ALTER TABLE statement plus any additional statements (unique indexes, foreign keys, etc.)
+func (a AddColumn) ToSQL(dialect, tableName string) ([]string, error) {
 	var queries []string
 	var sb strings.Builder
+
 	sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", tableName, a.Name))
 	dataType := mapDataType(dialect, a.Type, a.Size, a.AutoIncrement, a.PrimaryKey)
 	sb.WriteString(dataType)
+
 	if dialect == DialectMySQL && a.AutoIncrement {
 		sb.WriteString(" AUTO_INCREMENT")
 	}
+
 	if dialect == DialectSQLite && a.AutoIncrement && a.PrimaryKey {
+		// In SQLite, auto increment primary key must be defined as INTEGER PRIMARY KEY AUTOINCREMENT.
 		sb.Reset()
 		sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s INTEGER PRIMARY KEY AUTOINCREMENT", tableName, a.Name))
 	}
+
 	if !a.Nullable {
 		sb.WriteString(" NOT NULL")
 	}
+
 	if a.Default != "" {
 		sb.WriteString(fmt.Sprintf(" DEFAULT %s", a.Default))
 	}
+
 	if a.Check != "" {
 		sb.WriteString(fmt.Sprintf(" CHECK (%s)", a.Check))
 	}
+
 	sb.WriteString(";")
-	mainSQL := sb.String()
-	queries = append(queries, mainSQL)
+	queries = append(queries, sb.String())
+
+	// If Unique is true, create a separate unique index.
 	if a.Unique {
 		uniqueSQL := createUniqueIndexSQL(dialect, tableName, a.Name)
 		queries = append(queries, uniqueSQL)
 	}
+
+	// If Index is true, create a normal index.
 	if a.Index {
 		indexSQL := createIndexSQL(dialect, tableName, a.Name)
 		queries = append(queries, indexSQL)
 	}
+
+	// If a ForeignKey is defined, generate its SQL.
 	if a.ForeignKey != nil {
 		fkSQL, err := foreignKeyToSQL(dialect, tableName, a.Name, *a.ForeignKey)
 		if err != nil {
-			return "", nil, err
+			return nil, err
 		}
 		queries = append(queries, fkSQL)
 	}
-	return "", queries, nil
+
+	return queries, nil
 }
 
+// foreignKeyToSQL generates SQL for adding a foreign key constraint.
 func foreignKeyToSQL(dialect, tableName, column string, fk ForeignKey) (string, error) {
 	const constraintPrefix = "fk_"
 	switch dialect {
@@ -238,38 +296,43 @@ func foreignKeyToSQL(dialect, tableName, column string, fk ForeignKey) (string, 
 	}
 }
 
+// createUniqueIndexSQL generates SQL for creating a unique index.
 func createUniqueIndexSQL(dialect, tableName, column string) string {
 	indexName := fmt.Sprintf("uniq_%s_%s", tableName, column)
-	switch dialect {
-	case DialectPostgres, DialectMySQL, DialectSQLite:
-		return fmt.Sprintf("CREATE UNIQUE INDEX %s ON %s (%s);", indexName, tableName, column)
-	default:
-		return ""
-	}
+	return fmt.Sprintf("CREATE UNIQUE INDEX %s ON %s (%s);", indexName, tableName, column)
 }
 
+// createIndexSQL generates SQL for creating a normal index.
 func createIndexSQL(dialect, tableName, column string) string {
 	indexName := fmt.Sprintf("idx_%s_%s", tableName, column)
 	return fmt.Sprintf("CREATE INDEX %s ON %s (%s);", indexName, tableName, column)
 }
 
+// DropColumn: Generates SQL for dropping a column.
 func (d DropColumn) ToSQL(dialect, tableName string) (string, error) {
 	switch dialect {
-	case DialectPostgres, DialectMySQL:
+	case DialectPostgres, DialectMySQL, DialectSQLite:
+		// Note: SQLite does not support DROP COLUMN directly.
+		if dialect == DialectSQLite {
+			return "", errors.New("SQLite does not support DROP COLUMN directly; table recreation is required")
+		}
 		return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s;", tableName, d.Name), nil
-	case DialectSQLite:
-		return "", errors.New("SQLite does not support DROP COLUMN directly; table recreation is required")
 	default:
 		return "", fmt.Errorf("unsupported dialect: %s", dialect)
 	}
 }
 
+// RenameColumn: Generates SQL for renaming a column.
+// For MySQL, the new column type must be provided.
 func (r RenameColumn) ToSQL(dialect, tableName string) (string, error) {
 	switch dialect {
 	case DialectPostgres:
 		return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s;", tableName, r.From, r.To), nil
 	case DialectMySQL:
-		return fmt.Sprintf("ALTER TABLE %s CHANGE %s %s <COLUMN_TYPE>;", tableName, r.From, r.To), nil
+		if r.Type == "" {
+			return "", errors.New("MySQL requires column type for renaming column")
+		}
+		return fmt.Sprintf("ALTER TABLE %s CHANGE %s %s %s;", tableName, r.From, r.To, r.Type), nil
 	case DialectSQLite:
 		return "", errors.New("SQLite does not support RENAME COLUMN directly; table recreation is required")
 	default:
@@ -277,10 +340,12 @@ func (r RenameColumn) ToSQL(dialect, tableName string) (string, error) {
 	}
 }
 
+// DeleteData: Generates SQL for a DELETE statement.
 func (d DeleteData) ToSQL(dialect string) (string, error) {
 	return fmt.Sprintf("DELETE FROM %s WHERE %s;", d.Name, d.Where), nil
 }
 
+// DropEnumType: Generates SQL for dropping an enum type.
 func (d DropEnumType) ToSQL(dialect string) (string, error) {
 	switch dialect {
 	case DialectPostgres:
@@ -295,15 +360,88 @@ func (d DropEnumType) ToSQL(dialect string) (string, error) {
 	}
 }
 
+// DropRowPolicy: Generates SQL for dropping a row-level security policy.
+func (drp DropRowPolicy) ToSQL(dialect string) (string, error) {
+	switch dialect {
+	case DialectPostgres:
+		if drp.IfExists {
+			return fmt.Sprintf("DROP POLICY IF EXISTS %s ON %s;", drp.Name, drp.Table), nil
+		}
+		return fmt.Sprintf("DROP POLICY %s ON %s;", drp.Name, drp.Table), nil
+	case DialectMySQL, DialectSQLite:
+		return "", errors.New("DROP ROW POLICY is not supported in this dialect")
+	default:
+		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+	}
+}
+
+// DropMaterializedView: Generates SQL for dropping a materialized view.
+func (dmv DropMaterializedView) ToSQL(dialect string) (string, error) {
+	switch dialect {
+	case DialectPostgres:
+		if dmv.IfExists {
+			return fmt.Sprintf("DROP MATERIALIZED VIEW IF EXISTS %s;", dmv.Name), nil
+		}
+		return fmt.Sprintf("DROP MATERIALIZED VIEW %s;", dmv.Name), nil
+	case DialectMySQL, DialectSQLite:
+		return "", errors.New("DROP MATERIALIZED VIEW is not supported in this dialect")
+	default:
+		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+	}
+}
+
+// DropTable: Generates SQL for dropping a table.
+func (dt DropTable) ToSQL(dialect string) (string, error) {
+	switch dialect {
+	case DialectPostgres:
+		cascade := ""
+		if dt.Cascade {
+			cascade = " CASCADE"
+		}
+		return fmt.Sprintf("DROP TABLE IF EXISTS %s%s;", dt.Name, cascade), nil
+	case DialectMySQL, DialectSQLite:
+		return fmt.Sprintf("DROP TABLE IF EXISTS %s;", dt.Name), nil
+	default:
+		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+	}
+}
+
+// DropSchema: Generates SQL for dropping a schema.
+func (ds DropSchema) ToSQL(dialect string) (string, error) {
+	switch dialect {
+	case DialectPostgres:
+		exists := ""
+		if ds.IfExists {
+			exists = " IF EXISTS"
+		}
+		cascade := ""
+		if ds.Cascade {
+			cascade = " CASCADE"
+		}
+		return fmt.Sprintf("DROP SCHEMA%s %s%s;", exists, ds.Name, cascade), nil
+	case DialectMySQL, DialectSQLite:
+		return "", errors.New("DROP SCHEMA is not supported in this dialect")
+	default:
+		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+	}
+}
+
+// ----------------------
+// Higher-level SQL Generation Methods
+// ----------------------
+
+// AlterTable: Generates SQL for all AlterTable operations.
 func (at AlterTable) ToSQL(dialect string) ([]string, error) {
 	var queries []string
+	// Process AddColumn statements.
 	for _, addCol := range at.AddColumn {
-		_, addQueries, err := addCol.ToSQL(dialect, at.Name)
+		qList, err := addCol.ToSQL(dialect, at.Name)
 		if err != nil {
 			return nil, err
 		}
-		queries = append(queries, addQueries...)
+		queries = append(queries, qList...)
 	}
+	// Process DropColumn statements.
 	for _, dropCol := range at.DropColumn {
 		q, err := dropCol.ToSQL(dialect, at.Name)
 		if err != nil {
@@ -311,6 +449,7 @@ func (at AlterTable) ToSQL(dialect string) ([]string, error) {
 		}
 		queries = append(queries, q)
 	}
+	// Process RenameColumn statements.
 	for _, renameCol := range at.RenameColumn {
 		q, err := renameCol.ToSQL(dialect, at.Name)
 		if err != nil {
@@ -321,8 +460,10 @@ func (at AlterTable) ToSQL(dialect string) ([]string, error) {
 	return queries, nil
 }
 
+// Operation: Generates SQL for all operations within an Operation.
 func (op Operation) ToSQL(dialect string) ([]string, error) {
 	var queries []string
+	// AlterTable operations.
 	for _, at := range op.AlterTable {
 		qList, err := at.ToSQL(dialect)
 		if err != nil {
@@ -330,6 +471,7 @@ func (op Operation) ToSQL(dialect string) ([]string, error) {
 		}
 		queries = append(queries, qList...)
 	}
+	// DeleteData operations.
 	for _, dd := range op.DeleteData {
 		q, err := dd.ToSQL(dialect)
 		if err != nil {
@@ -337,8 +479,41 @@ func (op Operation) ToSQL(dialect string) ([]string, error) {
 		}
 		queries = append(queries, q)
 	}
+	// DropEnumType operations.
 	for _, de := range op.DropEnumType {
 		q, err := de.ToSQL(dialect)
+		if err != nil {
+			return nil, err
+		}
+		queries = append(queries, q)
+	}
+	// DropRowPolicy operations.
+	for _, drp := range op.DropRowPolicy {
+		q, err := drp.ToSQL(dialect)
+		if err != nil {
+			return nil, err
+		}
+		queries = append(queries, q)
+	}
+	// DropMaterializedView operations.
+	for _, dmv := range op.DropMaterializedView {
+		q, err := dmv.ToSQL(dialect)
+		if err != nil {
+			return nil, err
+		}
+		queries = append(queries, q)
+	}
+	// DropTable operations.
+	for _, dt := range op.DropTable {
+		q, err := dt.ToSQL(dialect)
+		if err != nil {
+			return nil, err
+		}
+		queries = append(queries, q)
+	}
+	// DropSchema operations.
+	for _, ds := range op.DropSchema {
+		q, err := ds.ToSQL(dialect)
 		if err != nil {
 			return nil, err
 		}
@@ -347,6 +522,7 @@ func (op Operation) ToSQL(dialect string) ([]string, error) {
 	return queries, nil
 }
 
+// Migration: Generates SQL for the entire migration (either Up or Down).
 func (m Migration) ToSQL(dialect string, up bool) ([]string, error) {
 	var queries []string
 	var ops []Operation
@@ -365,7 +541,33 @@ func (m Migration) ToSQL(dialect string, up bool) ([]string, error) {
 	return queries, nil
 }
 
+// wrapInTransaction wraps the list of queries in a transaction block.
+func wrapInTransaction(queries []string) []string {
+	txQueries := []string{"BEGIN;"}
+	txQueries = append(txQueries, queries...)
+	txQueries = append(txQueries, "COMMIT;")
+	return txQueries
+}
+
+// createMigrationHistoryTableSQL returns the SQL to create a migration history table.
+func createMigrationHistoryTableSQL(dialect string) (string, error) {
+	switch dialect {
+	case DialectPostgres:
+		return "CREATE TABLE IF NOT EXISTS migrations (id SERIAL PRIMARY KEY, name VARCHAR(255) NOT NULL, version VARCHAR(50) NOT NULL, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);", nil
+	case DialectMySQL:
+		return "CREATE TABLE IF NOT EXISTS migrations (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, version VARCHAR(50) NOT NULL, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);", nil
+	case DialectSQLite:
+		return "CREATE TABLE IF NOT EXISTS migrations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, version TEXT NOT NULL, applied_at DATETIME DEFAULT CURRENT_TIMESTAMP);", nil
+	default:
+		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+	}
+}
+
+// ----------------------
+// Main Function & Example Usage
+// ----------------------
 func main() {
+	// Example input in BCL DSL format.
 	input := []byte(`
 Migration "explicit_operations" {
   Version = "1.0.0-beta"
@@ -382,6 +584,7 @@ Migration "explicit_operations" {
       RenameColumn {
         from = "signup_date"
         to = "created_at"
+        type = "TIMESTAMP" // Required for MySQL; ignored for Postgres
       }
     }
     AlterTable "core.products" {
@@ -392,16 +595,17 @@ Migration "explicit_operations" {
       RenameColumn {
         from = "added_date"
         to = "created_at"
+        type = "DATETIME"
       }
     }
   }
   Down {
     DropRowPolicy "user_access_policy" {
       Table = "core.users"
-      IfExists = true
+      if_exists = true
     }
     DropMaterializedView "core.active_users" {
-      IfExists = true
+      if_exists = true
     }
     AlterTable "core.users" {
       AddColumn "temporary_flag" {
@@ -412,23 +616,24 @@ Migration "explicit_operations" {
       RenameColumn {
         from = "created_at"
         to = "signup_date"
+        type = "TIMESTAMP"
       }
     }
     DeleteData "core.users" {
       Where = "username LIKE 'admin%'"
     }
     DropTable "core.profiles" {
-      Cascade = true
+      cascade = true
     }
     DropTable "core.users" {
-      Cascade = true
+      cascade = true
     }
     DropEnumType "core.user_role" {
       IfExists = true
     }
     DropSchema "core" {
-      Cascade = true
-      IfExists = true
+      cascade = true
+      if_exists = true
     }
   }
   Validate {
@@ -447,31 +652,61 @@ Migration "explicit_operations" {
   }
 }
 `)
+
 	var cfg Config
-	_, err := bcl.Unmarshal(input, &cfg)
-	if err != nil {
+	if _, err := bcl.Unmarshal(input, &cfg); err != nil {
 		panic(err)
 	}
-	dialect := DialectPostgres
+
+	// Choose the target dialect.
+	dialect := DialectPostgres // Change to DialectMySQL or DialectSQLite as needed.
+
+	// Generate migration history table SQL.
+	historySQL, err := createMigrationHistoryTableSQL(dialect)
+	if err != nil {
+		fmt.Println("Error generating migration history table SQL:", err)
+		return
+	}
+	fmt.Println("Migration History Table SQL:")
+	fmt.Println(historySQL)
+	fmt.Println()
+
+	// For each migration in the config, generate both up and down SQL.
 	for _, migration := range cfg.Migrations {
-		sqlQueries, err := migration.ToSQL(dialect, true)
+		// Generate UP migration SQL.
+		upQueries, err := migration.ToSQL(dialect, true)
 		if err != nil {
 			fmt.Println("Error generating SQL for up migration:", err)
 			return
 		}
-		fmt.Println("Generated SQL for migration (up):")
-		for _, query := range sqlQueries {
+		// Wrap in a transaction.
+		upQueries = wrapInTransaction(upQueries)
+		fmt.Printf("Generated SQL for migration (up) - %s:\n", migration.Name)
+		for _, query := range upQueries {
 			fmt.Println(query)
 		}
+		fmt.Println()
+
+		// Generate DOWN migration SQL.
 		downQueries, err := migration.ToSQL(dialect, false)
 		if err != nil {
 			fmt.Println("Error generating SQL for down migration:", err)
 			return
 		}
-		fmt.Println("\nGenerated SQL for migration (down):")
+		// Wrap in a transaction.
+		downQueries = wrapInTransaction(downQueries)
+		fmt.Printf("Generated SQL for migration (down) - %s:\n", migration.Name)
 		for _, query := range downQueries {
 			fmt.Println(query)
 		}
+		fmt.Println()
 	}
 
+	// In a production system, you would now execute these queries against your database,
+	// track migration history, and provide a robust CLI for applying/rolling back migrations.
+	// Also, comprehensive logging and error handling would be implemented.
+	// This code serves as a complete foundation for a generic migration system.
+
+	// Sleep for a moment so the output is visible when running interactively.
+	time.Sleep(100 * time.Millisecond)
 }
