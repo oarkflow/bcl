@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -8,7 +9,7 @@ import (
 	"github.com/oarkflow/bcl"
 )
 
-type MigrationConfig struct {
+type Migration struct {
 	Name        string
 	Version     string
 	Description string
@@ -19,7 +20,7 @@ type MigrationConfig struct {
 }
 
 type MigrationStep struct {
-	Operations []interface{}
+	Operations []any
 }
 
 type Validation struct {
@@ -167,65 +168,6 @@ Migration "explicit_operations" {
   Description = "Migration with explicit operation labeling"
 
   Up {
-
-    CreateSchema "core" {
-      Comment = "Main application schema"
-    }
-
-
-    CreateEnumType "core.user_role" {
-      Values = ["admin", "editor", "guest"]
-    }
-
-
-    CreateTable "core.users" {
-      Columns = {
-        id = {
-          type = "uuid",
-          primary_key = true,
-          default = "gen_uuid()"
-        }
-        username = {
-          type = "string",
-          size = 75,
-          unique = true,
-          nullable = false
-        }
-        role = {
-          type = "core.user_role",
-          default = "guest"
-        }
-        created_at = {
-          type = "timestamp",
-          default = "now()"
-        }
-      }
-
-      CreateIndex "idx_active_users" {
-        columns = ["username", "created_at"]
-        where = "deleted_at IS NULL"
-      }
-    }
-
-    CreateTable "core.profiles" {
-      Columns = {
-        id = {
-          type = "uuid",
-          primary_key = true
-        }
-        user_id = {
-          type = "uuid",
-          references = "core.users(id)",
-          unique = true
-        }
-        bio = {
-          type = "text",
-          nullable = true
-        }
-      }
-    }
-
-
     AlterTable "core.users" {
       AddColumn "email" {
         type = "string"
@@ -242,29 +184,16 @@ Migration "explicit_operations" {
     }
 
 
-    InsertData "core.users" {
-      Columns = ["username", "role", "email"]
-      Values = [
-        ["admin1", "admin", "admin@example.com"],
-        ["reviewer1", "editor", "review@org"]
-      ]
-      OnConflict = {
-        constraint = "username_unique"
-        do = "NOTHING"
+    AlterTable "core.products" {
+      AddColumn "sku" {
+        type = "number"
+        size = 255
       }
-    }
 
-
-    CreateMaterializedView "core.active_users" {
-      Query = "SELECT * FROM core.users WHERE last_login > NOW() - INTERVAL '90 days'"
-      Refresh = "CONCURRENTLY"
-    }
-
-
-    CreateRowPolicy "user_access_policy" {
-      Table = "core.users"
-      Select = "role IN ('admin', 'editor')"
-      Using = "active = true"
+      RenameColumn {
+        from = "added_date"
+        to = "created_at"
+      }
     }
   }
 
@@ -335,13 +264,25 @@ Migration "explicit_operations" {
 }
 	`
 
-	var cfg MigrationConfig
+	var cfg map[string]any
 	_, err := bcl.Unmarshal([]byte(input), &cfg)
 	if err != nil {
 		panic(err)
 	}
+	bt, err := json.Marshal(cfg)
+	if err != nil {
+		panic(err)
+	}
 	fmt.Println("Unmarshalled Config:")
-	fmt.Printf("%+v\n\n", cfg)
+	fmt.Printf("%+v\n\n", string(bt))
+
+	// var cfg1 map[string]any
+	// _, err = bcl.Unmarshal([]byte(input), &cfg1)
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// fmt.Println("Unmarshalled Config:")
+	// fmt.Printf("%+v\n\n", cfg1)
 
 	// str := bcl.MarshalAST(nodes)
 	// fmt.Println("Marshaled AST:")

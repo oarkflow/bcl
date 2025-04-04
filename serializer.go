@@ -100,7 +100,94 @@ func Unmarshal(data []byte, v any) ([]Node, error) {
 	if err != nil {
 		return nodes, err
 	}
+	cleanStructure(intermediate)
 	return nodes, convertMap(intermediate, v)
+}
+
+func cleanStructure(data any) {
+	switch t := data.(type) {
+	case map[string]any:
+		for _, v := range t {
+			cleanStructure(v)
+		}
+		type blockInfo struct {
+			typeName string
+			props    map[string]any
+		}
+		var blocks []blockInfo
+		var keysToDelete []string
+		for k, v := range t {
+			if m, ok := v.(map[string]any); ok {
+				if typeName, exists := m["__type"].(string); exists {
+					label, _ := m["__label"].(string)
+					props := make(map[string]any)
+					props["name"] = label
+					if propsMap, ok := m["props"].(map[string]any); ok {
+						for pk, pv := range propsMap {
+							props[pk] = pv
+						}
+					}
+					for pk, pv := range m {
+						if pk == "__type" || pk == "__label" || pk == "props" {
+							continue
+						}
+						props[pk] = pv
+					}
+
+					blocks = append(blocks, blockInfo{typeName, props})
+					keysToDelete = append(keysToDelete, k)
+				}
+			}
+		}
+
+		// Remove original block keys
+		for _, k := range keysToDelete {
+			delete(t, k)
+		}
+
+		// Reinsert blocks under their type keys, checking for duplicates
+		for _, block := range blocks {
+			existing := t[block.typeName]
+			switch val := existing.(type) {
+			case nil:
+				// New entry
+				t[block.typeName] = block.props
+			case map[string]any:
+				// Check if existing has the same name
+				if val["name"] == block.props["name"] {
+					// Merge or replace (here we replace for simplicity)
+					t[block.typeName] = block.props
+				} else {
+					// Convert to slice
+					t[block.typeName] = []any{val, block.props}
+				}
+			case []any:
+				// Check if any element has the same name
+				found := -1
+				for i, item := range val {
+					if m, ok := item.(map[string]any); ok && m["name"] == block.props["name"] {
+						found = i
+						break
+					}
+				}
+				if found >= 0 {
+					// Replace existing entry
+					val[found] = block.props
+					t[block.typeName] = val
+				} else {
+					t[block.typeName] = append(val, block.props)
+				}
+			default:
+				t[block.typeName] = block.props
+			}
+		}
+
+	case []any:
+		// Process slice elements recursively
+		for i := range t {
+			cleanStructure(t[i])
+		}
+	}
 }
 
 func Marshal(v any) (string, error) {
