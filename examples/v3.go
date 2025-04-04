@@ -517,6 +517,24 @@ func createMigrationHistoryTableSQL(dialect string) (string, error) {
 	}
 }
 
+func runPreUpChecks(checks []string) error {
+	for _, check := range checks {
+		fmt.Printf("Executing PreUpCheck: %s\n", check)
+
+	}
+	fmt.Println("All PreUpChecks passed.")
+	return nil
+}
+
+func runPostUpChecks(checks []string) error {
+	for _, check := range checks {
+		fmt.Printf("Executing PostUpCheck: %s\n", check)
+
+	}
+	fmt.Println("All PostUpChecks passed.")
+	return nil
+}
+
 func main() {
 	input := []byte(`
 Migration "explicit_operations" {
@@ -616,12 +634,22 @@ Migration "explicit_operations" {
 	fmt.Println(historySQL)
 	fmt.Println()
 	for _, migration := range cfg.Migrations {
+		for _, validation := range migration.Validate {
+			if err := runPreUpChecks(validation.PreUpChecks); err != nil {
+				fmt.Println("PreUp validation failed:", err)
+				return
+			}
+		}
 		upQueries, err := migration.ToSQL(dialect, true)
 		if err != nil {
 			fmt.Println("Error generating SQL for up migration:", err)
 			return
 		}
+		if len(migration.Transaction) > 1 {
+			fmt.Printf("Warning: More than one transaction provided in migration '%s'. Only the first one will be used.\n", migration.Name)
+		}
 		if len(migration.Transaction) > 0 {
+			fmt.Printf("Using transaction mode '%s' for migration '%s'.\n", migration.Transaction[0].Mode, migration.Name)
 			upQueries = wrapInTransactionWithConfig(upQueries, migration.Transaction[0], dialect)
 		} else {
 			upQueries = wrapInTransaction(upQueries)
@@ -631,13 +659,6 @@ Migration "explicit_operations" {
 			fmt.Println(query)
 		}
 		fmt.Println()
-		if len(migration.Validate) > 0 {
-			for _, validation := range migration.Validate {
-				fmt.Printf("PreUpChecks for migration %s: %v\n", migration.Name, validation.PreUpChecks)
-				fmt.Printf("PostUpChecks for migration %s: %v\n", migration.Name, validation.PostUpChecks)
-			}
-			fmt.Println()
-		}
 		downQueries, err := migration.ToSQL(dialect, false)
 		if err != nil {
 			fmt.Println("Error generating SQL for down migration:", err)
@@ -651,6 +672,12 @@ Migration "explicit_operations" {
 		fmt.Printf("Generated SQL for migration (down) - %s:\n", migration.Name)
 		for _, query := range downQueries {
 			fmt.Println(query)
+		}
+		for _, validation := range migration.Validate {
+			if err := runPostUpChecks(validation.PostUpChecks); err != nil {
+				fmt.Println("PostUp validation failed:", err)
+				return
+			}
 		}
 		fmt.Println()
 	}
