@@ -28,6 +28,7 @@ type Migration struct {
 type Operation struct {
 	Name                 string                 `json:"name"`
 	AlterTable           []AlterTable           `json:"AlterTable"`
+	CreateTable          []CreateTable          `json:"CreateTable"`
 	DeleteData           []DeleteData           `json:"DeleteData"`
 	DropEnumType         []DropEnumType         `json:"DropEnumType"`
 	DropRowPolicy        []DropRowPolicy        `json:"DropRowPolicy,omitempty"`
@@ -41,6 +42,45 @@ type AlterTable struct {
 	AddColumn    []AddColumn    `json:"AddColumn"`
 	DropColumn   []DropColumn   `json:"DropColumn"`
 	RenameColumn []RenameColumn `json:"RenameColumn"`
+}
+
+type CreateTable struct {
+	Name       string      `json:"name"`
+	Columns    []AddColumn `json:"Column"`
+	PrimaryKey []string    `json:"PrimaryKey,omitempty"`
+}
+
+func (ct CreateTable) ToSQL(dialect string, up bool) (string, error) {
+	if up {
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("CREATE TABLE %s (", ct.Name))
+		var cols []string
+		for _, col := range ct.Columns {
+			colDef := fmt.Sprintf("%s %s", col.Name, mapDataType(dialect, col.Type, col.Size, col.AutoIncrement, col.PrimaryKey))
+			if !col.Nullable {
+				colDef += " NOT NULL"
+			}
+			if col.Default != "" {
+				defaultVal := col.Default
+				if strings.ToLower(col.Type) == "string" && !(strings.HasPrefix(col.Default, "'") && strings.HasSuffix(col.Default, "'")) {
+					defaultVal = fmt.Sprintf("'%s'", col.Default)
+				}
+				colDef += fmt.Sprintf(" DEFAULT %s", defaultVal)
+			}
+			if col.Check != "" {
+				colDef += fmt.Sprintf(" CHECK (%s)", col.Check)
+			}
+			cols = append(cols, colDef)
+		}
+		if len(ct.PrimaryKey) > 0 {
+			cols = append(cols, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(ct.PrimaryKey, ", ")))
+		}
+		sb.WriteString(strings.Join(cols, ", "))
+		sb.WriteString(");")
+		return sb.String(), nil
+	} else {
+		return fmt.Sprintf("DROP TABLE IF EXISTS %s;", ct.Name), nil
+	}
 }
 
 type AddColumn struct {
@@ -413,6 +453,13 @@ func (at AlterTable) ToSQL(dialect string) ([]string, error) {
 
 func (op Operation) ToSQL(dialect string) ([]string, error) {
 	var queries []string
+	for _, ct := range op.CreateTable {
+		q, err := ct.ToSQL(dialect, true)
+		if err != nil {
+			return nil, err
+		}
+		queries = append(queries, q)
+	}
 	for _, at := range op.AlterTable {
 		qList, err := at.ToSQL(dialect)
 		if err != nil {
@@ -556,10 +603,9 @@ Migration "explicit_operations" {
       RenameColumn {
         from = "signup_date"
         to = "created_at"
-        type = "TIMESTAMP"
       }
     }
-    AlterTable "core.products" {
+	AlterTable "core.products" {
       AddColumn "sku" {
         type = "number"
         size = 255
@@ -567,17 +613,23 @@ Migration "explicit_operations" {
       RenameColumn {
         from = "added_date"
         to = "created_at"
-        type = "DATETIME"
+      }
+    }
+    CreateTable "core.categories" {
+      Column "email" {
+        type = "string"
+        size = 255
+        unique = true
       }
     }
   }
   Down {
     DropRowPolicy "user_access_policy" {
       Table = "core.users"
-      if_exists = true
+      IfExists = true
     }
     DropMaterializedView "core.active_users" {
-      if_exists = true
+      IfExists = true
     }
     AlterTable "core.users" {
       AddColumn "temporary_flag" {
@@ -588,39 +640,24 @@ Migration "explicit_operations" {
       RenameColumn {
         from = "created_at"
         to = "signup_date"
-        type = "TIMESTAMP"
       }
     }
     DeleteData "core.users" {
       Where = "username LIKE 'admin%'"
     }
     DropTable "core.profiles" {
-      cascade = true
+      Cascade = true
     }
     DropTable "core.users" {
-      cascade = true
+      Cascade = true
     }
     DropEnumType "core.user_role" {
       IfExists = true
     }
     DropSchema "core" {
-      cascade = true
-      if_exists = true
+      Cascade = true
+      IfExists = true
     }
-  }
-  Validate {
-    PreUpChecks = [
-      "schema_not_exists('core')",
-      "table_empty('legacy.users')"
-    ]
-    PostUpChecks = [
-      "index_exists('core.idx_active_users')",
-      "fk_exists('core.profiles_user_id_fkey')"
-    ]
-  }
-  Transaction {
-    Mode = "atomic"
-    IsolationLevel = "read_committed"
   }
 }
 `)
@@ -668,7 +705,6 @@ Migration "explicit_operations" {
 			fmt.Println("Error generating SQL for down migration:", err)
 			return
 		}
-		// Enhancement: warn if no down migration query is generated.
 		if len(downQueries) == 0 {
 			fmt.Printf("Warning: No down migration queries generated for migration '%s'.\n", migration.Name)
 		}
