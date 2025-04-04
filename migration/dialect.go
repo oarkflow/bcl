@@ -31,13 +31,20 @@ type Dialect interface {
 // ---------------------
 type PostgresDialect struct{}
 
+// Add helper methods for quoting identifiers.
+func (p *PostgresDialect) quoteIdentifier(id string) string {
+	return fmt.Sprintf("\"%s\"", id)
+}
+
 func (p *PostgresDialect) CreateTableSQL(ct CreateTable, up bool) (string, error) {
 	if up {
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("CREATE TABLE %s (", ct.Name))
+		// Updated: quote table name.
+		sb.WriteString(fmt.Sprintf("CREATE TABLE %s (", p.quoteIdentifier(ct.Name)))
 		var cols []string
 		for _, col := range ct.Columns {
-			colDef := fmt.Sprintf("%s %s", col.Name, p.MapDataType(col.Type, col.Size, col.AutoIncrement, col.PrimaryKey))
+			// Updated: quote column name.
+			colDef := fmt.Sprintf("%s %s", p.quoteIdentifier(col.Name), p.MapDataType(col.Type, col.Size, col.AutoIncrement, col.PrimaryKey))
 			if !col.Nullable {
 				colDef += " NOT NULL"
 			}
@@ -54,42 +61,49 @@ func (p *PostgresDialect) CreateTableSQL(ct CreateTable, up bool) (string, error
 			cols = append(cols, colDef)
 		}
 		if len(ct.PrimaryKey) > 0 {
-			cols = append(cols, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(ct.PrimaryKey, ", ")))
+			// Updated: quote each primary key column.
+			var pkCols []string
+			for _, col := range ct.PrimaryKey {
+				pkCols = append(pkCols, p.quoteIdentifier(col))
+			}
+			cols = append(cols, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(pkCols, ", ")))
 		}
 		sb.WriteString(strings.Join(cols, ", "))
 		sb.WriteString(");")
 		return sb.String(), nil
 	}
-	return fmt.Sprintf("DROP TABLE IF EXISTS %s;", ct.Name), nil
+	// Updated: quote table name.
+	return fmt.Sprintf("DROP TABLE IF EXISTS %s;", p.quoteIdentifier(ct.Name)), nil
 }
 
 func (p *PostgresDialect) RenameTableSQL(rt RenameTable) (string, error) {
-	return fmt.Sprintf("ALTER TABLE %s RENAME TO %s;", rt.OldName, rt.NewName), nil
+	// Updated: quote table names.
+	return fmt.Sprintf("ALTER TABLE %s RENAME TO %s;", p.quoteIdentifier(rt.OldName), p.quoteIdentifier(rt.NewName)), nil
 }
 
 func (p *PostgresDialect) DeleteDataSQL(dd DeleteData) (string, error) {
-	return fmt.Sprintf("DELETE FROM %s WHERE %s;", dd.Name, dd.Where), nil
+	return fmt.Sprintf("DELETE FROM %s WHERE %s;", p.quoteIdentifier(dd.Name), dd.Where), nil
 }
 
 func (p *PostgresDialect) DropEnumTypeSQL(de DropEnumType) (string, error) {
 	if de.IfExists {
-		return fmt.Sprintf("DROP TYPE IF EXISTS %s;", de.Name), nil
+		return fmt.Sprintf("DROP TYPE IF EXISTS %s;", p.quoteIdentifier(de.Name)), nil
 	}
-	return fmt.Sprintf("DROP TYPE %s;", de.Name), nil
+	return fmt.Sprintf("DROP TYPE %s;", p.quoteIdentifier(de.Name)), nil
 }
 
 func (p *PostgresDialect) DropRowPolicySQL(drp DropRowPolicy) (string, error) {
 	if drp.IfExists {
-		return fmt.Sprintf("DROP POLICY IF EXISTS %s ON %s;", drp.Name, drp.Table), nil
+		return fmt.Sprintf("DROP POLICY IF EXISTS %s ON %s;", drp.Name, p.quoteIdentifier(drp.Table)), nil
 	}
-	return fmt.Sprintf("DROP POLICY %s ON %s;", drp.Name, drp.Table), nil
+	return fmt.Sprintf("DROP POLICY %s ON %s;", drp.Name, p.quoteIdentifier(drp.Table)), nil
 }
 
 func (p *PostgresDialect) DropMaterializedViewSQL(dmv DropMaterializedView) (string, error) {
 	if dmv.IfExists {
-		return fmt.Sprintf("DROP MATERIALIZED VIEW IF EXISTS %s;", dmv.Name), nil
+		return fmt.Sprintf("DROP MATERIALIZED VIEW IF EXISTS %s;", p.quoteIdentifier(dmv.Name)), nil
 	}
-	return fmt.Sprintf("DROP MATERIALIZED VIEW %s;", dmv.Name), nil
+	return fmt.Sprintf("DROP MATERIALIZED VIEW %s;", p.quoteIdentifier(dmv.Name)), nil
 }
 
 func (p *PostgresDialect) DropTableSQL(dt DropTable) (string, error) {
@@ -97,7 +111,7 @@ func (p *PostgresDialect) DropTableSQL(dt DropTable) (string, error) {
 	if dt.Cascade {
 		cascade = " CASCADE"
 	}
-	return fmt.Sprintf("DROP TABLE IF EXISTS %s%s;", dt.Name, cascade), nil
+	return fmt.Sprintf("DROP TABLE IF EXISTS %s%s;", p.quoteIdentifier(dt.Name), cascade), nil
 }
 
 func (p *PostgresDialect) DropSchemaSQL(ds DropSchema) (string, error) {
@@ -109,13 +123,14 @@ func (p *PostgresDialect) DropSchemaSQL(ds DropSchema) (string, error) {
 	if ds.Cascade {
 		cascade = " CASCADE"
 	}
-	return fmt.Sprintf("DROP SCHEMA%s %s%s;", exists, ds.Name, cascade), nil
+	return fmt.Sprintf("DROP SCHEMA%s %s%s;", exists, p.quoteIdentifier(ds.Name), cascade), nil
 }
 
 func (p *PostgresDialect) AddColumnSQL(ac AddColumn, tableName string) ([]string, error) {
 	var queries []string
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", tableName, ac.Name))
+	// Updated: quote table and column names.
+	sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", p.quoteIdentifier(tableName), p.quoteIdentifier(ac.Name)))
 	sb.WriteString(p.MapDataType(ac.Type, ac.Size, ac.AutoIncrement, ac.PrimaryKey))
 	if !ac.Nullable {
 		sb.WriteString(" NOT NULL")
@@ -153,11 +168,11 @@ func (p *PostgresDialect) AddColumnSQL(ac AddColumn, tableName string) ([]string
 }
 
 func (p *PostgresDialect) DropColumnSQL(dc DropColumn, tableName string) (string, error) {
-	return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s;", tableName, dc.Name), nil
+	return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s;", p.quoteIdentifier(tableName), p.quoteIdentifier(dc.Name)), nil
 }
 
 func (p *PostgresDialect) RenameColumnSQL(rc RenameColumn, tableName string) (string, error) {
-	return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s;", tableName, rc.From, rc.To), nil
+	return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s;", p.quoteIdentifier(tableName), p.quoteIdentifier(rc.From), p.quoteIdentifier(rc.To)), nil
 }
 
 func (p *PostgresDialect) MapDataType(genericType string, size int, autoIncrement, primaryKey bool) string {
@@ -210,13 +225,18 @@ func (p *PostgresDialect) WrapInTransactionWithConfig(queries []string, trans Tr
 // ---------------------
 type MySQLDialect struct{}
 
+// Add helper methods for quoting identifiers.
+func (m *MySQLDialect) quoteIdentifier(id string) string {
+	return fmt.Sprintf("`%s`", id)
+}
+
 func (m *MySQLDialect) CreateTableSQL(ct CreateTable, up bool) (string, error) {
 	if up {
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("CREATE TABLE %s (", ct.Name))
+		sb.WriteString(fmt.Sprintf("CREATE TABLE %s (", m.quoteIdentifier(ct.Name)))
 		var cols []string
 		for _, col := range ct.Columns {
-			colDef := fmt.Sprintf("%s %s", col.Name, m.MapDataType(col.Type, col.Size, col.AutoIncrement, col.PrimaryKey))
+			colDef := fmt.Sprintf("%s %s", m.quoteIdentifier(col.Name), m.MapDataType(col.Type, col.Size, col.AutoIncrement, col.PrimaryKey))
 			if !col.Nullable {
 				colDef += " NOT NULL"
 			}
@@ -233,21 +253,25 @@ func (m *MySQLDialect) CreateTableSQL(ct CreateTable, up bool) (string, error) {
 			cols = append(cols, colDef)
 		}
 		if len(ct.PrimaryKey) > 0 {
-			cols = append(cols, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(ct.PrimaryKey, ", ")))
+			var pkCols []string
+			for _, col := range ct.PrimaryKey {
+				pkCols = append(pkCols, m.quoteIdentifier(col))
+			}
+			cols = append(cols, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(pkCols, ", ")))
 		}
 		sb.WriteString(strings.Join(cols, ", "))
 		sb.WriteString(");")
 		return sb.String(), nil
 	}
-	return fmt.Sprintf("DROP TABLE IF EXISTS %s;", ct.Name), nil
+	return fmt.Sprintf("DROP TABLE IF EXISTS %s;", m.quoteIdentifier(ct.Name)), nil
 }
 
 func (m *MySQLDialect) RenameTableSQL(rt RenameTable) (string, error) {
-	return fmt.Sprintf("RENAME TABLE %s TO %s;", rt.OldName, rt.NewName), nil
+	return fmt.Sprintf("RENAME TABLE %s TO %s;", m.quoteIdentifier(rt.OldName), m.quoteIdentifier(rt.NewName)), nil
 }
 
 func (m *MySQLDialect) DeleteDataSQL(dd DeleteData) (string, error) {
-	return fmt.Sprintf("DELETE FROM %s WHERE %s;", dd.Name, dd.Where), nil
+	return fmt.Sprintf("DELETE FROM %s WHERE %s;", m.quoteIdentifier(dd.Name), dd.Where), nil
 }
 
 func (m *MySQLDialect) DropEnumTypeSQL(de DropEnumType) (string, error) {
@@ -263,7 +287,7 @@ func (m *MySQLDialect) DropMaterializedViewSQL(dmv DropMaterializedView) (string
 }
 
 func (m *MySQLDialect) DropTableSQL(dt DropTable) (string, error) {
-	return fmt.Sprintf("DROP TABLE IF EXISTS %s;", dt.Name), nil
+	return fmt.Sprintf("DROP TABLE IF EXISTS %s;", m.quoteIdentifier(dt.Name)), nil
 }
 
 func (m *MySQLDialect) DropSchemaSQL(ds DropSchema) (string, error) {
@@ -273,7 +297,8 @@ func (m *MySQLDialect) DropSchemaSQL(ds DropSchema) (string, error) {
 func (m *MySQLDialect) AddColumnSQL(ac AddColumn, tableName string) ([]string, error) {
 	var queries []string
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", tableName, ac.Name))
+	// Updated: quote table and column names.
+	sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", m.quoteIdentifier(tableName), m.quoteIdentifier(ac.Name)))
 	sb.WriteString(m.MapDataType(ac.Type, ac.Size, ac.AutoIncrement, ac.PrimaryKey))
 	if ac.AutoIncrement {
 		sb.WriteString(" AUTO_INCREMENT")
@@ -314,14 +339,14 @@ func (m *MySQLDialect) AddColumnSQL(ac AddColumn, tableName string) ([]string, e
 }
 
 func (m *MySQLDialect) DropColumnSQL(dc DropColumn, tableName string) (string, error) {
-	return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s;", tableName, dc.Name), nil
+	return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s;", m.quoteIdentifier(tableName), m.quoteIdentifier(dc.Name)), nil
 }
 
 func (m *MySQLDialect) RenameColumnSQL(rc RenameColumn, tableName string) (string, error) {
 	if rc.Type == "" {
 		return "", errors.New("MySQL requires column type for renaming column")
 	}
-	return fmt.Sprintf("ALTER TABLE %s CHANGE %s %s %s;", tableName, rc.From, rc.To, rc.Type), nil
+	return fmt.Sprintf("ALTER TABLE %s CHANGE %s %s %s;", m.quoteIdentifier(tableName), m.quoteIdentifier(rc.From), m.quoteIdentifier(rc.To), rc.Type), nil
 }
 
 func (m *MySQLDialect) MapDataType(genericType string, size int, autoIncrement, primaryKey bool) string {
@@ -370,13 +395,18 @@ func (m *MySQLDialect) WrapInTransactionWithConfig(queries []string, trans Trans
 // ---------------------
 type SQLiteDialect struct{}
 
+// Add helper methods for quoting identifiers.
+func (s *SQLiteDialect) quoteIdentifier(id string) string {
+	return fmt.Sprintf("\"%s\"", id)
+}
+
 func (s *SQLiteDialect) CreateTableSQL(ct CreateTable, up bool) (string, error) {
 	if up {
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("CREATE TABLE %s (", ct.Name))
+		sb.WriteString(fmt.Sprintf("CREATE TABLE %s (", s.quoteIdentifier(ct.Name)))
 		var cols []string
 		for _, col := range ct.Columns {
-			colDef := fmt.Sprintf("%s %s", col.Name, s.MapDataType(col.Type, col.Size, col.AutoIncrement, col.PrimaryKey))
+			colDef := fmt.Sprintf("%s %s", s.quoteIdentifier(col.Name), s.MapDataType(col.Type, col.Size, col.AutoIncrement, col.PrimaryKey))
 			if !col.Nullable {
 				colDef += " NOT NULL"
 			}
@@ -393,22 +423,25 @@ func (s *SQLiteDialect) CreateTableSQL(ct CreateTable, up bool) (string, error) 
 			cols = append(cols, colDef)
 		}
 		if len(ct.PrimaryKey) > 0 {
-			cols = append(cols, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(ct.PrimaryKey, ", ")))
+			var pkCols []string
+			for _, col := range ct.PrimaryKey {
+				pkCols = append(pkCols, s.quoteIdentifier(col))
+			}
+			cols = append(cols, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(pkCols, ", ")))
 		}
 		sb.WriteString(strings.Join(cols, ", "))
 		sb.WriteString(");")
 		return sb.String(), nil
 	}
-	return fmt.Sprintf("DROP TABLE IF EXISTS %s;", ct.Name), nil
+	return fmt.Sprintf("DROP TABLE IF EXISTS %s;", s.quoteIdentifier(ct.Name)), nil
 }
 
 func (s *SQLiteDialect) RenameTableSQL(rt RenameTable) (string, error) {
-	// SQLite uses ALTER TABLE ... RENAME TO ...
-	return fmt.Sprintf("ALTER TABLE %s RENAME TO %s;", rt.OldName, rt.NewName), nil
+	return fmt.Sprintf("ALTER TABLE %s RENAME TO %s;", s.quoteIdentifier(rt.OldName), s.quoteIdentifier(rt.NewName)), nil
 }
 
 func (s *SQLiteDialect) DeleteDataSQL(dd DeleteData) (string, error) {
-	return fmt.Sprintf("DELETE FROM %s WHERE %s;", dd.Name, dd.Where), nil
+	return fmt.Sprintf("DELETE FROM %s WHERE %s;", s.quoteIdentifier(dd.Name), dd.Where), nil
 }
 
 func (s *SQLiteDialect) DropEnumTypeSQL(de DropEnumType) (string, error) {
@@ -424,7 +457,7 @@ func (s *SQLiteDialect) DropMaterializedViewSQL(dmv DropMaterializedView) (strin
 }
 
 func (s *SQLiteDialect) DropTableSQL(dt DropTable) (string, error) {
-	return fmt.Sprintf("DROP TABLE IF EXISTS %s;", dt.Name), nil
+	return fmt.Sprintf("DROP TABLE IF EXISTS %s;", s.quoteIdentifier(dt.Name)), nil
 }
 
 func (s *SQLiteDialect) DropSchemaSQL(ds DropSchema) (string, error) {
@@ -432,10 +465,10 @@ func (s *SQLiteDialect) DropSchemaSQL(ds DropSchema) (string, error) {
 }
 
 func (s *SQLiteDialect) AddColumnSQL(ac AddColumn, tableName string) ([]string, error) {
-	// For SQLite, ADD COLUMN is more limited; foreign keys must be defined at table creation.
 	var queries []string
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", tableName, ac.Name))
+	// Updated: quote table and column names.
+	sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", s.quoteIdentifier(tableName), s.quoteIdentifier(ac.Name)))
 	sb.WriteString(s.MapDataType(ac.Type, ac.Size, ac.AutoIncrement, ac.PrimaryKey))
 	if !ac.Nullable {
 		sb.WriteString(" NOT NULL")
@@ -525,15 +558,15 @@ func (s *SQLiteDialect) RecreateTableForAlter(tableName string, newSchema Create
 	}
 	queries := []string{
 		"PRAGMA foreign_keys=off;",
-		fmt.Sprintf("ALTER TABLE %s RENAME TO %s_backup;", tableName, tableName),
+		fmt.Sprintf("ALTER TABLE %s RENAME TO %s_backup;", s.quoteIdentifier(tableName), s.quoteIdentifier(tableName)),
 	}
 	ctSQL, err := newSchema.ToSQL(DialectSQLite, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate new schema for table %s: %w", tableName, err)
 	}
 	queries = append(queries, ctSQL)
-	queries = append(queries, fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s_backup;", tableName, strings.Join(newCols, ", "), strings.Join(selectCols, ", "), tableName))
-	queries = append(queries, fmt.Sprintf("DROP TABLE %s_backup;", tableName))
+	queries = append(queries, fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s_backup;", s.quoteIdentifier(tableName), strings.Join(newCols, ", "), strings.Join(selectCols, ", "), s.quoteIdentifier(tableName)))
+	queries = append(queries, fmt.Sprintf("DROP TABLE %s_backup;", s.quoteIdentifier(tableName)))
 	queries = append(queries, "PRAGMA foreign_keys=on;")
 	return queries, nil
 }

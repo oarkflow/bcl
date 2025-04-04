@@ -34,10 +34,10 @@ type Migration struct {
 
 type Operation struct {
 	Name                 string                 `json:"name"`
-	AlterTable           []AlterTable           `json:"AlterTable"`
-	CreateTable          []CreateTable          `json:"CreateTable"`
-	DeleteData           []DeleteData           `json:"DeleteData"`
-	DropEnumType         []DropEnumType         `json:"DropEnumType"`
+	AlterTable           []AlterTable           `json:"AlterTable,omitempty"`
+	CreateTable          []CreateTable          `json:"CreateTable,omitempty"`
+	DeleteData           []DeleteData           `json:"DeleteData,omitempty"`
+	DropEnumType         []DropEnumType         `json:"DropEnumType,omitempty"`
 	DropRowPolicy        []DropRowPolicy        `json:"DropRowPolicy,omitempty"`
 	DropMaterializedView []DropMaterializedView `json:"DropMaterializedView,omitempty"`
 	DropTable            []DropTable            `json:"DropTable,omitempty"`

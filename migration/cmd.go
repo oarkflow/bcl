@@ -12,9 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oarkflow/cli/contracts"
-
 	"github.com/oarkflow/bcl"
+	"github.com/oarkflow/cli/contracts"
 )
 
 type Driver interface {
@@ -141,13 +140,13 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
   Version = "1.0.0"
   Description = "New migration"
   Up {
-  
+
   }
   Down {
-  
+
   }
 }`, name)
-	if err := ioutil.WriteFile(filename, []byte(template), 0644); err != nil {
+	if err := os.WriteFile(filename, []byte(template), 0644); err != nil {
 		return fmt.Errorf("failed to create migration file: %w", err)
 	}
 	log.Printf("Migration file created: %s", filename)
@@ -197,20 +196,114 @@ func (c *MigrateCommand) Extend() contracts.Extend {
 	return c.extend
 }
 
+func acquireLock() error {
+	if _, err := os.Stat(lockFileName); err == nil {
+		return fmt.Errorf("migration lock already acquired")
+	}
+	f, err := os.Create(lockFileName)
+	if err != nil {
+		return fmt.Errorf("failed to create lock file: %w", err)
+	}
+	f.Close()
+	return nil
+}
+
+func releaseLock() error {
+	if err := os.Remove(lockFileName); err != nil {
+		return fmt.Errorf("failed to remove lock file: %w", err)
+	}
+	return nil
+}
+
+func runPreUpChecks(checks []string) error {
+	for _, check := range checks {
+		log.Printf("Executing PreUpCheck: %s", check)
+		// Simulate check execution: if check contains "fail", then return an error.
+		if strings.Contains(strings.ToLower(check), "fail") {
+			return fmt.Errorf("PreUp check failed: %s", check)
+		}
+	}
+	log.Println("All PreUpChecks passed.")
+	return nil
+}
+
+func runPostUpChecks(checks []string) error {
+	for _, check := range checks {
+		log.Printf("Executing PostUpCheck: %s", check)
+		// Simulate check execution: if check contains "fail", then return an error.
+		if strings.Contains(strings.ToLower(check), "fail") {
+			return fmt.Errorf("PostUp check failed: %s", check)
+		}
+	}
+	log.Println("All PostUpChecks passed.")
+	return nil
+}
+
 func (c *MigrateCommand) Handle(ctx contracts.Context) error {
+	// Acquire migration lock.
+	if err := acquireLock(); err != nil {
+		return fmt.Errorf("cannot start migration: %w", err)
+	}
+	defer func() {
+		if err := releaseLock(); err != nil {
+			log.Printf("Warning releasing lock: %v", err)
+		}
+	}()
+
+	// Validate currently applied migrations.
 	if err := c.Driver.ValidateMigrations(); err != nil {
 		log.Printf("Validation warning: %v", err)
 	}
-	files, err := ioutil.ReadDir("migrations")
+
+	files, err := os.ReadDir("migrations")
 	if err != nil {
 		return fmt.Errorf("failed to read migration directory: %w", err)
 	}
+
+	// Iterate migration files.
 	for _, file := range files {
-		if !file.IsDir() && strings.HasSuffix(file.Name(), ".bcl") {
-			name := strings.TrimSuffix(file.Name(), ".bcl")
-			migration := Migration{Name: name}
-			if err := c.Driver.ApplyMigration(migration); err != nil {
-				return fmt.Errorf("failed to apply migration %s: %w", name, err)
+		// Ignore directories and non-.bcl files.
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".bcl") {
+			continue
+		}
+		name := strings.TrimSuffix(file.Name(), ".bcl")
+		path := filepath.Join("migrations", file.Name())
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read migration file %s: %w", name, err)
+		}
+
+		checksum := computeChecksum(data)
+		log.Printf("Migration file %s checksum: %s", name, checksum)
+
+		var cfg Config
+		if _, err := bcl.Unmarshal(data, &cfg); err != nil {
+			return fmt.Errorf("failed to unmarshal migration file %s: %w", name, err)
+		}
+		if len(cfg.Migrations) == 0 {
+			return fmt.Errorf("no migration found in file %s", name)
+		}
+		migration := cfg.Migrations[0]
+
+		// Run PreUp validations.
+		for _, val := range migration.Validate {
+			if err := runPreUpChecks(val.PreUpChecks); err != nil {
+				return fmt.Errorf("pre-up validation failed for migration %s: %w", migration.Name, err)
+			}
+		}
+
+		// Apply migration.
+		// Note: DummyDriver.ApplyMigration reads the file again.
+		// We use migration.Name for consistency.
+		if err := c.Driver.ApplyMigration(Migration{Name: migration.Name}); err != nil {
+			return fmt.Errorf("failed to apply migration %s: %w", migration.Name, err)
+		}
+
+		// Run PostUp validations.
+		for _, val := range migration.Validate {
+			if err := runPostUpChecks(val.PostUpChecks); err != nil {
+				return fmt.Errorf("post-up validation failed for migration %s: %w", migration.Name, err)
 			}
 		}
 	}

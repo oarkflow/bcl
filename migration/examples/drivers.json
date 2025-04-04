@@ -1,0 +1,76 @@
+[
+	{
+		"name": "postgres",
+		"CreateTable": "CREATE TABLE IF NOT EXISTS {table} ({columns});",
+		"DropTable": "DROP TABLE IF EXISTS {table};",
+		"AlterTableAddColumn": "ALTER TABLE {table} ADD COLUMN {column_definition};",
+		"ColumnDefinition": "{name} {type}{notnull}{default}{check}",
+		"PrimaryKey": "PRIMARY KEY ({columns})",
+		"RenameTable": "ALTER TABLE {old} RENAME TO {new};",
+		"RenameColumn": "ALTER TABLE {table} RENAME COLUMN {from} TO {to};",
+		"DeleteData": "DELETE FROM {table} WHERE {condition};",
+		"CreateMigrationHistory": "CREATE TABLE IF NOT EXISTS migrations (id SERIAL PRIMARY KEY, name VARCHAR(255) NOT NULL, version VARCHAR(50) NOT NULL, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);",
+		"BeginTransaction": "BEGIN TRANSACTION ISOLATION LEVEL {isolation};",
+		"StartTransaction": "BEGIN;",
+		"CommitTransaction": "COMMIT;",
+		"DataTypes": {
+			"string": { "template": "VARCHAR({size})", "fallback": "TEXT" },
+			"number": { "template": "SERIAL", "fallback": "INTEGER", "auto_increment": "SERIAL" },
+			"boolean": { "template": "BOOLEAN" },
+			"date": { "template": "DATE" },
+			"datetime": { "template": "TIMESTAMP" }
+		},
+		"NotNull": " NOT NULL",
+		"Default": " DEFAULT {value}",
+		"Check": " CHECK ({expression})"
+	},
+	{
+		"name": "mysql",
+		"CreateTable": "CREATE TABLE IF NOT EXISTS {table} ({columns}) ENGINE=InnoDB;",
+		"DropTable": "DROP TABLE IF EXISTS {table};",
+		"AlterTableAddColumn": "ALTER TABLE {table} ADD COLUMN {column_definition};",
+		"ColumnDefinition": "{name} {type}{notnull}{default}{check}",
+		"PrimaryKey": "PRIMARY KEY ({columns})",
+		"RenameTable": "RENAME TABLE {old} TO {new};",
+		"RenameColumn": "ALTER TABLE {table} RENAME COLUMN {from} TO {to};",
+		"DeleteData": "DELETE FROM {table} WHERE {condition};",
+		"CreateMigrationHistory": "CREATE TABLE IF NOT EXISTS migrations (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, version VARCHAR(50) NOT NULL, applied_at DATETIME DEFAULT CURRENT_TIMESTAMP);",
+		"BeginTransaction": "SET TRANSACTION ISOLATION LEVEL {isolation}; START TRANSACTION;",
+		"StartTransaction": "START TRANSACTION;",
+		"CommitTransaction": "COMMIT;",
+		"DataTypes": {
+			"string": { "template": "VARCHAR({size})", "fallback": "TEXT" },
+			"number": { "template": "INT", "fallback": "INT", "auto_increment": "INT AUTO_INCREMENT" },
+			"boolean": { "template": "TINYINT(1)" },
+			"date": { "template": "DATE" },
+			"datetime": { "template": "DATETIME" }
+		},
+		"NotNull": " NOT NULL",
+		"Default": " DEFAULT {value}",
+		"Check": " CHECK ({expression})"
+	},
+	{
+		"name": "sqlite",
+		"CreateTable": "CREATE TABLE IF NOT EXISTS {table} ({columns});",
+		"DropTable": "DROP TABLE IF EXISTS {table};",
+		"AlterTableAddColumn": "ALTER TABLE {table} ADD COLUMN {column_definition};",
+		"ColumnDefinition": "{name} {type}{notnull}{default}{check}",
+		"PrimaryKey": "PRIMARY KEY ({columns})",
+		"RenameTable": "ALTER TABLE {old} RENAME TO {new};",
+		"DeleteData": "DELETE FROM {table} WHERE {condition};",
+		"CreateMigrationHistory": "CREATE TABLE IF NOT EXISTS migrations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, version TEXT NOT NULL, applied_at DATETIME DEFAULT CURRENT_TIMESTAMP);",
+		"BeginTransaction": "BEGIN;",
+		"StartTransaction": "BEGIN;",
+		"CommitTransaction": "COMMIT;",
+		"DataTypes": {
+			"string": { "template": "VARCHAR({size})", "fallback": "TEXT" },
+			"number": { "template": "INTEGER", "fallback": "INTEGER", "auto_increment": "INTEGER" },
+			"boolean": { "template": "BOOLEAN" },
+			"date": { "template": "DATE" },
+			"datetime": { "template": "DATETIME" }
+		},
+		"NotNull": " NOT NULL",
+		"Default": " DEFAULT {value}",
+		"Check": " CHECK ({expression})"
+	}
+]
