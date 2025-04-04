@@ -1,9 +1,16 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
+	"log"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oarkflow/bcl"
@@ -13,7 +20,16 @@ const (
 	DialectPostgres = "postgres"
 	DialectMySQL    = "mysql"
 	DialectSQLite   = "sqlite"
+
+	lockFileName = "migration.lock"
 )
+
+var tableSchemas = make(map[string]*CreateTable)
+var schemaMutex sync.Mutex
+
+type Config struct {
+	Migrations []Migration `json:"Migration"`
+}
 
 type Migration struct {
 	Name        string        `json:"name"`
@@ -112,7 +128,6 @@ type DropColumn struct {
 type RenameColumn struct {
 	From string `json:"from"`
 	To   string `json:"to"`
-
 	Type string `json:"type,omitempty"`
 }
 
@@ -137,9 +152,27 @@ type DeleteData struct {
 	Where string `json:"Where"`
 }
 
+func (d DeleteData) ToSQL(dialect string) (string, error) {
+	return fmt.Sprintf("DELETE FROM %s WHERE %s;", d.Name, d.Where), nil
+}
+
 type DropEnumType struct {
 	Name     string `json:"name"`
 	IfExists bool   `json:"IfExists"`
+}
+
+func (d DropEnumType) ToSQL(dialect string) (string, error) {
+	switch dialect {
+	case DialectPostgres:
+		if d.IfExists {
+			return fmt.Sprintf("DROP TYPE IF EXISTS %s;", d.Name), nil
+		}
+		return fmt.Sprintf("DROP TYPE %s;", d.Name), nil
+	case DialectMySQL, DialectSQLite:
+		return "", errors.New("enum types are not supported in this dialect")
+	default:
+		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+	}
 }
 
 type DropRowPolicy struct {
@@ -148,9 +181,37 @@ type DropRowPolicy struct {
 	IfExists bool   `json:"if_exists,omitempty"`
 }
 
+func (drp DropRowPolicy) ToSQL(dialect string) (string, error) {
+	switch dialect {
+	case DialectPostgres:
+		if drp.IfExists {
+			return fmt.Sprintf("DROP POLICY IF EXISTS %s ON %s;", drp.Name, drp.Table), nil
+		}
+		return fmt.Sprintf("DROP POLICY %s ON %s;", drp.Name, drp.Table), nil
+	case DialectMySQL, DialectSQLite:
+		return "", errors.New("DROP ROW POLICY is not supported in this dialect")
+	default:
+		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+	}
+}
+
 type DropMaterializedView struct {
 	Name     string `json:"name"`
 	IfExists bool   `json:"if_exists,omitempty"`
+}
+
+func (dmv DropMaterializedView) ToSQL(dialect string) (string, error) {
+	switch dialect {
+	case DialectPostgres:
+		if dmv.IfExists {
+			return fmt.Sprintf("DROP MATERIALIZED VIEW IF EXISTS %s;", dmv.Name), nil
+		}
+		return fmt.Sprintf("DROP MATERIALIZED VIEW %s;", dmv.Name), nil
+	case DialectMySQL, DialectSQLite:
+		return "", errors.New("DROP MATERIALIZED VIEW is not supported in this dialect")
+	default:
+		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+	}
 }
 
 type DropTable struct {
@@ -158,10 +219,44 @@ type DropTable struct {
 	Cascade bool   `json:"cascade,omitempty"`
 }
 
+func (dt DropTable) ToSQL(dialect string) (string, error) {
+	switch dialect {
+	case DialectPostgres:
+		cascade := ""
+		if dt.Cascade {
+			cascade = " CASCADE"
+		}
+		return fmt.Sprintf("DROP TABLE IF EXISTS %s%s;", dt.Name, cascade), nil
+	case DialectMySQL, DialectSQLite:
+		return fmt.Sprintf("DROP TABLE IF EXISTS %s;", dt.Name), nil
+	default:
+		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+	}
+}
+
 type DropSchema struct {
 	Name     string `json:"name"`
 	Cascade  bool   `json:"cascade,omitempty"`
 	IfExists bool   `json:"if_exists,omitempty"`
+}
+
+func (ds DropSchema) ToSQL(dialect string) (string, error) {
+	switch dialect {
+	case DialectPostgres:
+		exists := ""
+		if ds.IfExists {
+			exists = " IF EXISTS"
+		}
+		cascade := ""
+		if ds.Cascade {
+			cascade = " CASCADE"
+		}
+		return fmt.Sprintf("DROP SCHEMA%s %s%s;", exists, ds.Name, cascade), nil
+	case DialectMySQL, DialectSQLite:
+		return "", errors.New("DROP SCHEMA is not supported in this dialect")
+	default:
+		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+	}
 }
 
 type Transaction struct {
@@ -174,10 +269,6 @@ type Validation struct {
 	Name         string   `json:"name"`
 	PreUpChecks  []string `json:"PreUpChecks"`
 	PostUpChecks []string `json:"PostUpChecks"`
-}
-
-type Config struct {
-	Migrations []Migration `json:"Migration"`
 }
 
 func mapDataType(dialect, genericType string, size int, autoIncrement bool, primaryKey bool) string {
@@ -250,32 +341,50 @@ func mapDataType(dialect, genericType string, size int, autoIncrement bool, prim
 
 func (a AddColumn) ToSQL(dialect, tableName string) ([]string, error) {
 	var queries []string
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", tableName, a.Name))
-	dataType := mapDataType(dialect, a.Type, a.Size, a.AutoIncrement, a.PrimaryKey)
-	sb.WriteString(dataType)
-	if dialect == DialectMySQL && a.AutoIncrement {
-		sb.WriteString(" AUTO_INCREMENT")
-	}
-	if dialect == DialectSQLite && a.AutoIncrement && a.PrimaryKey {
-		sb.Reset()
-		sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s INTEGER PRIMARY KEY AUTOINCREMENT", tableName, a.Name))
-	}
-	if !a.Nullable {
-		sb.WriteString(" NOT NULL")
-	}
-	if a.Default != "" {
-		defaultVal := a.Default
-		if strings.ToLower(a.Type) == "string" && !(strings.HasPrefix(a.Default, "'") && strings.HasSuffix(a.Default, "'")) {
-			defaultVal = fmt.Sprintf("'%s'", a.Default)
+	if dialect == DialectSQLite {
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", tableName, a.Name))
+		dataType := mapDataType(dialect, a.Type, a.Size, a.AutoIncrement, a.PrimaryKey)
+		sb.WriteString(dataType)
+		if !a.Nullable {
+			sb.WriteString(" NOT NULL")
 		}
-		sb.WriteString(fmt.Sprintf(" DEFAULT %s", defaultVal))
+		if a.Default != "" {
+			defaultVal := a.Default
+			if strings.ToLower(a.Type) == "string" && !(strings.HasPrefix(a.Default, "'") && strings.HasSuffix(a.Default, "'")) {
+				defaultVal = fmt.Sprintf("'%s'", a.Default)
+			}
+			sb.WriteString(fmt.Sprintf(" DEFAULT %s", defaultVal))
+		}
+		if a.Check != "" {
+			sb.WriteString(fmt.Sprintf(" CHECK (%s)", a.Check))
+		}
+		sb.WriteString(";")
+		queries = append(queries, sb.String())
+	} else {
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", tableName, a.Name))
+		dataType := mapDataType(dialect, a.Type, a.Size, a.AutoIncrement, a.PrimaryKey)
+		sb.WriteString(dataType)
+		if dialect == DialectMySQL && a.AutoIncrement {
+			sb.WriteString(" AUTO_INCREMENT")
+		}
+		if !a.Nullable {
+			sb.WriteString(" NOT NULL")
+		}
+		if a.Default != "" {
+			defaultVal := a.Default
+			if strings.ToLower(a.Type) == "string" && !(strings.HasPrefix(a.Default, "'") && strings.HasSuffix(a.Default, "'")) {
+				defaultVal = fmt.Sprintf("'%s'", a.Default)
+			}
+			sb.WriteString(fmt.Sprintf(" DEFAULT %s", defaultVal))
+		}
+		if a.Check != "" {
+			sb.WriteString(fmt.Sprintf(" CHECK (%s)", a.Check))
+		}
+		sb.WriteString(";")
+		queries = append(queries, sb.String())
 	}
-	if a.Check != "" {
-		sb.WriteString(fmt.Sprintf(" CHECK (%s)", a.Check))
-	}
-	sb.WriteString(";")
-	queries = append(queries, sb.String())
 	if a.Unique {
 		uniqueSQL := createUniqueIndexSQL(dialect, tableName, a.Name)
 		queries = append(queries, uniqueSQL)
@@ -297,17 +406,7 @@ func (a AddColumn) ToSQL(dialect, tableName string) ([]string, error) {
 func foreignKeyToSQL(dialect, tableName, column string, fk ForeignKey) (string, error) {
 	const constraintPrefix = "fk_"
 	switch dialect {
-	case DialectPostgres:
-		sql := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s%s FOREIGN KEY (%s) REFERENCES %s(%s)",
-			tableName, constraintPrefix, column, column, fk.ReferenceTable, fk.ReferenceColumn)
-		if fk.OnDelete != "" {
-			sql += fmt.Sprintf(" ON DELETE %s", fk.OnDelete)
-		}
-		if fk.OnUpdate != "" {
-			sql += fmt.Sprintf(" ON UPDATE %s", fk.OnUpdate)
-		}
-		return sql + ";", nil
-	case DialectMySQL:
+	case DialectPostgres, DialectMySQL:
 		sql := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s%s FOREIGN KEY (%s) REFERENCES %s(%s)",
 			tableName, constraintPrefix, column, column, fk.ReferenceTable, fk.ReferenceColumn)
 		if fk.OnDelete != "" {
@@ -335,11 +434,11 @@ func createIndexSQL(dialect, tableName, column string) string {
 }
 
 func (d DropColumn) ToSQL(dialect, tableName string) (string, error) {
+	if dialect == DialectSQLite {
+		return "", errors.New("SQLite DROP COLUMN must use table recreation")
+	}
 	switch dialect {
-	case DialectPostgres, DialectMySQL, DialectSQLite:
-		if dialect == DialectSQLite {
-			return "", errors.New("SQLite does not support DROP COLUMN directly; table recreation is required")
-		}
+	case DialectPostgres, DialectMySQL:
 		return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s;", tableName, d.Name), nil
 	default:
 		return "", fmt.Errorf("unsupported dialect: %s", dialect)
@@ -347,6 +446,9 @@ func (d DropColumn) ToSQL(dialect, tableName string) (string, error) {
 }
 
 func (r RenameColumn) ToSQL(dialect, tableName string) (string, error) {
+	if dialect == DialectSQLite {
+		return "", errors.New("SQLite RENAME COLUMN must use table recreation")
+	}
 	switch dialect {
 	case DialectPostgres:
 		return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s;", tableName, r.From, r.To), nil
@@ -355,116 +457,139 @@ func (r RenameColumn) ToSQL(dialect, tableName string) (string, error) {
 			return "", errors.New("MySQL requires column type for renaming column")
 		}
 		return fmt.Sprintf("ALTER TABLE %s CHANGE %s %s %s;", tableName, r.From, r.To, r.Type), nil
-	case DialectSQLite:
-		return "", errors.New("SQLite does not support RENAME COLUMN directly; table recreation is required")
 	default:
 		return "", fmt.Errorf("unsupported dialect: %s", dialect)
 	}
 }
 
-func (d DeleteData) ToSQL(dialect string) (string, error) {
-	return fmt.Sprintf("DELETE FROM %s WHERE %s;", d.Name, d.Where), nil
-}
-
-func (d DropEnumType) ToSQL(dialect string) (string, error) {
-	switch dialect {
-	case DialectPostgres:
-		if d.IfExists {
-			return fmt.Sprintf("DROP TYPE IF EXISTS %s;", d.Name), nil
+func recreateTableForSQLite(tableName string, newSchema CreateTable, renameMap map[string]string) ([]string, error) {
+	var newCols, selectCols []string
+	for _, col := range newSchema.Columns {
+		newCols = append(newCols, col.Name)
+		orig := col.Name
+		for old, newName := range renameMap {
+			if newName == col.Name {
+				orig = old
+				break
+			}
 		}
-		return fmt.Sprintf("DROP TYPE %s;", d.Name), nil
-	case DialectMySQL, DialectSQLite:
-		return "", errors.New("enum types are not supported in this dialect")
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+		selectCols = append(selectCols, orig)
 	}
-}
-
-func (drp DropRowPolicy) ToSQL(dialect string) (string, error) {
-	switch dialect {
-	case DialectPostgres:
-		if drp.IfExists {
-			return fmt.Sprintf("DROP POLICY IF EXISTS %s ON %s;", drp.Name, drp.Table), nil
-		}
-		return fmt.Sprintf("DROP POLICY %s ON %s;", drp.Name, drp.Table), nil
-	case DialectMySQL, DialectSQLite:
-		return "", errors.New("DROP ROW POLICY is not supported in this dialect")
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+	queries := []string{
+		"PRAGMA foreign_keys=off;",
+		fmt.Sprintf("ALTER TABLE %s RENAME TO %s_backup;", tableName, tableName),
 	}
-}
-
-func (dmv DropMaterializedView) ToSQL(dialect string) (string, error) {
-	switch dialect {
-	case DialectPostgres:
-		if dmv.IfExists {
-			return fmt.Sprintf("DROP MATERIALIZED VIEW IF EXISTS %s;", dmv.Name), nil
-		}
-		return fmt.Sprintf("DROP MATERIALIZED VIEW %s;", dmv.Name), nil
-	case DialectMySQL, DialectSQLite:
-		return "", errors.New("DROP MATERIALIZED VIEW is not supported in this dialect")
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
+	ctSQL, err := newSchema.ToSQL(DialectSQLite, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate new schema for table %s: %w", tableName, err)
 	}
-}
-
-func (dt DropTable) ToSQL(dialect string) (string, error) {
-	switch dialect {
-	case DialectPostgres:
-		cascade := ""
-		if dt.Cascade {
-			cascade = " CASCADE"
-		}
-		return fmt.Sprintf("DROP TABLE IF EXISTS %s%s;", dt.Name, cascade), nil
-	case DialectMySQL, DialectSQLite:
-		return fmt.Sprintf("DROP TABLE IF EXISTS %s;", dt.Name), nil
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
-	}
-}
-
-func (ds DropSchema) ToSQL(dialect string) (string, error) {
-	switch dialect {
-	case DialectPostgres:
-		exists := ""
-		if ds.IfExists {
-			exists = " IF EXISTS"
-		}
-		cascade := ""
-		if ds.Cascade {
-			cascade = " CASCADE"
-		}
-		return fmt.Sprintf("DROP SCHEMA%s %s%s;", exists, ds.Name, cascade), nil
-	case DialectMySQL, DialectSQLite:
-		return "", errors.New("DROP SCHEMA is not supported in this dialect")
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
-	}
+	queries = append(queries, ctSQL)
+	queries = append(queries, fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s_backup;", tableName, strings.Join(newCols, ", "), strings.Join(selectCols, ", "), tableName))
+	queries = append(queries, fmt.Sprintf("DROP TABLE %s_backup;", tableName))
+	queries = append(queries, "PRAGMA foreign_keys=on;")
+	return queries, nil
 }
 
 func (at AlterTable) ToSQL(dialect string) ([]string, error) {
+	if dialect == DialectSQLite {
+		return handleSQLiteAlterTable(at)
+	}
 	var queries []string
 	for _, addCol := range at.AddColumn {
 		qList, err := addCol.ToSQL(dialect, at.Name)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error in AddColumn: %w", err)
 		}
 		queries = append(queries, qList...)
 	}
 	for _, dropCol := range at.DropColumn {
 		q, err := dropCol.ToSQL(dialect, at.Name)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error in DropColumn: %w", err)
 		}
 		queries = append(queries, q)
 	}
 	for _, renameCol := range at.RenameColumn {
 		q, err := renameCol.ToSQL(dialect, at.Name)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error in RenameColumn: %w", err)
 		}
 		queries = append(queries, q)
 	}
+	return queries, nil
+}
+
+func handleSQLiteAlterTable(at AlterTable) ([]string, error) {
+	schemaMutex.Lock()
+	defer schemaMutex.Unlock()
+	origSchema, ok := tableSchemas[at.Name]
+	if !ok {
+		return nil, fmt.Errorf("table schema for %s not found; cannot recreate table for alteration", at.Name)
+	}
+	newSchema := *origSchema
+	renameMap := make(map[string]string)
+	if len(at.DropColumn) > 0 || len(at.RenameColumn) > 0 {
+		for _, dropCol := range at.DropColumn {
+			found := false
+			newCols := []AddColumn{}
+			for _, col := range newSchema.Columns {
+				if col.Name == dropCol.Name {
+					found = true
+					continue
+				}
+				newCols = append(newCols, col)
+			}
+			if !found {
+				return nil, fmt.Errorf("column %s not found in table %s for dropping", dropCol.Name, at.Name)
+			}
+			newSchema.Columns = newCols
+			newPK := []string{}
+			for _, pk := range newSchema.PrimaryKey {
+				if pk != dropCol.Name {
+					newPK = append(newPK, pk)
+				}
+			}
+			newSchema.PrimaryKey = newPK
+		}
+		for _, renameCol := range at.RenameColumn {
+			found := false
+			for i, col := range newSchema.Columns {
+				if col.Name == renameCol.From {
+					newSchema.Columns[i].Name = renameCol.To
+					found = true
+					renameMap[renameCol.From] = renameCol.To
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("column %s not found in table %s for renaming", renameCol.From, at.Name)
+			}
+			for i, pk := range newSchema.PrimaryKey {
+				if pk == renameCol.From {
+					newSchema.PrimaryKey[i] = renameCol.To
+				}
+			}
+		}
+		queries, err := recreateTableForSQLite(at.Name, newSchema, renameMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to recreate table for SQLite alteration: %w", err)
+		}
+		tableSchemas[at.Name] = &newSchema
+		return queries, nil
+	}
+	var queries []string
+	for _, addCol := range at.AddColumn {
+		qList, err := addCol.ToSQL(DialectSQLite, at.Name)
+		if err != nil {
+			return nil, err
+		}
+		queries = append(queries, qList...)
+		newSchema.Columns = append(newSchema.Columns, addCol)
+		if addCol.PrimaryKey {
+			newSchema.PrimaryKey = append(newSchema.PrimaryKey, addCol.Name)
+		}
+	}
+	tableSchemas[at.Name] = &newSchema
 	return queries, nil
 }
 
@@ -473,63 +598,69 @@ func (op Operation) ToSQL(dialect string) ([]string, error) {
 	for _, ct := range op.CreateTable {
 		q, err := ct.ToSQL(dialect, true)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error in CreateTable: %w", err)
 		}
 		queries = append(queries, q)
+		if dialect == DialectSQLite {
+			schemaMutex.Lock()
+			cpy := ct
+			tableSchemas[ct.Name] = &cpy
+			schemaMutex.Unlock()
+		}
 	}
 	for _, at := range op.AlterTable {
 		qList, err := at.ToSQL(dialect)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error in AlterTable: %w", err)
 		}
 		queries = append(queries, qList...)
 	}
 	for _, dd := range op.DeleteData {
 		q, err := dd.ToSQL(dialect)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error in DeleteData: %w", err)
 		}
 		queries = append(queries, q)
 	}
 	for _, de := range op.DropEnumType {
 		q, err := de.ToSQL(dialect)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error in DropEnumType: %w", err)
 		}
 		queries = append(queries, q)
 	}
 	for _, drp := range op.DropRowPolicy {
 		q, err := drp.ToSQL(dialect)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error in DropRowPolicy: %w", err)
 		}
 		queries = append(queries, q)
 	}
 	for _, dmv := range op.DropMaterializedView {
 		q, err := dmv.ToSQL(dialect)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error in DropMaterializedView: %w", err)
 		}
 		queries = append(queries, q)
 	}
 	for _, dt := range op.DropTable {
 		q, err := dt.ToSQL(dialect)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error in DropTable: %w", err)
 		}
 		queries = append(queries, q)
 	}
 	for _, ds := range op.DropSchema {
 		q, err := ds.ToSQL(dialect)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error in DropSchema: %w", err)
 		}
 		queries = append(queries, q)
 	}
 	for _, rt := range op.RenameTable {
 		q, err := rt.ToSQL(dialect)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error in RenameTable: %w", err)
 		}
 		queries = append(queries, q)
 	}
@@ -547,7 +678,7 @@ func (m Migration) ToSQL(dialect string, up bool) ([]string, error) {
 	for _, op := range ops {
 		qList, err := op.ToSQL(dialect)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error in migration operation: %w", err)
 		}
 		queries = append(queries, qList...)
 	}
@@ -571,7 +702,6 @@ func wrapInTransactionWithConfig(queries []string, trans Transaction, dialect st
 			beginStmt = "BEGIN;"
 		}
 	case DialectMySQL:
-		// Enhanced MySQL transaction configuration to support isolation level.
 		if trans.IsolationLevel != "" {
 			beginStmt = fmt.Sprintf("SET TRANSACTION ISOLATION LEVEL %s; START TRANSACTION;", trans.IsolationLevel)
 		} else {
@@ -601,160 +731,138 @@ func createMigrationHistoryTableSQL(dialect string) (string, error) {
 
 func runPreUpChecks(checks []string) error {
 	for _, check := range checks {
-		fmt.Printf("Executing PreUpCheck: %s\n", check)
+		log.Printf("Executing PreUpCheck: %s", check)
 
 	}
-	fmt.Println("All PreUpChecks passed.")
+	log.Println("All PreUpChecks passed.")
 	return nil
 }
 
 func runPostUpChecks(checks []string) error {
 	for _, check := range checks {
-		fmt.Printf("Executing PostUpCheck: %s\n", check)
+		log.Printf("Executing PostUpCheck: %s", check)
 
 	}
-	fmt.Println("All PostUpChecks passed.")
+	log.Println("All PostUpChecks passed.")
 	return nil
 }
 
-func main() {
-	input := []byte(`
-Migration "explicit_operations" {
-  Version = "1.0.0-beta"
-  Description = "Migration with explicit operation labeling"
-  Up {
-    AlterTable "core.users" {
-      AddColumn "email" {
-        type = "string"
-        size = 255
-        unique = true
-        check = "email ~* '@'"
-      }
-      DropColumn "temporary_flag" {}
-      RenameColumn {
-        from = "signup_date"
-        to = "created_at"
-      }
-    }
-	AlterTable "core.products" {
-      AddColumn "sku" {
-        type = "number"
-        size = 255
-      }
-      RenameColumn {
-        from = "added_date"
-        to = "created_at"
-      }
-    }
-    CreateTable "core.categories" {
-      Column "email" {
-        type = "string"
-        size = 255
-        unique = true
-      }
-    }
-  }
-  Down {
-    DropRowPolicy "user_access_policy" {
-      Table = "core.users"
-      IfExists = true
-    }
-    DropMaterializedView "core.active_users" {
-      IfExists = true
-    }
-    AlterTable "core.users" {
-      AddColumn "temporary_flag" {
-        type = "boolean"
-        nullable = true
-      }
-      DropColumn "email" {}
-      RenameColumn {
-        from = "created_at"
-        to = "signup_date"
-      }
-    }
-    DeleteData "core.users" {
-      Where = "username LIKE 'admin%'"
-    }
-    DropTable "core.profiles" {
-      Cascade = true
-    }
-    DropTable "core.users" {
-      Cascade = true
-    }
-    DropEnumType "core.user_role" {
-      IfExists = true
-    }
-    DropSchema "core" {
-      Cascade = true
-      IfExists = true
-    }
-  }
-}
-`)
-	var cfg Config
-	if _, err := bcl.Unmarshal(input, &cfg); err != nil {
-		panic(err)
+func acquireLock() error {
+	if _, err := os.Stat(lockFileName); err == nil {
+		return errors.New("migration lock already acquired")
 	}
-	dialect := DialectPostgres
-	historySQL, err := createMigrationHistoryTableSQL(dialect)
+	f, err := os.Create(lockFileName)
 	if err != nil {
-		fmt.Println("Error generating migration history table SQL:", err)
-		return
+		return fmt.Errorf("failed to create lock file: %w", err)
 	}
-	fmt.Println("Migration History Table SQL:")
-	fmt.Println(historySQL)
-	fmt.Println()
+	f.Close()
+	return nil
+}
+
+func releaseLock() error {
+	if err := os.Remove(lockFileName); err != nil {
+		return fmt.Errorf("failed to remove lock file: %w", err)
+	}
+	return nil
+}
+
+func computeChecksum(data []byte) string {
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
+}
+
+func main() {
+	configPath := flag.String("config", "", "Path to migration DSL configuration file")
+	dryRun := flag.Bool("dry-run", false, "Output the generated SQL without executing migrations")
+	timeoutSec := flag.Int("timeout", 30, "Timeout (in seconds) for migration execution")
+	dialect := flag.String("dialect", DialectPostgres, "SQL dialect to use (postgres, mysql, sqlite)")
+	flag.Parse()
+	if *configPath == "" {
+		log.Fatal("No config file provided. Use -config flag.")
+	}
+	data, err := os.ReadFile(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to read config file: %v", err)
+	}
+	checksum := computeChecksum(data)
+	log.Printf("Migration file checksum: %s", checksum)
+	var cfg Config
+	if _, err := bcl.Unmarshal(data, &cfg); err != nil {
+		log.Fatalf("Failed to unmarshal migration file: %v", err)
+	}
+	if err := acquireLock(); err != nil {
+		log.Fatalf("Failed to acquire migration lock: %v", err)
+	}
+	defer func() {
+		if err := releaseLock(); err != nil {
+			log.Printf("Warning: %v", err)
+		}
+	}()
+	historySQL, err := createMigrationHistoryTableSQL(*dialect)
+	if err != nil {
+		log.Fatalf("Error generating migration history table SQL: %v", err)
+	}
+	log.Println("Migration History Table SQL:")
+	log.Println(historySQL)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeoutSec)*time.Second)
+	defer cancel()
 	for _, migration := range cfg.Migrations {
+		select {
+		case <-ctx.Done():
+			log.Fatalf("Migration timed out: %v", ctx.Err())
+		default:
+		}
+		log.Printf("Starting migration: %s - %s", migration.Name, migration.Description)
 		for _, validation := range migration.Validate {
 			if err := runPreUpChecks(validation.PreUpChecks); err != nil {
-				fmt.Println("PreUp validation failed:", err)
-				return
+				log.Fatalf("PreUp validation failed: %v", err)
 			}
 		}
-		upQueries, err := migration.ToSQL(dialect, true)
+		upQueries, err := migration.ToSQL(*dialect, true)
 		if err != nil {
-			fmt.Println("Error generating SQL for up migration:", err)
-			return
+			log.Fatalf("Error generating SQL for up migration '%s': %v", migration.Name, err)
 		}
 		if len(migration.Transaction) > 1 {
-			fmt.Printf("Warning: More than one transaction provided in migration '%s'. Only the first one will be used.\n", migration.Name)
+			log.Printf("Warning: More than one transaction provided in migration '%s'. Only the first one will be used.", migration.Name)
 		}
 		if len(migration.Transaction) > 0 {
-			fmt.Printf("Using transaction mode '%s' for migration '%s'.\n", migration.Transaction[0].Mode, migration.Name)
-			upQueries = wrapInTransactionWithConfig(upQueries, migration.Transaction[0], dialect)
+			log.Printf("Using transaction mode '%s' for migration '%s'.", migration.Transaction[0].Mode, migration.Name)
+			upQueries = wrapInTransactionWithConfig(upQueries, migration.Transaction[0], *dialect)
 		} else {
 			upQueries = wrapInTransaction(upQueries)
 		}
-		fmt.Printf("Generated SQL for migration (up) - %s:\n", migration.Name)
+		log.Printf("Generated SQL for migration (up) - %s:", migration.Name)
 		for _, query := range upQueries {
-			fmt.Println(query)
+			log.Println(query)
 		}
-		fmt.Println()
-		downQueries, err := migration.ToSQL(dialect, false)
+		if !*dryRun {
+			log.Printf("Executing migration '%s'...", migration.Name)
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			log.Printf("Dry-run mode: Not executing migration '%s'.", migration.Name)
+		}
+		downQueries, err := migration.ToSQL(*dialect, false)
 		if err != nil {
-			fmt.Println("Error generating SQL for down migration:", err)
-			return
+			log.Fatalf("Error generating SQL for down migration '%s': %v", migration.Name, err)
 		}
 		if len(downQueries) == 0 {
-			fmt.Printf("Warning: No down migration queries generated for migration '%s'.\n", migration.Name)
+			log.Printf("Warning: No down migration queries generated for migration '%s'.", migration.Name)
 		}
 		if len(migration.Transaction) > 0 {
-			downQueries = wrapInTransactionWithConfig(downQueries, migration.Transaction[0], dialect)
+			downQueries = wrapInTransactionWithConfig(downQueries, migration.Transaction[0], *dialect)
 		} else {
 			downQueries = wrapInTransaction(downQueries)
 		}
-		fmt.Printf("Generated SQL for migration (down) - %s:\n", migration.Name)
+		log.Printf("Generated SQL for migration (down) - %s:", migration.Name)
 		for _, query := range downQueries {
-			fmt.Println(query)
+			log.Println(query)
 		}
 		for _, validation := range migration.Validate {
 			if err := runPostUpChecks(validation.PostUpChecks); err != nil {
-				fmt.Println("PostUp validation failed:", err)
-				return
+				log.Fatalf("PostUp validation failed: %v", err)
 			}
 		}
-		fmt.Println()
+		log.Printf("Completed migration: %s", migration.Name)
 	}
-	time.Sleep(100 * time.Millisecond)
+	log.Println("All migrations completed successfully.")
 }

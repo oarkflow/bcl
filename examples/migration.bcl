@@ -15,7 +15,7 @@ Migration "explicit_operations" {
         to = "created_at"
       }
     }
-    AlterTable "core.products" {
+	AlterTable "core.products" {
       AddColumn "sku" {
         type = "number"
         size = 255
@@ -23,6 +23,13 @@ Migration "explicit_operations" {
       RenameColumn {
         from = "added_date"
         to = "created_at"
+      }
+    }
+    CreateTable "core.categories" {
+      Column "email" {
+        type = "string"
+        size = 255
+        unique = true
       }
     }
   }
@@ -61,19 +68,5 @@ Migration "explicit_operations" {
       Cascade = true
       IfExists = true
     }
-  }
-  Validate {
-    PreUpChecks = [
-      "schema_not_exists('core')",
-      "table_empty('legacy.users')"
-    ]
-    PostUpChecks = [
-      "index_exists('core.idx_active_users')",
-      "fk_exists('core.profiles_user_id_fkey')"
-    ]
-  }
-  Transaction {
-    Mode = "atomic"
-    IsolationLevel = "read_committed"
   }
 }
