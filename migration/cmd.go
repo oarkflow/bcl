@@ -17,7 +17,7 @@ import (
 	"github.com/oarkflow/bcl"
 )
 
-type MigrationDriver interface {
+type Driver interface {
 	ApplyMigration(m Migration) error
 	RollbackMigration(step int) error
 	ResetMigrations() error
@@ -97,11 +97,6 @@ func (d *DummyDriver) ApplyMigration(m Migration) error {
 	if err != nil {
 		return fmt.Errorf("failed to generate SQL: %w", err)
 	}
-	if len(migration.Transaction) > 0 {
-		queries = wrapInTransactionWithConfig(queries, migration.Transaction[0], d.dialect)
-	} else {
-		queries = wrapInTransaction(queries)
-	}
 	log.Printf("Applying migration %s with SQL:\n%s", m.Name, strings.Join(queries, "\n"))
 	d.appliedMigrations[m.Name] = checksum
 	return d.saveHistory()
@@ -161,7 +156,7 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
 
 type MakeMigrationCommand struct {
 	extend contracts.Extend
-	Driver MigrationDriver
+	Driver Driver
 }
 
 func (c *MakeMigrationCommand) Signature() string {
@@ -187,7 +182,7 @@ func (c *MakeMigrationCommand) Handle(ctx contracts.Context) error {
 
 type MigrateCommand struct {
 	extend contracts.Extend
-	Driver MigrationDriver
+	Driver Driver
 }
 
 func (c *MigrateCommand) Signature() string {
@@ -224,7 +219,7 @@ func (c *MigrateCommand) Handle(ctx contracts.Context) error {
 
 type RollbackCommand struct {
 	extend contracts.Extend
-	Driver MigrationDriver
+	Driver Driver
 }
 
 func (c *RollbackCommand) Signature() string {
@@ -254,7 +249,7 @@ func (c *RollbackCommand) Handle(ctx contracts.Context) error {
 
 type ResetCommand struct {
 	extend contracts.Extend
-	Driver MigrationDriver
+	Driver Driver
 }
 
 func (c *ResetCommand) Signature() string {
@@ -275,7 +270,7 @@ func (c *ResetCommand) Handle(ctx contracts.Context) error {
 
 type ValidateCommand struct {
 	extend contracts.Extend
-	Driver MigrationDriver
+	Driver Driver
 }
 
 func (c *ValidateCommand) Signature() string {

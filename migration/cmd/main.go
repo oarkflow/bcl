@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"io/fs"
+	"log"
 	"os"
 
 	"github.com/oarkflow/cli"
@@ -10,7 +12,11 @@ import (
 	"github.com/oarkflow/migration"
 )
 
-func Run(driver migration.MigrationDriver) {
+func Run(driver migration.Driver, dir string) {
+	if err := os.MkdirAll(dir, fs.ModePerm); err != nil {
+		log.Fatalf("Failed to create migration directory: %v", err)
+	}
+
 	cli.SetName("Migration")
 	cli.SetVersion("v0.0.1")
 	app := cli.New()

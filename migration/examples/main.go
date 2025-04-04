@@ -2,9 +2,6 @@ package main
 
 import (
 	"flag"
-	"io/fs"
-	"log"
-	"os"
 
 	"github.com/oarkflow/migration"
 	"github.com/oarkflow/migration/cmd"
@@ -20,9 +17,5 @@ func main() {
 	historyFile := "migration_history.txt"
 	driver := migration.NewDummyDriver(migrationDir, historyFile, *dialectFlag)
 
-	// Create migrations directory if it does not exist.
-	if err := os.MkdirAll(migrationDir, fs.ModePerm); err != nil {
-		log.Fatalf("Failed to create migration directory: %v", err)
-	}
-	cmd.Run(driver)
+	cmd.Run(driver, migrationDir)
 }

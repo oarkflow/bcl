@@ -3,9 +3,7 @@ package migration
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"strings"
 	"sync"
 )
 
@@ -61,36 +59,7 @@ type CreateTable struct {
 }
 
 func (ct CreateTable) ToSQL(dialect string, up bool) (string, error) {
-	if up {
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("CREATE TABLE %s (", ct.Name))
-		var cols []string
-		for _, col := range ct.Columns {
-			colDef := fmt.Sprintf("%s %s", col.Name, mapDataType(dialect, col.Type, col.Size, col.AutoIncrement, col.PrimaryKey))
-			if !col.Nullable {
-				colDef += " NOT NULL"
-			}
-			if col.Default != "" {
-				defaultVal := col.Default
-				if strings.ToLower(col.Type) == "string" && !(strings.HasPrefix(col.Default, "'") && strings.HasSuffix(col.Default, "'")) {
-					defaultVal = fmt.Sprintf("'%s'", col.Default)
-				}
-				colDef += fmt.Sprintf(" DEFAULT %s", defaultVal)
-			}
-			if col.Check != "" {
-				colDef += fmt.Sprintf(" CHECK (%s)", col.Check)
-			}
-			cols = append(cols, colDef)
-		}
-		if len(ct.PrimaryKey) > 0 {
-			cols = append(cols, fmt.Sprintf("PRIMARY KEY (%s)", strings.Join(ct.PrimaryKey, ", ")))
-		}
-		sb.WriteString(strings.Join(cols, ", "))
-		sb.WriteString(");")
-		return sb.String(), nil
-	} else {
-		return fmt.Sprintf("DROP TABLE IF EXISTS %s;", ct.Name), nil
-	}
+	return getDialect(dialect).CreateTableSQL(ct, up)
 }
 
 type AddColumn struct {
@@ -118,10 +87,18 @@ type DropColumn struct {
 	Name string `json:"name"`
 }
 
+func (d DropColumn) ToSQL(dialect, tableName string) (string, error) {
+	return getDialect(dialect).DropColumnSQL(d, tableName)
+}
+
 type RenameColumn struct {
 	From string `json:"from"`
 	To   string `json:"to"`
 	Type string `json:"type,omitempty"`
+}
+
+func (r RenameColumn) ToSQL(dialect, tableName string) (string, error) {
+	return getDialect(dialect).RenameColumnSQL(r, tableName)
 }
 
 type RenameTable struct {
@@ -130,14 +107,7 @@ type RenameTable struct {
 }
 
 func (rt RenameTable) ToSQL(dialect string) (string, error) {
-	switch dialect {
-	case DialectPostgres, DialectSQLite:
-		return fmt.Sprintf("ALTER TABLE %s RENAME TO %s;", rt.OldName, rt.NewName), nil
-	case DialectMySQL:
-		return fmt.Sprintf("RENAME TABLE %s TO %s;", rt.OldName, rt.NewName), nil
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
-	}
+	return getDialect(dialect).RenameTableSQL(rt)
 }
 
 type DeleteData struct {
@@ -146,7 +116,7 @@ type DeleteData struct {
 }
 
 func (d DeleteData) ToSQL(dialect string) (string, error) {
-	return fmt.Sprintf("DELETE FROM %s WHERE %s;", d.Name, d.Where), nil
+	return getDialect(dialect).DeleteDataSQL(d)
 }
 
 type DropEnumType struct {
@@ -155,17 +125,7 @@ type DropEnumType struct {
 }
 
 func (d DropEnumType) ToSQL(dialect string) (string, error) {
-	switch dialect {
-	case DialectPostgres:
-		if d.IfExists {
-			return fmt.Sprintf("DROP TYPE IF EXISTS %s;", d.Name), nil
-		}
-		return fmt.Sprintf("DROP TYPE %s;", d.Name), nil
-	case DialectMySQL, DialectSQLite:
-		return "", errors.New("enum types are not supported in this dialect")
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
-	}
+	return getDialect(dialect).DropEnumTypeSQL(d)
 }
 
 type DropRowPolicy struct {
@@ -175,17 +135,7 @@ type DropRowPolicy struct {
 }
 
 func (drp DropRowPolicy) ToSQL(dialect string) (string, error) {
-	switch dialect {
-	case DialectPostgres:
-		if drp.IfExists {
-			return fmt.Sprintf("DROP POLICY IF EXISTS %s ON %s;", drp.Name, drp.Table), nil
-		}
-		return fmt.Sprintf("DROP POLICY %s ON %s;", drp.Name, drp.Table), nil
-	case DialectMySQL, DialectSQLite:
-		return "", errors.New("DROP ROW POLICY is not supported in this dialect")
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
-	}
+	return getDialect(dialect).DropRowPolicySQL(drp)
 }
 
 type DropMaterializedView struct {
@@ -194,17 +144,7 @@ type DropMaterializedView struct {
 }
 
 func (dmv DropMaterializedView) ToSQL(dialect string) (string, error) {
-	switch dialect {
-	case DialectPostgres:
-		if dmv.IfExists {
-			return fmt.Sprintf("DROP MATERIALIZED VIEW IF EXISTS %s;", dmv.Name), nil
-		}
-		return fmt.Sprintf("DROP MATERIALIZED VIEW %s;", dmv.Name), nil
-	case DialectMySQL, DialectSQLite:
-		return "", errors.New("DROP MATERIALIZED VIEW is not supported in this dialect")
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
-	}
+	return getDialect(dialect).DropMaterializedViewSQL(dmv)
 }
 
 type DropTable struct {
@@ -213,18 +153,7 @@ type DropTable struct {
 }
 
 func (dt DropTable) ToSQL(dialect string) (string, error) {
-	switch dialect {
-	case DialectPostgres:
-		cascade := ""
-		if dt.Cascade {
-			cascade = " CASCADE"
-		}
-		return fmt.Sprintf("DROP TABLE IF EXISTS %s%s;", dt.Name, cascade), nil
-	case DialectMySQL, DialectSQLite:
-		return fmt.Sprintf("DROP TABLE IF EXISTS %s;", dt.Name), nil
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
-	}
+	return getDialect(dialect).DropTableSQL(dt)
 }
 
 type DropSchema struct {
@@ -234,22 +163,7 @@ type DropSchema struct {
 }
 
 func (ds DropSchema) ToSQL(dialect string) (string, error) {
-	switch dialect {
-	case DialectPostgres:
-		exists := ""
-		if ds.IfExists {
-			exists = " IF EXISTS"
-		}
-		cascade := ""
-		if ds.Cascade {
-			cascade = " CASCADE"
-		}
-		return fmt.Sprintf("DROP SCHEMA%s %s%s;", exists, ds.Name, cascade), nil
-	case DialectMySQL, DialectSQLite:
-		return "", errors.New("DROP SCHEMA is not supported in this dialect")
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
-	}
+	return getDialect(dialect).DropSchemaSQL(ds)
 }
 
 type Transaction struct {
@@ -264,252 +178,8 @@ type Validation struct {
 	PostUpChecks []string `json:"PostUpChecks"`
 }
 
-func mapDataType(dialect, genericType string, size int, autoIncrement bool, primaryKey bool) string {
-	lowerType := strings.ToLower(genericType)
-	switch dialect {
-	case DialectPostgres:
-		switch lowerType {
-		case "string":
-			if size > 0 {
-				return fmt.Sprintf("VARCHAR(%d)", size)
-			}
-			return "TEXT"
-		case "number":
-			if autoIncrement {
-				return "SERIAL"
-			}
-			return "INTEGER"
-		case "boolean":
-			return "BOOLEAN"
-		case "date":
-			return "DATE"
-		case "datetime":
-			return "TIMESTAMP"
-		default:
-			return genericType
-		}
-	case DialectMySQL:
-		switch lowerType {
-		case "string":
-			if size > 0 {
-				return fmt.Sprintf("VARCHAR(%d)", size)
-			}
-			return "TEXT"
-		case "number":
-			return "INT"
-		case "boolean":
-			return "TINYINT(1)"
-		case "date":
-			return "DATE"
-		case "datetime":
-			return "DATETIME"
-		default:
-			return genericType
-		}
-	case DialectSQLite:
-		switch lowerType {
-		case "string":
-			if size > 0 {
-				return fmt.Sprintf("VARCHAR(%d)", size)
-			}
-			return "TEXT"
-		case "number":
-			if autoIncrement && primaryKey {
-				return "INTEGER"
-			}
-			return "INTEGER"
-		case "boolean":
-			return "BOOLEAN"
-		case "date":
-			return "DATE"
-		case "datetime":
-			return "DATETIME"
-		default:
-			return genericType
-		}
-	default:
-		return genericType
-	}
-}
-
 func (a AddColumn) ToSQL(dialect, tableName string) ([]string, error) {
-	var queries []string
-	if dialect == DialectSQLite {
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", tableName, a.Name))
-		dataType := mapDataType(dialect, a.Type, a.Size, a.AutoIncrement, a.PrimaryKey)
-		sb.WriteString(dataType)
-		if !a.Nullable {
-			sb.WriteString(" NOT NULL")
-		}
-		if a.Default != "" {
-			defaultVal := a.Default
-			if strings.ToLower(a.Type) == "string" && !(strings.HasPrefix(a.Default, "'") && strings.HasSuffix(a.Default, "'")) {
-				defaultVal = fmt.Sprintf("'%s'", a.Default)
-			}
-			sb.WriteString(fmt.Sprintf(" DEFAULT %s", defaultVal))
-		}
-		if a.Check != "" {
-			sb.WriteString(fmt.Sprintf(" CHECK (%s)", a.Check))
-		}
-		sb.WriteString(";")
-		queries = append(queries, sb.String())
-	} else {
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", tableName, a.Name))
-		dataType := mapDataType(dialect, a.Type, a.Size, a.AutoIncrement, a.PrimaryKey)
-		sb.WriteString(dataType)
-		if dialect == DialectMySQL && a.AutoIncrement {
-			sb.WriteString(" AUTO_INCREMENT")
-		}
-		if !a.Nullable {
-			sb.WriteString(" NOT NULL")
-		}
-		if a.Default != "" {
-			defaultVal := a.Default
-			if strings.ToLower(a.Type) == "string" && !(strings.HasPrefix(a.Default, "'") && strings.HasSuffix(a.Default, "'")) {
-				defaultVal = fmt.Sprintf("'%s'", a.Default)
-			}
-			sb.WriteString(fmt.Sprintf(" DEFAULT %s", defaultVal))
-		}
-		if a.Check != "" {
-			sb.WriteString(fmt.Sprintf(" CHECK (%s)", a.Check))
-		}
-		sb.WriteString(";")
-		queries = append(queries, sb.String())
-	}
-	if a.Unique {
-		uniqueSQL := createUniqueIndexSQL(dialect, tableName, a.Name)
-		queries = append(queries, uniqueSQL)
-	}
-	if a.Index {
-		indexSQL := createIndexSQL(dialect, tableName, a.Name)
-		queries = append(queries, indexSQL)
-	}
-	if a.ForeignKey != nil {
-		fkSQL, err := foreignKeyToSQL(dialect, tableName, a.Name, *a.ForeignKey)
-		if err != nil {
-			return nil, err
-		}
-		queries = append(queries, fkSQL)
-	}
-	return queries, nil
-}
-
-func foreignKeyToSQL(dialect, tableName, column string, fk ForeignKey) (string, error) {
-	const constraintPrefix = "fk_"
-	switch dialect {
-	case DialectPostgres, DialectMySQL:
-		sql := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s%s FOREIGN KEY (%s) REFERENCES %s(%s)",
-			tableName, constraintPrefix, column, column, fk.ReferenceTable, fk.ReferenceColumn)
-		if fk.OnDelete != "" {
-			sql += fmt.Sprintf(" ON DELETE %s", fk.OnDelete)
-		}
-		if fk.OnUpdate != "" {
-			sql += fmt.Sprintf(" ON UPDATE %s", fk.OnUpdate)
-		}
-		return sql + ";", nil
-	case DialectSQLite:
-		return "", errors.New("SQLite foreign keys must be defined at table creation")
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
-	}
-}
-
-func createUniqueIndexSQL(dialect, tableName, column string) string {
-	indexName := fmt.Sprintf("uniq_%s_%s", tableName, column)
-	return fmt.Sprintf("CREATE UNIQUE INDEX %s ON %s (%s);", indexName, tableName, column)
-}
-
-func createIndexSQL(dialect, tableName, column string) string {
-	indexName := fmt.Sprintf("idx_%s_%s", tableName, column)
-	return fmt.Sprintf("CREATE INDEX %s ON %s (%s);", indexName, tableName, column)
-}
-
-func (d DropColumn) ToSQL(dialect, tableName string) (string, error) {
-	if dialect == DialectSQLite {
-		return "", errors.New("SQLite DROP COLUMN must use table recreation")
-	}
-	switch dialect {
-	case DialectPostgres, DialectMySQL:
-		return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s;", tableName, d.Name), nil
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
-	}
-}
-
-func (r RenameColumn) ToSQL(dialect, tableName string) (string, error) {
-	if dialect == DialectSQLite {
-		return "", errors.New("SQLite RENAME COLUMN must use table recreation")
-	}
-	switch dialect {
-	case DialectPostgres:
-		return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s;", tableName, r.From, r.To), nil
-	case DialectMySQL:
-		if r.Type == "" {
-			return "", errors.New("MySQL requires column type for renaming column")
-		}
-		return fmt.Sprintf("ALTER TABLE %s CHANGE %s %s %s;", tableName, r.From, r.To, r.Type), nil
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
-	}
-}
-
-func recreateTableForSQLite(tableName string, newSchema CreateTable, renameMap map[string]string) ([]string, error) {
-	var newCols, selectCols []string
-	for _, col := range newSchema.Columns {
-		newCols = append(newCols, col.Name)
-		orig := col.Name
-		for old, newName := range renameMap {
-			if newName == col.Name {
-				orig = old
-				break
-			}
-		}
-		selectCols = append(selectCols, orig)
-	}
-	queries := []string{
-		"PRAGMA foreign_keys=off;",
-		fmt.Sprintf("ALTER TABLE %s RENAME TO %s_backup;", tableName, tableName),
-	}
-	ctSQL, err := newSchema.ToSQL(DialectSQLite, true)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate new schema for table %s: %w", tableName, err)
-	}
-	queries = append(queries, ctSQL)
-	queries = append(queries, fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s_backup;", tableName, strings.Join(newCols, ", "), strings.Join(selectCols, ", "), tableName))
-	queries = append(queries, fmt.Sprintf("DROP TABLE %s_backup;", tableName))
-	queries = append(queries, "PRAGMA foreign_keys=on;")
-	return queries, nil
-}
-
-func (at AlterTable) ToSQL(dialect string) ([]string, error) {
-	if dialect == DialectSQLite {
-		return handleSQLiteAlterTable(at)
-	}
-	var queries []string
-	for _, addCol := range at.AddColumn {
-		qList, err := addCol.ToSQL(dialect, at.Name)
-		if err != nil {
-			return nil, fmt.Errorf("error in AddColumn: %w", err)
-		}
-		queries = append(queries, qList...)
-	}
-	for _, dropCol := range at.DropColumn {
-		q, err := dropCol.ToSQL(dialect, at.Name)
-		if err != nil {
-			return nil, fmt.Errorf("error in DropColumn: %w", err)
-		}
-		queries = append(queries, q)
-	}
-	for _, renameCol := range at.RenameColumn {
-		q, err := renameCol.ToSQL(dialect, at.Name)
-		if err != nil {
-			return nil, fmt.Errorf("error in RenameColumn: %w", err)
-		}
-		queries = append(queries, q)
-	}
-	return queries, nil
+	return getDialect(dialect).AddColumnSQL(a, tableName)
 }
 
 func handleSQLiteAlterTable(at AlterTable) ([]string, error) {
@@ -563,7 +233,8 @@ func handleSQLiteAlterTable(at AlterTable) ([]string, error) {
 				}
 			}
 		}
-		queries, err := recreateTableForSQLite(at.Name, newSchema, renameMap)
+		sqliteDialect, _ := getDialect(DialectSQLite).(*SQLiteDialect)
+		queries, err := sqliteDialect.RecreateTableForAlter(at.Name, newSchema, renameMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to recreate table for SQLite alteration: %w", err)
 		}
@@ -583,6 +254,35 @@ func handleSQLiteAlterTable(at AlterTable) ([]string, error) {
 		}
 	}
 	tableSchemas[at.Name] = &newSchema
+	return queries, nil
+}
+
+func (at AlterTable) ToSQL(dialect string) ([]string, error) {
+	if dialect == DialectSQLite {
+		return handleSQLiteAlterTable(at)
+	}
+	var queries []string
+	for _, addCol := range at.AddColumn {
+		qList, err := addCol.ToSQL(dialect, at.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error in AddColumn: %w", err)
+		}
+		queries = append(queries, qList...)
+	}
+	for _, dropCol := range at.DropColumn {
+		q, err := dropCol.ToSQL(dialect, at.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error in DropColumn: %w", err)
+		}
+		queries = append(queries, q)
+	}
+	for _, renameCol := range at.RenameColumn {
+		q, err := renameCol.ToSQL(dialect, at.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error in RenameColumn: %w", err)
+		}
+		queries = append(queries, q)
+	}
 	return queries, nil
 }
 
@@ -676,37 +376,6 @@ func (m Migration) ToSQL(dialect string, up bool) ([]string, error) {
 		queries = append(queries, qList...)
 	}
 	return queries, nil
-}
-
-func wrapInTransaction(queries []string) []string {
-	txQueries := []string{"BEGIN;"}
-	txQueries = append(txQueries, queries...)
-	txQueries = append(txQueries, "COMMIT;")
-	return txQueries
-}
-
-func wrapInTransactionWithConfig(queries []string, trans Transaction, dialect string) []string {
-	var beginStmt string
-	switch dialect {
-	case DialectPostgres:
-		if trans.IsolationLevel != "" {
-			beginStmt = fmt.Sprintf("BEGIN TRANSACTION ISOLATION LEVEL %s;", trans.IsolationLevel)
-		} else {
-			beginStmt = "BEGIN;"
-		}
-	case DialectMySQL:
-		if trans.IsolationLevel != "" {
-			beginStmt = fmt.Sprintf("SET TRANSACTION ISOLATION LEVEL %s; START TRANSACTION;", trans.IsolationLevel)
-		} else {
-			beginStmt = "START TRANSACTION;"
-		}
-	default:
-		beginStmt = "BEGIN;"
-	}
-	txQueries := []string{beginStmt}
-	txQueries = append(txQueries, queries...)
-	txQueries = append(txQueries, "COMMIT;")
-	return txQueries
 }
 
 func computeChecksum(data []byte) string {

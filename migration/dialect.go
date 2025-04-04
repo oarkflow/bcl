@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Dialect interface for SQL generation on migration operations.
+// Extend the Dialect interface.
 type Dialect interface {
 	CreateTableSQL(ct CreateTable, up bool) (string, error)
 	RenameTableSQL(rt RenameTable) (string, error)
@@ -20,6 +20,10 @@ type Dialect interface {
 	DropColumnSQL(dc DropColumn, tableName string) (string, error)
 	RenameColumnSQL(rc RenameColumn, tableName string) (string, error)
 	MapDataType(genericType string, size int, autoIncrement, primaryKey bool) string
+
+	// New transaction wrappers.
+	WrapInTransaction(queries []string) []string
+	WrapInTransactionWithConfig(queries []string, trans Transaction) []string
 }
 
 // ---------------------
@@ -180,6 +184,27 @@ func (p *PostgresDialect) MapDataType(genericType string, size int, autoIncremen
 	}
 }
 
+// Transaction wrappers for Postgres.
+func (p *PostgresDialect) WrapInTransaction(queries []string) []string {
+	tx := []string{"BEGIN;"}
+	tx = append(tx, queries...)
+	tx = append(tx, "COMMIT;")
+	return tx
+}
+
+func (p *PostgresDialect) WrapInTransactionWithConfig(queries []string, trans Transaction) []string {
+	var beginStmt string
+	if trans.IsolationLevel != "" {
+		beginStmt = fmt.Sprintf("BEGIN TRANSACTION ISOLATION LEVEL %s;", trans.IsolationLevel)
+	} else {
+		beginStmt = "BEGIN;"
+	}
+	tx := []string{beginStmt}
+	tx = append(tx, queries...)
+	tx = append(tx, "COMMIT;")
+	return tx
+}
+
 // ---------------------
 // MySQL Implementation
 // ---------------------
@@ -320,6 +345,26 @@ func (m *MySQLDialect) MapDataType(genericType string, size int, autoIncrement, 
 	}
 }
 
+func (m *MySQLDialect) WrapInTransaction(queries []string) []string {
+	tx := []string{"START TRANSACTION;"}
+	tx = append(tx, queries...)
+	tx = append(tx, "COMMIT;")
+	return tx
+}
+
+func (m *MySQLDialect) WrapInTransactionWithConfig(queries []string, trans Transaction) []string {
+	var beginStmt string
+	if trans.IsolationLevel != "" {
+		beginStmt = fmt.Sprintf("SET TRANSACTION ISOLATION LEVEL %s; START TRANSACTION;", trans.IsolationLevel)
+	} else {
+		beginStmt = "START TRANSACTION;"
+	}
+	tx := []string{beginStmt}
+	tx = append(tx, queries...)
+	tx = append(tx, "COMMIT;")
+	return tx
+}
+
 // ---------------------
 // SQLite Implementation
 // ---------------------
@@ -451,6 +496,48 @@ func (s *SQLiteDialect) MapDataType(genericType string, size int, autoIncrement,
 	}
 }
 
+func (s *SQLiteDialect) WrapInTransaction(queries []string) []string {
+	// SQLite uses BEGIN and COMMIT similarly.
+	tx := []string{"BEGIN;"}
+	tx = append(tx, queries...)
+	tx = append(tx, "COMMIT;")
+	return tx
+}
+
+func (s *SQLiteDialect) WrapInTransactionWithConfig(queries []string, trans Transaction) []string {
+	// SQLite does not support isolation level configuration.
+	return s.WrapInTransaction(queries)
+}
+
+// Move the table recreation logic into SQLiteDialect.
+func (s *SQLiteDialect) RecreateTableForAlter(tableName string, newSchema CreateTable, renameMap map[string]string) ([]string, error) {
+	var newCols, selectCols []string
+	for _, col := range newSchema.Columns {
+		newCols = append(newCols, col.Name)
+		orig := col.Name
+		for old, newName := range renameMap {
+			if newName == col.Name {
+				orig = old
+				break
+			}
+		}
+		selectCols = append(selectCols, orig)
+	}
+	queries := []string{
+		"PRAGMA foreign_keys=off;",
+		fmt.Sprintf("ALTER TABLE %s RENAME TO %s_backup;", tableName, tableName),
+	}
+	ctSQL, err := newSchema.ToSQL(DialectSQLite, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate new schema for table %s: %w", tableName, err)
+	}
+	queries = append(queries, ctSQL)
+	queries = append(queries, fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM %s_backup;", tableName, strings.Join(newCols, ", "), strings.Join(selectCols, ", "), tableName))
+	queries = append(queries, fmt.Sprintf("DROP TABLE %s_backup;", tableName))
+	queries = append(queries, "PRAGMA foreign_keys=on;")
+	return queries, nil
+}
+
 // ---------------------
 // Registry & Helper
 // ---------------------
@@ -466,6 +553,6 @@ func getDialect(name string) Dialect {
 	if d, ok := dialectRegistry[name]; ok {
 		return d
 	}
-	// Fallback: return PostgresDialect
+	// Fallback: return PostgresDialect.
 	return dialectRegistry[DialectPostgres]
 }
