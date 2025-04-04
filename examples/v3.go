@@ -208,7 +208,11 @@ func (a AddColumn) ToSQL(dialect, tableName string) ([]string, error) {
 		sb.WriteString(" NOT NULL")
 	}
 	if a.Default != "" {
-		sb.WriteString(fmt.Sprintf(" DEFAULT %s", a.Default))
+		defaultVal := a.Default
+		if strings.ToLower(a.Type) == "string" && !(strings.HasPrefix(a.Default, "'") && strings.HasSuffix(a.Default, "'")) {
+			defaultVal = fmt.Sprintf("'%s'", a.Default)
+		}
+		sb.WriteString(fmt.Sprintf(" DEFAULT %s", defaultVal))
 	}
 	if a.Check != "" {
 		sb.WriteString(fmt.Sprintf(" CHECK (%s)", a.Check))
@@ -663,6 +667,10 @@ Migration "explicit_operations" {
 		if err != nil {
 			fmt.Println("Error generating SQL for down migration:", err)
 			return
+		}
+		// Enhancement: warn if no down migration query is generated.
+		if len(downQueries) == 0 {
+			fmt.Printf("Warning: No down migration queries generated for migration '%s'.\n", migration.Name)
 		}
 		if len(migration.Transaction) > 0 {
 			downQueries = wrapInTransactionWithConfig(downQueries, migration.Transaction[0], dialect)
