@@ -6,6 +6,7 @@ Migration "explicit_operations" {
       AddColumn "email" {
         type = "string"
         size = 255
+        unique = true
         check = "email ~* '@'"
       }
       DropColumn "temporary_flag" {}
