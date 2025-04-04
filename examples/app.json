@@ -2,125 +2,144 @@
     "Migration": [
         {
             "Description": "Migration with explicit operation labeling",
-            "Down": {
-                "AlterTable": {
-                    "AddColumn": {
-                        "name": "temporary_flag",
-                        "nullable": true,
-                        "type": "boolean"
-                    },
-                    "DropColumn": {
-                        "name": "email"
-                    },
-                    "RenameColumn": {
-                        "from": "created_at",
-                        "name": "",
-                        "to": "signup_date"
-                    },
-                    "name": "core.users"
-                },
-                "DeleteData": {
-                    "Where": "username LIKE 'admin%'",
-                    "name": "core.users"
-                },
-                "DropEnumType": {
-                    "IfExists": true,
-                    "name": "core.user_role"
-                },
-                "DropMaterializedView": {
-                    "IfExists": true,
-                    "name": "core.active_users"
-                },
-                "DropRowPolicy": {
-                    "IfExists": true,
-                    "Table": "core.users",
-                    "name": "user_access_policy"
-                },
-                "DropSchema": {
-                    "Cascade": true,
-                    "IfExists": true,
-                    "name": "core"
-                },
-                "DropTable": [
-                    {
-                        "Cascade": true,
-                        "name": "core.users"
-                    },
-                    {
-                        "Cascade": true,
-                        "DropTable": {
+            "Down": [
+                {
+                    "AlterTable": [
+                        {
+                            "AddColumn": [
+                                {
+                                    "name": "temporary_flag",
+                                    "nullable": true,
+                                    "type": "boolean"
+                                }
+                            ],
+                            "DropColumn": [
+                                {
+                                    "name": "email"
+                                }
+                            ],
+                            "RenameColumn": [
+                                {
+                                    "from": "created_at",
+                                    "name": "",
+                                    "to": "signup_date"
+                                }
+                            ],
+                            "name": "core.users"
+                        }
+                    ],
+                    "DeleteData": [
+                        {
+                            "Where": "username LIKE 'admin%'",
+                            "name": "core.users"
+                        }
+                    ],
+                    "DropEnumType": [
+                        {
+                            "IfExists": true,
+                            "name": "core.user_role"
+                        }
+                    ],
+                    "DropMaterializedView": [
+                        {
+                            "IfExists": true,
+                            "name": "core.active_users"
+                        }
+                    ],
+                    "DropRowPolicy": [
+                        {
+                            "IfExists": true,
+                            "Table": "core.users",
+                            "name": "user_access_policy"
+                        }
+                    ],
+                    "DropSchema": [
+                        {
+                            "Cascade": true,
+                            "IfExists": true,
+                            "name": "core"
+                        }
+                    ],
+                    "DropTable": [
+                        {
+                            "Cascade": true,
+                            "name": "core.profiles"
+                        },
+                        {
                             "Cascade": true,
                             "name": "core.users"
+                        }
+                    ],
+                    "name": ""
+                }
+            ],
+            "Transaction": [
+                {
+                    "IsolationLevel": "read_committed",
+                    "Mode": "atomic",
+                    "name": ""
+                }
+            ],
+            "Up": [
+                {
+                    "AlterTable": [
+                        {
+                            "AddColumn": [
+                                {
+                                    "check": "email ~* '@'",
+                                    "name": "email",
+                                    "size": 255,
+                                    "type": "string"
+                                }
+                            ],
+                            "DropColumn": [
+                                {
+                                    "name": "temporary_flag"
+                                }
+                            ],
+                            "RenameColumn": [
+                                {
+                                    "from": "signup_date",
+                                    "name": "",
+                                    "to": "created_at"
+                                }
+                            ],
+                            "name": "core.users"
                         },
-                        "name": "core.profiles"
-                    }
-                ],
-                "name": ""
-            },
-            "Transaction": {
-                "IsolationLevel": "read_committed",
-                "Mode": "atomic",
-                "name": ""
-            },
-            "Up": {
-                "AlterTable": [
-                    {
-                        "AddColumn": {
-                            "check": "email ~* '@'",
-                            "name": "email",
-                            "size": 255,
-                            "type": "string"
-                        },
-                        "AlterTable": {
-                            "AddColumn": {
-                                "name": "sku",
-                                "size": 255,
-                                "type": "number"
-                            },
-                            "RenameColumn": {
-                                "from": "added_date",
-                                "name": "",
-                                "to": "created_at"
-                            },
+                        {
+                            "AddColumn": [
+                                {
+                                    "name": "sku",
+                                    "size": 255,
+                                    "type": "number"
+                                }
+                            ],
+                            "RenameColumn": [
+                                {
+                                    "from": "added_date",
+                                    "name": "",
+                                    "to": "created_at"
+                                }
+                            ],
                             "name": "core.products"
-                        },
-                        "DropColumn": {
-                            "name": "temporary_flag"
-                        },
-                        "RenameColumn": {
-                            "from": "signup_date",
-                            "name": "",
-                            "to": "created_at"
-                        },
-                        "name": "core.users"
-                    },
-                    {
-                        "AddColumn": {
-                            "name": "sku",
-                            "size": 255,
-                            "type": "number"
-                        },
-                        "RenameColumn": {
-                            "from": "added_date",
-                            "name": "",
-                            "to": "created_at"
-                        },
-                        "name": "core.products"
-                    }
-                ],
-                "name": ""
-            },
-            "Validate": {
-                "PostUpChecks": [
-                    "index_exists('core.idx_active_users')",
-                    "fk_exists('core.profiles_user_id_fkey')"
-                ],
-                "PreUpChecks": [
-                    "schema_not_exists('core')",
-                    "table_empty('legacy.users')"
-                ],
-                "name": ""
-            },
+                        }
+                    ],
+                    "name": ""
+                }
+            ],
+            "Validate": [
+                {
+                    "PostUpChecks": [
+                        "index_exists('core.idx_active_users')",
+                        "fk_exists('core.profiles_user_id_fkey')"
+                    ],
+                    "PreUpChecks": [
+                        "schema_not_exists('core')",
+                        "table_empty('legacy.users')"
+                    ],
+                    "name": ""
+                }
+            ],
             "Version": "1.0.0-beta",
             "name": "explicit_operations"
         }

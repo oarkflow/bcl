@@ -332,13 +332,29 @@ func (p *Parser) parseAssignment(varName string) (Node, error) {
 	if p.curr.typ != ASSIGN {
 		if p.curr.typ == OPERATOR && p.curr.value == ":" {
 			p.nextToken()
-		} else if p.curr.typ == LBRACE {
-			// Allow implicit '=' when the value is a block literal.
+		} else if p.curr.typ == LBRACE || p.curr.typ == LBRACKET {
+			// Implicit '=' allowed for block, map or slice literals.
 		} else {
 			return nil, fmt.Errorf("expected '=' after attribute name, got %v", p.curr.value)
 		}
 	} else {
 		p.nextToken()
+	}
+	// If the value is a map literal, parse and wrap it in an AssignmentNode.
+	if p.curr.typ == LBRACE {
+		m, err := p.parseMap()
+		if err != nil {
+			return nil, err
+		}
+		return &AssignmentNode{VarName: varName, Value: m}, nil
+	}
+	// If the value is a slice literal, parse and wrap it in an AssignmentNode.
+	if p.curr.typ == LBRACKET {
+		s, err := p.parseSlice()
+		if err != nil {
+			return nil, err
+		}
+		return &AssignmentNode{VarName: varName, Value: s}, nil
 	}
 	expr, err := p.parseExpression()
 	if err != nil {
@@ -352,14 +368,14 @@ func (p *Parser) parseBlock(typ, label string) (Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	var props []Node
+	var nodes []Node
 	for p.curr.typ != RBRACE && p.curr.typ != EOF {
 		if p.curr.typ == COMMENT {
 			comment, err := p.parseComment()
 			if err != nil {
 				return nil, err
 			}
-			props = append(props, comment)
+			nodes = append(nodes, comment)
 			continue
 		}
 		// Expect a property key (IDENT)
@@ -368,21 +384,19 @@ func (p *Parser) parseBlock(typ, label string) (Node, error) {
 		}
 		propName := p.curr.value
 		p.nextToken()
-		var propValue Node
+		var node Node
+		var err error
 		if p.curr.typ == ASSIGN {
-			p.nextToken()
-			expr, err := p.parseExpression()
+			node, err = p.parseAssignment(propName)
 			if err != nil {
 				return nil, err
 			}
-			propValue = expr
 		} else if p.curr.typ == LBRACE {
 			// shorthand block with empty label
-			n, err := p.parseBlock(propName, "")
+			node, err = p.parseBlock(propName, "")
 			if err != nil {
 				return nil, err
 			}
-			propValue = n
 		} else if p.curr.typ == IDENT || p.curr.typ == STRING {
 			// Use next token as a label then expect a block start.
 			lbl := p.curr.value
@@ -390,17 +404,14 @@ func (p *Parser) parseBlock(typ, label string) (Node, error) {
 			if p.curr.typ != LBRACE {
 				return nil, fmt.Errorf("expected '{' after label %s, got %v", lbl, p.curr.value)
 			}
-			n, err := p.parseBlock(propName, lbl)
+			node, err = p.parseBlock(propName, lbl)
 			if err != nil {
 				return nil, err
 			}
-			propValue = n
 		} else {
 			return nil, fmt.Errorf("unexpected token %v after property key %s", p.curr.value, propName)
 		}
-		// Wrap the property value in an AssignmentNode so it gets assigned as a property.
-		assignment := &AssignmentNode{VarName: propName, Value: propValue}
-		props = append(props, assignment)
+		nodes = append(nodes, node)
 		if p.curr.typ == COMMA {
 			p.nextToken()
 		}
@@ -409,10 +420,9 @@ func (p *Parser) parseBlock(typ, label string) (Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &BlockNode{Type: typ, Label: label, Props: props}, nil
+	return &BlockNode{Type: typ, Label: label, Props: nodes}, nil
 }
 
-// Modified parseExpression to support ternary operator
 func (p *Parser) parseExpression() (Node, error) {
 	expr, err := p.parseBinaryExpression(0)
 	if err != nil {
@@ -490,36 +500,6 @@ func (p *Parser) parseBinaryExpression(minPrec int) (Node, error) {
 	return left, nil
 }
 
-type FunctionNode struct {
-	FuncName string
-	Args     []Node
-}
-
-func (f *FunctionNode) Eval(env *Environment) (any, error) {
-	var args []any
-	for _, arg := range f.Args {
-		val, err := arg.Eval(env)
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, val)
-	}
-	fn, ok := lookupFunction(f.FuncName)
-	if !ok {
-		return nil, fmt.Errorf("unknown function %s", f.FuncName)
-	}
-	return fn(args...)
-}
-
-func (f *FunctionNode) ToBCL(indent string) string {
-	var argsStr []string
-	for _, a := range f.Args {
-		argsStr = append(argsStr, a.ToBCL(""))
-	}
-	return fmt.Sprintf("%s%s(%s)", indent, f.FuncName, strings.Join(argsStr, ", "))
-}
-
-// parseEnvLookup handles dynamic env lookup expressions
 func (p *Parser) parseEnvLookup() (Node, error) {
 	envNode := &IdentifierNode{Name: "env"}
 	p.nextToken() // consume "env"
@@ -633,7 +613,6 @@ func (p *Parser) getOperator(tok tokenInfo) (string, bool) {
 	if tok.typ == DOT {
 		return ".", true
 	}
-	// ...existing code...
 	return "", false
 }
 

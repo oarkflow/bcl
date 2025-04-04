@@ -1,0 +1,78 @@
+Migration "explicit_operations" {
+  Version = "1.0.0-beta"
+  Description = "Migration with explicit operation labeling"
+  Up {
+    AlterTable "core.users" {
+      AddColumn "email" {
+        type = "string"
+        size = 255
+        check = "email ~* '@'"
+      }
+      DropColumn "temporary_flag" {}
+      RenameColumn {
+        from = "signup_date"
+        to = "created_at"
+      }
+    }
+    AlterTable "core.products" {
+      AddColumn "sku" {
+        type = "number"
+        size = 255
+      }
+      RenameColumn {
+        from = "added_date"
+        to = "created_at"
+      }
+    }
+  }
+  Down {
+    DropRowPolicy "user_access_policy" {
+      Table = "core.users"
+      IfExists = true
+    }
+    DropMaterializedView "core.active_users" {
+      IfExists = true
+    }
+    AlterTable "core.users" {
+      AddColumn "temporary_flag" {
+        type = "boolean"
+        nullable = true
+      }
+      DropColumn "email" {}
+      RenameColumn {
+        from = "created_at"
+        to = "signup_date"
+      }
+    }
+    DeleteData "core.users" {
+      Where = "username LIKE 'admin%'"
+    }
+    DropTable "core.profiles" {
+      Cascade = true
+    }
+    DropTable "core.users" {
+      Cascade = true
+    }
+    DropEnumType "core.user_role" {
+      IfExists = true
+    }
+    DropSchema "core" {
+      Cascade = true
+      IfExists = true
+    }
+  }
+  Validate {
+    PreUpChecks = [
+      "schema_not_exists('core')",
+      "table_empty('legacy.users')"
+    ]
+    PostUpChecks = [
+      "index_exists('core.idx_active_users')",
+      "fk_exists('core.profiles_user_id_fkey')"
+    ]
+  }
+  Transaction {
+    Mode = "atomic"
+    IsolationLevel = "read_committed"
+  }
+}

@@ -500,17 +500,18 @@ func assignValue(src, dest reflect.Value) error {
 	return nil
 }
 
-func writeAssignments(indent string, entries []*AssignmentNode) string {
-	var sb strings.Builder
-	// rough estimate for capacity to avoid re-allocations
-	sb.Grow(len(entries) * (len(indent) + 16))
-	for _, entry := range entries {
+func writeAssignments(indent string, assignments []*AssignmentNode) string {
+	sb := getBuilder(32)
+	for _, a := range assignments {
 		sb.WriteString(indent)
-		sb.WriteString("    ")
-		sb.WriteString(entry.ToBCL(""))
+		sb.WriteString(a.VarName)
+		sb.WriteString(" = ")
+		sb.WriteString(a.Value.ToBCL(indent))
 		sb.WriteByte('\n')
 	}
-	return sb.String()
+	result := sb.String()
+	putBuilder(sb)
+	return result
 }
 
 type Function func(args ...any) (any, error)

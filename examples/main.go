@@ -9,44 +9,6 @@ import (
 	"github.com/oarkflow/bcl"
 )
 
-type Database struct {
-	Name     string `json:"name"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Database string `json:"database"`
-	Driver   string `json:"driver"`
-}
-
-type Tunnel struct {
-	Name       string   `json:"name"`
-	Host       string   `json:"host"`
-	LocalPort  int      `json:"local_port"`
-	RemotePort int      `json:"remote_port"`
-	Enabled    bool     `json:"enabled"`
-	Statuses   []int    `json:"statuses"`
-	Extras     Extras   `json:"extras"`
-	Database   Database `json:"database"`
-}
-
-type Extras struct {
-	MaxLatency float64 `json:"max_latency"`
-}
-
-type Credential struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-type Config struct {
-	LocalBasePort int        `json:"local_port_base"`
-	Credential    Credential `json:"credential"`
-	Tunnels       []Tunnel   `json:"tunnel"`
-	DefaultTunnel Tunnel     `json:"defaultTunnel"`
-	DefaultHost   string     `json:"defaultHost"`
-}
-
 func main() {
 	bcl.RegisterFunction("upper", func(params ...any) (any, error) {
 		if len(params) == 0 {

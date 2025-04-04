@@ -31,6 +31,7 @@ func putBuilder(b *strings.Builder) {
 type Node interface {
 	Eval(env *Environment) (any, error)
 	ToBCL(indent string) string
+	NodeType() string
 }
 
 type AssignmentNode struct {
@@ -66,6 +67,8 @@ func (a *AssignmentNode) ToBCL(indent string) string {
 	putBuilder(sb)
 	return result
 }
+
+func (a *AssignmentNode) NodeType() string { return "Assignment" }
 
 type BlockNode struct {
 	Type  string
@@ -123,6 +126,8 @@ func (b *BlockNode) ToBCL(indent string) string {
 	return result
 }
 
+func (b *BlockNode) NodeType() string { return "Block" }
+
 type BlockContainerNode struct {
 	Type   string
 	Blocks []Node
@@ -157,6 +162,8 @@ func (b *BlockContainerNode) ToBCL(indent string) string {
 	return result
 }
 
+func (b *BlockContainerNode) NodeType() string { return "BlockContainer" }
+
 type MapNode struct {
 	Entries []*AssignmentNode
 }
@@ -181,6 +188,8 @@ func (m *MapNode) ToBCL(indent string) string {
 	putBuilder(sb)
 	return result
 }
+
+func (m *MapNode) NodeType() string { return "Map" }
 
 type CombinedMapNode struct {
 	Entries []*AssignmentNode
@@ -216,6 +225,8 @@ func (m *CombinedMapNode) ToBCL(indent string) string {
 	putBuilder(sb)
 	return result
 }
+
+func (m *CombinedMapNode) NodeType() string { return "CombinedMap" }
 
 type SliceNode struct {
 	Elements []Node
@@ -259,6 +270,8 @@ func (s *SliceNode) ToBCL(indent string) string {
 	return "[]"
 }
 
+func (s *SliceNode) NodeType() string { return "Slice" }
+
 type PrimitiveNode struct {
 	Value any
 }
@@ -287,6 +300,8 @@ func (p *PrimitiveNode) ToBCL(indent string) string {
 		return fmt.Sprintf("%v", v)
 	}
 }
+
+func (p *PrimitiveNode) NodeType() string { return "Primitive" }
 
 func interpolateDynamic(s string, env *Environment) (string, error) {
 	sb := getBuilder(len(s))
@@ -351,6 +366,8 @@ func (i *IdentifierNode) ToBCL(indent string) string {
 	return i.Name
 }
 
+func (i *IdentifierNode) NodeType() string { return "Identifier" }
+
 type DotAccessNode struct {
 	Left  Node
 	Right string
@@ -405,6 +422,8 @@ func (d *DotAccessNode) ToBCL(indent string) string {
 	putBuilder(sb)
 	return result
 }
+
+func (d *DotAccessNode) NodeType() string { return "DotAccess" }
 
 type ArithmeticNode struct {
 	Op    string
@@ -749,6 +768,8 @@ func (a *ArithmeticNode) ToBCL(indent string) string {
 	return result
 }
 
+func (a *ArithmeticNode) NodeType() string { return "Arithmetic" }
+
 func toFloat(val any) (float64, error) {
 	switch t := val.(type) {
 	case int:
@@ -817,6 +838,8 @@ func (c *ControlNode) ToBCL(indent string) string {
 	return result
 }
 
+func (c *ControlNode) NodeType() string { return "Control" }
+
 var includeCache = make(map[string][]Node)
 
 type IncludeNode struct {
@@ -853,6 +876,8 @@ func (i *IncludeNode) ToBCL(indent string) string {
 	return fmt.Sprintf(`%s@include "%s"`, indent, i.FileName)
 }
 
+func (i *IncludeNode) NodeType() string { return "Include" }
+
 type CommentNode struct {
 	Text string
 }
@@ -864,6 +889,8 @@ func (c *CommentNode) Eval(env *Environment) (any, error) {
 func (c *CommentNode) ToBCL(indent string) string {
 	return indent + c.Text
 }
+
+func (c *CommentNode) NodeType() string { return "Comment" }
 
 // UnaryNode to support unary operators
 type UnaryNode struct {
@@ -901,6 +928,8 @@ func (u *UnaryNode) ToBCL(indent string) string {
 	}
 	return fmt.Sprintf("%s%s%s", indent, u.Op, u.Child.ToBCL(""))
 }
+
+func (u *UnaryNode) NodeType() string { return "Unary" }
 
 // TernaryNode implementation for condition ? trueExpr : falseExpr
 type TernaryNode struct {
@@ -941,6 +970,8 @@ func (t *TernaryNode) ToBCL(indent string) string {
 	return result
 }
 
+func (t *TernaryNode) NodeType() string { return "Ternary" }
+
 // GroupNode to preserve parentheses
 type GroupNode struct {
 	Child Node
@@ -953,4 +984,39 @@ func (g *GroupNode) Eval(env *Environment) (any, error) {
 func (g *GroupNode) ToBCL(indent string) string {
 	// Always output the group with parentheses.
 	return fmt.Sprintf("(%s)", g.Child.ToBCL(""))
+}
+
+func (g *GroupNode) NodeType() string { return "Group" }
+
+type FunctionNode struct {
+	FuncName string
+	Args     []Node
+}
+
+func (f *FunctionNode) NodeType() string {
+	return "FunctionNode"
+}
+
+func (f *FunctionNode) Eval(env *Environment) (any, error) {
+	var args []any
+	for _, arg := range f.Args {
+		val, err := arg.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, val)
+	}
+	fn, ok := lookupFunction(f.FuncName)
+	if !ok {
+		return nil, fmt.Errorf("unknown function %s", f.FuncName)
+	}
+	return fn(args...)
+}
+
+func (f *FunctionNode) ToBCL(indent string) string {
+	var argsStr []string
+	for _, a := range f.Args {
+		argsStr = append(argsStr, a.ToBCL(""))
+	}
+	return fmt.Sprintf("%s%s(%s)", indent, f.FuncName, strings.Join(argsStr, ", "))
 }
