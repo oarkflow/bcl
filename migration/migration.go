@@ -1,19 +1,12 @@
 package migration
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"flag"
 	"fmt"
-	"log"
-	"os"
 	"strings"
 	"sync"
-	"time"
-
-	"github.com/oarkflow/bcl"
 )
 
 const (
@@ -716,153 +709,7 @@ func wrapInTransactionWithConfig(queries []string, trans Transaction, dialect st
 	return txQueries
 }
 
-func createMigrationHistoryTableSQL(dialect string) (string, error) {
-	switch dialect {
-	case DialectPostgres:
-		return "CREATE TABLE IF NOT EXISTS migrations (id SERIAL PRIMARY KEY, name VARCHAR(255) NOT NULL, version VARCHAR(50) NOT NULL, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);", nil
-	case DialectMySQL:
-		return "CREATE TABLE IF NOT EXISTS migrations (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL, version VARCHAR(50) NOT NULL, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);", nil
-	case DialectSQLite:
-		return "CREATE TABLE IF NOT EXISTS migrations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, version TEXT NOT NULL, applied_at DATETIME DEFAULT CURRENT_TIMESTAMP);", nil
-	default:
-		return "", fmt.Errorf("unsupported dialect: %s", dialect)
-	}
-}
-
-func runPreUpChecks(checks []string) error {
-	for _, check := range checks {
-		log.Printf("Executing PreUpCheck: %s", check)
-
-	}
-	log.Println("All PreUpChecks passed.")
-	return nil
-}
-
-func runPostUpChecks(checks []string) error {
-	for _, check := range checks {
-		log.Printf("Executing PostUpCheck: %s", check)
-
-	}
-	log.Println("All PostUpChecks passed.")
-	return nil
-}
-
-func acquireLock() error {
-	if _, err := os.Stat(lockFileName); err == nil {
-		return errors.New("migration lock already acquired")
-	}
-	f, err := os.Create(lockFileName)
-	if err != nil {
-		return fmt.Errorf("failed to create lock file: %w", err)
-	}
-	f.Close()
-	return nil
-}
-
-func releaseLock() error {
-	if err := os.Remove(lockFileName); err != nil {
-		return fmt.Errorf("failed to remove lock file: %w", err)
-	}
-	return nil
-}
-
 func computeChecksum(data []byte) string {
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])
-}
-
-func main() {
-	configPath := flag.String("config", "", "Path to migration DSL configuration file")
-	dryRun := flag.Bool("dry-run", false, "Output the generated SQL without executing migrations")
-	timeoutSec := flag.Int("timeout", 30, "Timeout (in seconds) for migration execution")
-	dialect := flag.String("dialect", DialectPostgres, "SQL dialect to use (postgres, mysql, sqlite)")
-	flag.Parse()
-	if *configPath == "" {
-		log.Fatal("No config file provided. Use -config flag.")
-	}
-	data, err := os.ReadFile(*configPath)
-	if err != nil {
-		log.Fatalf("Failed to read config file: %v", err)
-	}
-	checksum := computeChecksum(data)
-	log.Printf("Migration file checksum: %s", checksum)
-	var cfg Config
-	if _, err := bcl.Unmarshal(data, &cfg); err != nil {
-		log.Fatalf("Failed to unmarshal migration file: %v", err)
-	}
-	if err := acquireLock(); err != nil {
-		log.Fatalf("Failed to acquire migration lock: %v", err)
-	}
-	defer func() {
-		if err := releaseLock(); err != nil {
-			log.Printf("Warning: %v", err)
-		}
-	}()
-	historySQL, err := createMigrationHistoryTableSQL(*dialect)
-	if err != nil {
-		log.Fatalf("Error generating migration history table SQL: %v", err)
-	}
-	log.Println("Migration History Table SQL:")
-	log.Println(historySQL)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeoutSec)*time.Second)
-	defer cancel()
-	for _, migration := range cfg.Migrations {
-		select {
-		case <-ctx.Done():
-			log.Fatalf("Migration timed out: %v", ctx.Err())
-		default:
-		}
-		log.Printf("Starting migration: %s - %s", migration.Name, migration.Description)
-		for _, validation := range migration.Validate {
-			if err := runPreUpChecks(validation.PreUpChecks); err != nil {
-				log.Fatalf("PreUp validation failed: %v", err)
-			}
-		}
-		upQueries, err := migration.ToSQL(*dialect, true)
-		if err != nil {
-			log.Fatalf("Error generating SQL for up migration '%s': %v", migration.Name, err)
-		}
-		if len(migration.Transaction) > 1 {
-			log.Printf("Warning: More than one transaction provided in migration '%s'. Only the first one will be used.", migration.Name)
-		}
-		if len(migration.Transaction) > 0 {
-			log.Printf("Using transaction mode '%s' for migration '%s'.", migration.Transaction[0].Mode, migration.Name)
-			upQueries = wrapInTransactionWithConfig(upQueries, migration.Transaction[0], *dialect)
-		} else {
-			upQueries = wrapInTransaction(upQueries)
-		}
-		log.Printf("Generated SQL for migration (up) - %s:", migration.Name)
-		for _, query := range upQueries {
-			log.Println(query)
-		}
-		if !*dryRun {
-			log.Printf("Executing migration '%s'...", migration.Name)
-			time.Sleep(100 * time.Millisecond)
-		} else {
-			log.Printf("Dry-run mode: Not executing migration '%s'.", migration.Name)
-		}
-		downQueries, err := migration.ToSQL(*dialect, false)
-		if err != nil {
-			log.Fatalf("Error generating SQL for down migration '%s': %v", migration.Name, err)
-		}
-		if len(downQueries) == 0 {
-			log.Printf("Warning: No down migration queries generated for migration '%s'.", migration.Name)
-		}
-		if len(migration.Transaction) > 0 {
-			downQueries = wrapInTransactionWithConfig(downQueries, migration.Transaction[0], *dialect)
-		} else {
-			downQueries = wrapInTransaction(downQueries)
-		}
-		log.Printf("Generated SQL for migration (down) - %s:", migration.Name)
-		for _, query := range downQueries {
-			log.Println(query)
-		}
-		for _, validation := range migration.Validate {
-			if err := runPostUpChecks(validation.PostUpChecks); err != nil {
-				log.Fatalf("PostUp validation failed: %v", err)
-			}
-		}
-		log.Printf("Completed migration: %s", migration.Name)
-	}
-	log.Println("All migrations completed successfully.")
 }

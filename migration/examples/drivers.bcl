@@ -1,0 +1,29 @@
+Driver "postgres" {
+	CreateTableStubs = "CREATE TABLE IF NOT EXISTS %s (%s);"
+	DropTableStubs = "DROP TABLE IF EXISTS %s;"
+	DropColumnStubs = "ALTER TABLE %s DROP COLUMN %s;"
+	DropIndexStubs = "DROP INDEX IF EXISTS %s;"
+	DropForeignKeyStubs = "ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s;"
+	DropPrimaryKeyStubs = "ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s;"
+	DropUniqueKeyStubs = "ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s;"
+	DropCheckKeyStubs = "ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s;"
+	DropForeignKeyStubs = "ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s;"
+	DropTriggerStubs = "DROP TRIGGER IF EXISTS %s ON %s;"
+	DropViewStubs = "DROP VIEW IF EXISTS %s;"
+	DropSequenceStubs = "DROP SEQUENCE IF EXISTS %s;"
+}
+
+Driver "mysql" {
+	CreateTableStubs = "CREATE TABLE IF NOT EXISTS %s (%s);"
+	DropTableStubs = "DROP TABLE IF EXISTS %s;"
+	DropColumnStubs = "ALTER TABLE %s DROP COLUMN %s;"
+	DropIndexStubs = "DROP INDEX IF EXISTS %s ON %s;"
+	DropForeignKeyStubs = "ALTER TABLE %s DROP FOREIGN KEY IF EXISTS %s;"
+	DropPrimaryKeyStubs = "ALTER TABLE %s DROP PRIMARY KEY IF EXISTS %s;"
+	DropUniqueKeyStubs = "ALTER TABLE %s DROP UNIQUE KEY IF EXISTS %s;"
+	DropCheckKeyStubs = "ALTER TABLE %s DROP CHECK IF EXISTS %s;"
+	DropForeignKeyStubs = "ALTER TABLE %s DROP FOREIGN KEY IF EXISTS %s;"
+	DropTriggerStubs = "DROP TRIGGER IF EXISTS %s;"
+	DropViewStubs = "DROP VIEW IF EXISTS %s;"
+	DropSequenceStubs = "DROP SEQUENCE IF EXISTS %s;"
+}
