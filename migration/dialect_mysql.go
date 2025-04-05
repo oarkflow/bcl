@@ -12,31 +12,6 @@ func (m *MySQLDialect) quoteIdentifier(id string) string {
 	return fmt.Sprintf("`%s`", id)
 }
 
-func (m *MySQLDialect) convertDefault(defVal any, colType string) string {
-	var def string
-	switch defVal := defVal.(type) {
-	case string:
-		def = defVal
-	case nil:
-		def = "NULL"
-	default:
-		def = fmt.Sprintf("%v", defVal)
-	}
-	lowerDef := strings.ToLower(def)
-	if lowerDef == "now()" {
-		return "CURRENT_TIMESTAMP"
-	}
-	if lowerDef == "null" {
-		return "NULL"
-	}
-	if strings.ToLower(colType) == "string" {
-		if !(strings.HasPrefix(def, "'") && strings.HasSuffix(def, "'")) {
-			return fmt.Sprintf("'%s'", def)
-		}
-	}
-	return def
-}
-
 func (m *MySQLDialect) TableExistsSQL(table string) string {
 	return fmt.Sprintf(`SELECT COUNT(*) > 0 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = '%s'`, table)
 }
@@ -56,7 +31,7 @@ func (m *MySQLDialect) CreateTableSQL(ct CreateTable, up bool) (string, error) {
 				colDef += " NOT NULL"
 			}
 			if col.Default != "" {
-				def := m.convertDefault(col.Default, col.Type)
+				def := ConvertDefault(col.Default, col.Type)
 				if strings.Contains(colDef, "NOT NULL") {
 					if def != "NULL" {
 						colDef += fmt.Sprintf(" DEFAULT %s", def)
@@ -140,7 +115,7 @@ func (m *MySQLDialect) AddColumnSQL(ac AddColumn, tableName string) ([]string, e
 		sb.WriteString(" NOT NULL")
 	}
 	if ac.Default != "" {
-		def := m.convertDefault(ac.Default, ac.Type)
+		def := ConvertDefault(ac.Default, ac.Type)
 		if !ac.Nullable {
 			if def != "NULL" {
 				sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))

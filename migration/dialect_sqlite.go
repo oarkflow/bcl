@@ -16,31 +16,6 @@ func (s *SQLiteDialect) TableExistsSQL(table string) string {
 	return fmt.Sprintf(`SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = '%s'`, table)
 }
 
-func (s *SQLiteDialect) convertDefault(defVal any, colType string) string {
-	var def string
-	switch defVal := defVal.(type) {
-	case string:
-		def = defVal
-	case nil:
-		def = "NULL"
-	default:
-		def = fmt.Sprintf("%v", defVal)
-	}
-	lowerDef := strings.ToLower(def)
-	if lowerDef == "now()" {
-		return "CURRENT_TIMESTAMP"
-	}
-	if lowerDef == "null" {
-		return "NULL"
-	}
-	if strings.ToLower(colType) == "string" {
-		if !(strings.HasPrefix(def, "'") && strings.HasSuffix(def, "'")) {
-			return fmt.Sprintf("'%s'", def)
-		}
-	}
-	return def
-}
-
 func (s *SQLiteDialect) CreateTableSQL(ct CreateTable, up bool) (string, error) {
 	if up {
 		var sb strings.Builder
@@ -53,7 +28,7 @@ func (s *SQLiteDialect) CreateTableSQL(ct CreateTable, up bool) (string, error) 
 				colDef += " NOT NULL"
 			}
 			if col.Default != "" {
-				def := s.convertDefault(col.Default, col.Type)
+				def := ConvertDefault(col.Default, col.Type)
 				if strings.Contains(colDef, "NOT NULL") {
 					if def != "NULL" {
 						colDef += fmt.Sprintf(" DEFAULT %s", def)
@@ -134,7 +109,7 @@ func (s *SQLiteDialect) AddColumnSQL(ac AddColumn, tableName string) ([]string, 
 		sb.WriteString(" NOT NULL")
 	}
 	if ac.Default != "" {
-		def := s.convertDefault(ac.Default, ac.Type)
+		def := ConvertDefault(ac.Default, ac.Type)
 		if !ac.Nullable {
 			if def != "NULL" {
 				sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))
