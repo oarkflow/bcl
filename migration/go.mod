@@ -41,7 +41,7 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
-	github.com/brianvoe/gofakeit/v6 v6.28.0 // indirect
+	github.com/brianvoe/gofakeit/v6 v6.28.0
 	github.com/oarkflow/cli v0.0.0-20250313133305-8d14a63c1883
 	github.com/oarkflow/date v0.0.4 // indirect
 	github.com/oarkflow/log v1.0.79
