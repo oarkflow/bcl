@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sync"
+
+	"github.com/oarkflow/migration/drivers"
 )
 
 const (
@@ -609,4 +611,16 @@ func RunSeeds(seed SeedDefinition, dialect string) error {
 func computeChecksum(data []byte) string {
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])
+}
+
+func NewDriver(driver string, dsn string) (IDatabaseDriver, error) {
+	switch driver {
+	case "mysql":
+		return drivers.NewMySQLDriver(dsn)
+	case "postgres":
+		return drivers.NewPostgresDriver(dsn)
+	case "sqlite":
+		return drivers.NewSQLiteDriver(dsn)
+	}
+	return nil, fmt.Errorf("unsupported driver: %s", driver)
 }

@@ -13,16 +13,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oarkflow/bcl"
 	"github.com/oarkflow/cli"
 	"github.com/oarkflow/cli/console"
 	"github.com/oarkflow/cli/contracts"
+
+	"github.com/oarkflow/bcl"
 )
 
 var (
 	Name    = "Migration"
 	Version = "v0.0.1"
 )
+
+// New interface for applying SQL statements on any database.
+type IDatabaseDriver interface {
+	ApplySQL(queries []string) error
+}
 
 type IManager interface {
 	ApplyMigration(m Migration) error
@@ -39,6 +45,7 @@ type Manager struct {
 	appliedMigrations map[string]string
 	dialect           string
 	client            contracts.Cli
+	dbDriver          IDatabaseDriver // added field for DB driver
 }
 
 func NewManager() *Manager {
@@ -77,6 +84,11 @@ func (d *Manager) SetDialect(dialect string) {
 
 func (d *Manager) GetDialect() string {
 	return d.dialect
+}
+
+// SetDriver allows injecting a database driver into the Manager.
+func (d *Manager) SetDriver(driver IDatabaseDriver) {
+	d.dbDriver = driver
 }
 
 func (d *Manager) loadHistory() error {
@@ -134,7 +146,14 @@ func (d *Manager) ApplyMigration(m Migration) error {
 	if err != nil {
 		return fmt.Errorf("failed to generate SQL: %w", err)
 	}
-	log.Printf("Applying migration %s with SQL:\n%s", m.Name, strings.Join(queries, "\n"))
+	// Ensure a valid DB driver is set.
+	if d.dbDriver == nil {
+		return fmt.Errorf("no database driver configured")
+	}
+	// Delegate applying SQL to the driver.
+	if err := d.dbDriver.ApplySQL(queries); err != nil {
+		return fmt.Errorf("failed to apply migration %s: %w", m.Name, err)
+	}
 	d.appliedMigrations[m.Name] = checksum
 	return d.saveHistory()
 }
