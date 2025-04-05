@@ -202,7 +202,7 @@ func (m *MySQLDialect) MapDataType(genericType string, size int, autoIncrement, 
 		if size > 0 {
 			return fmt.Sprintf("VARCHAR(%d)", size)
 		}
-		return "TEXT"
+		return "VARCHAR(255)"
 	case "number":
 		return "INT"
 	case "boolean":

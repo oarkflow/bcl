@@ -414,6 +414,7 @@ func (d *Manager) CreateMigrationFile(name string) error {
       }
       Column "status" {
         type = "string"
+        size = 20
         default = "active"
       }
       Column "created_at" {
