@@ -624,15 +624,11 @@ func (p *Parser) parseHeredoc() (Node, error) {
 		return nil, err
 	}
 	delimiter := delimTok.value
-
-	// Find first newline character after heredoc marker
 	newlineIdx := strings.IndexByte(p.input[heredocStartOffset:], '\n')
 	if newlineIdx == -1 {
 		return nil, fmt.Errorf("expected newline after heredoc marker, got marker: %q", p.input[heredocStartOffset:])
 	}
 	contentStart := heredocStartOffset + newlineIdx + 1
-
-	// Use a loop with IndexByte to avoid splitting into all lines.
 	pos := contentStart
 	var delimPos int = -1
 	for {
@@ -651,16 +647,14 @@ func (p *Parser) parseHeredoc() (Node, error) {
 		return nil, fmt.Errorf("heredoc delimiter %s not found", delimiter)
 	}
 	content := p.input[contentStart:delimPos]
-	// New offset is after the delimiter line (skip newline if any)
 	newOffset := delimPos + len(delimiter)
 	if newOffset < len(p.input) && p.input[newOffset] == '\n' {
 		newOffset++
 	}
-	p.offset = newOffset
-
-	// Reinitialize scanner with the remaining input (zero allocation on string slicing)
+	p.input = p.input[newOffset:]
+	p.offset = 0
 	var s scanner.Scanner
-	s.Init(strings.NewReader(p.input[newOffset:]))
+	s.Init(strings.NewReader(p.input))
 	s.Filename = p.scanner.Filename
 	s.Whitespace = 1<<' ' | 1<<'\t' | 1<<'\r' | 1<<'\n'
 	s.Mode |= scanner.ScanComments

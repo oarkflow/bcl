@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 
@@ -19,8 +18,6 @@ func main() {
 	if _, err := bcl.Unmarshal(data, &cfg); err != nil {
 		log.Fatalf("Failed to unmarshal migration file: %v", err)
 	}
-	fmt.Println(cfg)
-	panic(1)
 	dialect := "postgres"
 	for _, mig := range cfg.Migrations {
 		upQueries, err := mig.ToSQL(dialect, true)
