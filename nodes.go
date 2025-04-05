@@ -108,7 +108,7 @@ type BlockNode struct {
 }
 
 func (b *BlockNode) Eval(env *Environment) (any, error) {
-	local := NewEnv(nil)
+	local := NewEnv(env)
 	for _, n := range b.Props {
 		_, err := n.Eval(local)
 		if err != nil {
@@ -167,7 +167,7 @@ type BlockContainerNode struct {
 func (b *BlockContainerNode) Eval(env *Environment) (any, error) {
 	result := make(map[string]any)
 	for _, blockNode := range b.Blocks {
-		val, err := blockNode.Eval(NewEnv(nil))
+		val, err := blockNode.Eval(NewEnv(env))
 		if err != nil {
 			return nil, err
 		}

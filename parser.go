@@ -302,11 +302,7 @@ func (p *Parser) parseInclude() (Node, error) {
 func (p *Parser) parseFileName() (string, error) {
 	sb := getBuilder(16)
 	if p.curr.typ == STRING {
-		unquoted, err := strconv.Unquote(p.curr.value)
-		if err != nil {
-			return "", p.parseError(fmt.Sprintf("invalid file name string literal (missing or malformed closing double quote): %v", p.curr.value))
-		}
-		sb.WriteString(unquoted)
+		sb.WriteString(p.curr.value)
 		p.nextToken()
 		result := sb.String()
 		putBuilder(sb)
