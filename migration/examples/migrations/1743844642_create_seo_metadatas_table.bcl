@@ -8,6 +8,7 @@ Migration "1743844642_create_seo_metadatas_table" {
         type = "integer"
         primary_key = true
         auto_increment = true
+        is_nullable = false
         index = true
         unique = true
       }
@@ -17,6 +18,7 @@ Migration "1743844642_create_seo_metadatas_table" {
       }
       Column "status" {
         type = "string"
+        size = 20
         default = "active"
       }
       Column "created_at" {

@@ -3,6 +3,7 @@ package migration
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/oarkflow/json"
@@ -114,11 +115,11 @@ func NewDatabaseHistoryDriver(dialect, dsn string, tables ...string) (HistoryDri
 	stmt := CreateTable{
 		Name: table,
 		Columns: []AddColumn{
-			{Name: "id", Type: "SERIAL", PrimaryKey: true, Unique: true, Index: true},
-			{Name: "name", Type: "string", Index: true},
-			{Name: "version", Type: "string"},
+			{Name: "id", Type: "number", PrimaryKey: true, AutoIncrement: true, Unique: true, Index: true},
+			{Name: "name", Type: "string", Index: true, Size: 200},
+			{Name: "version", Type: "string", Size: 10},
 			{Name: "description", Type: "string", Size: 500},
-			{Name: "checksum", Type: "string"},
+			{Name: "checksum", Type: "string", Size: 100},
 			{Name: "applied_at", Type: "datetime"},
 		},
 	}
@@ -133,8 +134,15 @@ func NewDatabaseHistoryDriver(dialect, dsn string, tables ...string) (HistoryDri
 		if err != nil {
 			return nil, err
 		}
-		if _, err := db.Exec(query); err != nil {
-			return nil, err
+		queries := strings.Split(query, dial.EOS())
+		for _, q := range queries {
+			q = strings.TrimSpace(q)
+			if q == "" {
+				continue
+			}
+			if _, err := db.Exec(q); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return &DatabaseHistoryDriver{db: db, dialect: dialect, table: table}, nil

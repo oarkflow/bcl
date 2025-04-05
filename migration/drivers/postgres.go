@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/oarkflow/squealx"
 	"github.com/oarkflow/squealx/drivers/postgres"
@@ -22,15 +23,22 @@ func NewPostgresDriver(dsn string) (*PostgresDriver, error) {
 	return &PostgresDriver{db: db}, nil
 }
 
-func (p *PostgresDriver) ApplySQL(queries []string) error {
+func (p *PostgresDriver) ApplySQL(migrations []string) error {
 	tx, err := p.db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	for _, query := range queries {
-		if _, err := tx.Exec(query); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("failed to execute query [%s]: %w", query, err)
+	for _, query := range migrations {
+		queries := strings.Split(query, ";")
+		for _, q := range queries {
+			q = strings.TrimSpace(q)
+			if q == "" {
+				continue
+			}
+			if _, err := tx.Exec(q); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to execute query [%s]: %w", query, err)
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
