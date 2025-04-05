@@ -6,7 +6,7 @@ Migration "object_operations" {
     CreateView "test.view1" {
       definition = <<EOF
 SELECT id, name FROM test.table1
-EOF
+
       or_replace = true
     }
     RenameView "test.view1" {

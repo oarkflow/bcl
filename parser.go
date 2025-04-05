@@ -200,9 +200,20 @@ func (p *Parser) nextToken() {
 	p.lastLine = p.scanner.Pos().Line
 }
 
+// Add helper for robust error reporting.
+func (p *Parser) parseError(msg string) error {
+	pos := p.scanner.Pos()
+	lines := strings.Split(p.input, "\n")
+	var errorLine string
+	if pos.Line-1 < len(lines) {
+		errorLine = lines[pos.Line-1]
+	}
+	return fmt.Errorf("%s at %s:%d:%d\nError line: %s\nHint: check your syntax near this token", msg, p.scanner.Filename, pos.Line, pos.Column, errorLine)
+}
+
 func (p *Parser) expect(typ Token) (tokenInfo, error) {
 	if p.curr.typ != typ {
-		return tokenInfo{}, fmt.Errorf("expected token type %d but got %d (%v) at offset %d in file %s", typ, p.curr.typ, p.curr.value, p.offset, p.scanner.Filename)
+		return tokenInfo{}, p.parseError(fmt.Sprintf("expected token type %d but got %d (%v)", typ, p.curr.typ, p.curr.value))
 	}
 	tok := p.curr
 	p.nextToken()
@@ -250,13 +261,13 @@ func (p *Parser) parseStatement() (Node, error) {
 		}
 		return p.parseAssignment(typeName)
 	}
-	return nil, fmt.Errorf("unexpected token: %v", p.curr.value)
+	return nil, p.parseError(fmt.Sprintf("unexpected token: %v", p.curr.value))
 }
 
 func (p *Parser) parseInclude() (Node, error) {
 	p.nextToken()
 	if p.curr.typ != IDENT || p.curr.value != "include" {
-		return nil, fmt.Errorf("expected 'include' after '@', got %v", p.curr.value)
+		return nil, p.parseError(fmt.Sprintf("expected 'include' after '@', got %v", p.curr.value))
 	}
 	p.nextToken()
 	fileName, err := p.parseFileName()
@@ -267,12 +278,12 @@ func (p *Parser) parseInclude() (Node, error) {
 	if strings.HasPrefix(fileName, "http://") || strings.HasPrefix(fileName, "https://") {
 		resp, err := http.Get(fileName)
 		if err != nil {
-			return nil, fmt.Errorf("failed to fetch URL %s: %v", fileName, err)
+			return nil, p.parseError(fmt.Sprintf("failed to fetch URL %s: %v", fileName, err))
 		}
 		defer resp.Body.Close()
 		content, err = io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read content from URL %s: %v", fileName, err)
+			return nil, p.parseError(fmt.Sprintf("failed to read content from URL %s: %v", fileName, err))
 		}
 	} else {
 		if !filepath.IsAbs(fileName) {
@@ -281,21 +292,26 @@ func (p *Parser) parseInclude() (Node, error) {
 		}
 		content, err = os.ReadFile(fileName)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read include file %s: %v", fileName, err)
+			return nil, p.parseError(fmt.Sprintf("failed to read include file %s: %v", fileName, err))
 		}
 	}
 	subParser := NewParser(string(content))
 	nodes, err := subParser.Parse()
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse include source %s: %v", fileName, err)
+		return nil, p.parseError(fmt.Sprintf("failed to parse include source %s: %v", fileName, err))
 	}
 	return &IncludeNode{FileName: fileName, Nodes: nodes}, nil
 }
 
 func (p *Parser) parseFileName() (string, error) {
 	sb := getBuilder(16)
+	// Modified: Validate that string literals are properly closed.
 	if p.curr.typ == STRING {
-		sb.WriteString(p.curr.value)
+		unquoted, err := strconv.Unquote(p.curr.value)
+		if err != nil {
+			return "", p.parseError(fmt.Sprintf("invalid file name string literal (missing or malformed closing double quote): %v", p.curr.value))
+		}
+		sb.WriteString(unquoted)
 		p.nextToken()
 		result := sb.String()
 		putBuilder(sb)
@@ -309,7 +325,7 @@ func (p *Parser) parseFileName() (string, error) {
 				p.nextToken()
 				if p.curr.typ != IDENT {
 					putBuilder(sb)
-					return "", fmt.Errorf("expected identifier after dot in file name, got %v", p.curr.value)
+					return "", p.parseError(fmt.Sprintf("expected identifier after dot in file name, got %v", p.curr.value))
 				}
 				sb.WriteString(p.curr.value)
 				p.nextToken()
@@ -324,7 +340,7 @@ func (p *Parser) parseFileName() (string, error) {
 		putBuilder(sb)
 		return result, nil
 	}
-	return "", fmt.Errorf("expected file name, got %v", p.curr.value)
+	return "", p.parseError(fmt.Sprintf("expected file name, got %v", p.curr.value))
 }
 
 func (p *Parser) parseAssignment(varName string) (Node, error) {
@@ -335,7 +351,7 @@ func (p *Parser) parseAssignment(varName string) (Node, error) {
 		} else if p.curr.typ == LBRACE || p.curr.typ == LBRACKET {
 			// Implicit '=' allowed for block, map or slice literals.
 		} else {
-			return nil, fmt.Errorf("expected '=' after attribute name, got %v", p.curr.value)
+			return nil, p.parseError(fmt.Sprintf("expected '=' after attribute name, got %v", p.curr.value))
 		}
 	} else {
 		p.nextToken()
@@ -380,7 +396,7 @@ func (p *Parser) parseBlock(typ, label string) (Node, error) {
 		}
 		// Expect a property key (IDENT)
 		if p.curr.typ != IDENT {
-			return nil, fmt.Errorf("expected property name, got %v", p.curr.value)
+			return nil, p.parseError(fmt.Sprintf("expected property name, got %v", p.curr.value))
 		}
 		propName := p.curr.value
 		p.nextToken()
@@ -402,14 +418,14 @@ func (p *Parser) parseBlock(typ, label string) (Node, error) {
 			lbl := p.curr.value
 			p.nextToken()
 			if p.curr.typ != LBRACE {
-				return nil, fmt.Errorf("expected '{' after label %s, got %v", lbl, p.curr.value)
+				return nil, p.parseError(fmt.Sprintf("expected '{' after label %s, got %v", lbl, p.curr.value))
 			}
 			node, err = p.parseBlock(propName, lbl)
 			if err != nil {
 				return nil, err
 			}
 		} else {
-			return nil, fmt.Errorf("unexpected token %v after property key %s", p.curr.value, propName)
+			return nil, p.parseError(fmt.Sprintf("unexpected token %v after property key %s", p.curr.value, propName))
 		}
 		nodes = append(nodes, node)
 		if p.curr.typ == COMMA {
@@ -435,7 +451,7 @@ func (p *Parser) parseExpression() (Node, error) {
 			return nil, err
 		}
 		if p.curr.typ != OPERATOR || p.curr.value != ":" {
-			return nil, fmt.Errorf("expected ':' in ternary operator, got %v", p.curr.value)
+			return nil, p.parseError(fmt.Sprintf("expected ':' in ternary operator, got %v", p.curr.value))
 		}
 		p.nextToken()
 		falseExpr, err := p.parseExpression()
@@ -488,10 +504,10 @@ func (p *Parser) parseBinaryExpression(minPrec int) (Node, error) {
 				if s, ok := r.Value.(string); ok {
 					left = &DotAccessNode{Left: left, Right: s}
 				} else {
-					return nil, fmt.Errorf("dot operator right operand must be string or identifier")
+					return nil, p.parseError(fmt.Sprintf("dot operator right operand must be string or identifier"))
 				}
 			default:
-				return nil, fmt.Errorf("invalid right operand for dot operator")
+				return nil, p.parseError(fmt.Sprintf("invalid right operand for dot operator"))
 			}
 		} else {
 			left = &ArithmeticNode{Op: op, Left: left, Right: right}
@@ -509,7 +525,7 @@ func (p *Parser) parseEnvLookup() (Node, error) {
 	p.nextToken() // consume "."
 	var parts []string
 	if p.curr.typ != IDENT {
-		return nil, fmt.Errorf("expected identifier after 'env.' but got %v", p.curr.value)
+		return nil, p.parseError(fmt.Sprintf("expected identifier after 'env.' but got %v", p.curr.value))
 	}
 	parts = append(parts, p.curr.value)
 	p.nextToken()
@@ -526,9 +542,13 @@ func (p *Parser) parsePrimary() (Node, error) {
 	}
 	switch p.curr.typ {
 	case STRING:
-		val := p.curr.value
+		// Modified: Validate string literal closure.
+		unquoted, err := strconv.Unquote(p.curr.value)
+		if err != nil {
+			return nil, p.parseError(fmt.Sprintf("missing or malformed closing double quote: %v", p.curr.value))
+		}
 		p.nextToken()
-		return &PrimitiveNode{Value: val}, nil
+		return &PrimitiveNode{Value: unquoted}, nil
 	case NUMBER:
 		text := p.curr.value
 		p.nextToken()
@@ -599,7 +619,7 @@ func (p *Parser) parsePrimary() (Node, error) {
 	case AT:
 		return p.parseInclude()
 	default:
-		return nil, fmt.Errorf("unexpected token in expression: %v", p.curr.value)
+		return nil, p.parseError(fmt.Sprintf("unexpected token in expression: %v", p.curr.value))
 	}
 }
 
@@ -626,7 +646,7 @@ func (p *Parser) parseHeredoc() (Node, error) {
 	delimiter := delimTok.value
 	newlineIdx := strings.IndexByte(p.input[heredocStartOffset:], '\n')
 	if newlineIdx == -1 {
-		return nil, fmt.Errorf("expected newline after heredoc marker, got marker: %q", p.input[heredocStartOffset:])
+		return nil, p.parseError(fmt.Sprintf("expected newline after heredoc marker, got marker: %q", p.input[heredocStartOffset:]))
 	}
 	contentStart := heredocStartOffset + newlineIdx + 1
 	pos := contentStart
@@ -644,7 +664,7 @@ func (p *Parser) parseHeredoc() (Node, error) {
 		pos += nextNewline + 1
 	}
 	if delimPos == -1 {
-		return nil, fmt.Errorf("heredoc delimiter %s not found", delimiter)
+		return nil, p.parseError(fmt.Sprintf("heredoc delimiter %s not found", delimiter))
 	}
 	content := p.input[contentStart:delimPos]
 	newOffset := delimPos + len(delimiter)
@@ -680,7 +700,7 @@ func (p *Parser) parseMap() (Node, error) {
 			continue
 		}
 		if p.curr.typ != IDENT {
-			return nil, fmt.Errorf("expected key in map, got %v", p.curr.value)
+			return nil, p.parseError(fmt.Sprintf("expected key in map, got %v", p.curr.value))
 		}
 		key := p.curr.value
 		p.nextToken()
@@ -691,18 +711,16 @@ func (p *Parser) parseMap() (Node, error) {
 			}
 			entries = append(entries, assignment.(*AssignmentNode))
 		} else if p.curr.typ == LBRACE {
-			// shorthand block with empty label
 			block, err := p.parseBlock(key, "")
 			if err != nil {
 				return nil, err
 			}
 			blocks = append(blocks, block)
 		} else if p.curr.typ == IDENT || p.curr.typ == STRING {
-			// Grab the label and expect a block start.
 			label := p.curr.value
 			p.nextToken()
 			if p.curr.typ != LBRACE {
-				return nil, fmt.Errorf("expected '{' after label %s, got %v", label, p.curr.value)
+				return nil, p.parseError(fmt.Sprintf("expected '{' after label %s, got %v", label, p.curr.value))
 			}
 			block, err := p.parseBlock(key, label)
 			if err != nil {
@@ -710,7 +728,7 @@ func (p *Parser) parseMap() (Node, error) {
 			}
 			blocks = append(blocks, block)
 		} else {
-			return nil, fmt.Errorf("unexpected token %v after key %s", p.curr.value, key)
+			return nil, p.parseError(fmt.Sprintf("unexpected token %v after key %s", p.curr.value, key))
 		}
 		if p.curr.typ == COMMA {
 			p.nextToken()
@@ -779,7 +797,7 @@ func (p *Parser) parseControl() (Node, error) {
 	} else if p.curr.typ == LPAREN {
 		blockStart = LPAREN
 	} else {
-		return nil, fmt.Errorf("expected block start token (\"{\" or \"(\") but got %v", p.curr.value)
+		return nil, p.parseError(fmt.Sprintf("expected block start token (\"{\" or \"(\") but got %v", p.curr.value))
 	}
 	_, err := p.expect(blockStart)
 	if err != nil {
