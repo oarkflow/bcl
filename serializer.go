@@ -3,11 +3,11 @@ package bcl
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"time"
 
 	"github.com/brianvoe/gofakeit/v6"
+	"github.com/goccy/go-reflect"
 	"github.com/oarkflow/date"
 )
 

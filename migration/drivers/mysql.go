@@ -38,3 +38,7 @@ func (m *MySQLDriver) ApplySQL(queries []string) error {
 	}
 	return nil
 }
+
+func (m *MySQLDriver) DB() *squealx.DB {
+	return m.db
+}

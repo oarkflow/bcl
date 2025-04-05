@@ -38,3 +38,7 @@ func (s *SQLiteDriver) ApplySQL(queries []string) error {
 	}
 	return nil
 }
+
+func (m *SQLiteDriver) DB() *squealx.DB {
+	return m.db
+}

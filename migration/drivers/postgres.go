@@ -38,3 +38,7 @@ func (p *PostgresDriver) ApplySQL(queries []string) error {
 	}
 	return nil
 }
+
+func (m *PostgresDriver) DB() *squealx.DB {
+	return m.db
+}

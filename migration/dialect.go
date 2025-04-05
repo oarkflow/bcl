@@ -33,13 +33,18 @@ type Dialect interface {
 	RenameTriggerSQL(rt RenameTrigger) (string, error)
 	WrapInTransaction(queries []string) []string
 	WrapInTransactionWithConfig(queries []string, trans Transaction) []string
-	InsertSQL(table string, columns []string, values []string) (string, error)
+	InsertSQL(table string, columns []string, values []any) (string, error)
+	TableExistsSQL(table string) string
 }
 
 type PostgresDialect struct{}
 
 func (p *PostgresDialect) quoteIdentifier(id string) string {
 	return fmt.Sprintf("\"%s\"", id)
+}
+
+func (p *PostgresDialect) TableExistsSQL(table string) string {
+	return fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = '%s')`, table)
 }
 
 func (p *PostgresDialect) convertDefault(defVal any, colType string) string {
@@ -80,7 +85,13 @@ func (p *PostgresDialect) CreateTableSQL(ct CreateTable, up bool) (string, error
 			}
 			if col.Default != "" {
 				def := p.convertDefault(col.Default, col.Type)
-				colDef += fmt.Sprintf(" DEFAULT %s", def)
+				if strings.Contains(colDef, "NOT NULL") {
+					if def != "NULL" {
+						colDef += fmt.Sprintf(" DEFAULT %s", def)
+					}
+				} else {
+					colDef += fmt.Sprintf(" DEFAULT %s", def)
+				}
 			}
 			if col.Check != "" {
 				colDef += fmt.Sprintf(" CHECK (%s)", col.Check)
@@ -177,7 +188,13 @@ func (p *PostgresDialect) AddColumnSQL(ac AddColumn, tableName string) ([]string
 	}
 	if ac.Default != "" {
 		def := p.convertDefault(ac.Default, ac.Type)
-		sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))
+		if !ac.Nullable {
+			if def != "NULL" {
+				sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))
+			}
+		} else {
+			sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))
+		}
 	}
 	if ac.Check != "" {
 		sb.WriteString(fmt.Sprintf(" CHECK (%s)", ac.Check))
@@ -358,15 +375,26 @@ func (p *PostgresDialect) WrapInTransactionWithConfig(queries []string, trans Tr
 	return tx
 }
 
-func (p *PostgresDialect) InsertSQL(table string, columns []string, values []string) (string, error) {
+func (p *PostgresDialect) InsertSQL(table string, columns []string, values []any) (string, error) {
 	quotedCols := []string{}
 	for _, col := range columns {
 		quotedCols = append(quotedCols, p.quoteIdentifier(col))
 	}
+	quotedVals := []string{}
+	for _, val := range values {
+		switch v := val.(type) {
+		case string:
+			quotedVals = append(quotedVals, fmt.Sprintf("'%s'", v))
+		case nil:
+			quotedVals = append(quotedVals, "NULL")
+		default:
+			quotedVals = append(quotedVals, fmt.Sprintf("%v", v))
+		}
+	}
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s);\n",
 		p.quoteIdentifier(table),
 		strings.Join(quotedCols, ", "),
-		strings.Join(values, ", "),
+		strings.Join(quotedVals, ", "),
 	)
 	return query, nil
 }
@@ -402,6 +430,10 @@ func (m *MySQLDialect) convertDefault(defVal any, colType string) string {
 	return def
 }
 
+func (m *MySQLDialect) TableExistsSQL(table string) string {
+	return fmt.Sprintf(`SELECT COUNT(*) > 0 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = '%s'`, table)
+}
+
 func (m *MySQLDialect) CreateTableSQL(ct CreateTable, up bool) (string, error) {
 	if up {
 		var sb strings.Builder
@@ -418,7 +450,13 @@ func (m *MySQLDialect) CreateTableSQL(ct CreateTable, up bool) (string, error) {
 			}
 			if col.Default != "" {
 				def := m.convertDefault(col.Default, col.Type)
-				colDef += fmt.Sprintf(" DEFAULT %s", def)
+				if strings.Contains(colDef, "NOT NULL") {
+					if def != "NULL" {
+						colDef += fmt.Sprintf(" DEFAULT %s", def)
+					}
+				} else {
+					colDef += fmt.Sprintf(" DEFAULT %s", def)
+				}
 			}
 			if col.Check != "" {
 				colDef += fmt.Sprintf(" CHECK (%s)", col.Check)
@@ -496,7 +534,13 @@ func (m *MySQLDialect) AddColumnSQL(ac AddColumn, tableName string) ([]string, e
 	}
 	if ac.Default != "" {
 		def := m.convertDefault(ac.Default, ac.Type)
-		sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))
+		if !ac.Nullable {
+			if def != "NULL" {
+				sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))
+			}
+		} else {
+			sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))
+		}
 	}
 	if ac.Check != "" {
 		sb.WriteString(fmt.Sprintf(" CHECK (%s)", ac.Check))
@@ -647,15 +691,26 @@ func (m *MySQLDialect) RenameTriggerSQL(rt RenameTrigger) (string, error) {
 	return "", errors.New("RENAME TRIGGER is not supported in this MySQL dialect implementation")
 }
 
-func (m *MySQLDialect) InsertSQL(table string, columns []string, values []string) (string, error) {
+func (m *MySQLDialect) InsertSQL(table string, columns []string, values []any) (string, error) {
 	quotedCols := []string{}
 	for _, col := range columns {
 		quotedCols = append(quotedCols, m.quoteIdentifier(col))
 	}
+	quotedVals := []string{}
+	for _, val := range values {
+		switch v := val.(type) {
+		case string:
+			quotedVals = append(quotedVals, fmt.Sprintf("'%s'", v))
+		case nil:
+			quotedVals = append(quotedVals, "NULL")
+		default:
+			quotedVals = append(quotedVals, fmt.Sprintf("%v", v))
+		}
+	}
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s);",
 		m.quoteIdentifier(table),
 		strings.Join(quotedCols, ", "),
-		strings.Join(values, ", "),
+		strings.Join(quotedVals, ", "),
 	)
 	return query, nil
 }
@@ -664,6 +719,10 @@ type SQLiteDialect struct{}
 
 func (s *SQLiteDialect) quoteIdentifier(id string) string {
 	return fmt.Sprintf("\"%s\"", id)
+}
+
+func (s *SQLiteDialect) TableExistsSQL(table string) string {
+	return fmt.Sprintf(`SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = '%s'`, table)
 }
 
 func (s *SQLiteDialect) convertDefault(defVal any, colType string) string {
@@ -704,7 +763,13 @@ func (s *SQLiteDialect) CreateTableSQL(ct CreateTable, up bool) (string, error) 
 			}
 			if col.Default != "" {
 				def := s.convertDefault(col.Default, col.Type)
-				colDef += fmt.Sprintf(" DEFAULT %s", def)
+				if strings.Contains(colDef, "NOT NULL") {
+					if def != "NULL" {
+						colDef += fmt.Sprintf(" DEFAULT %s", def)
+					}
+				} else {
+					colDef += fmt.Sprintf(" DEFAULT %s", def)
+				}
 			}
 			if col.Check != "" {
 				colDef += fmt.Sprintf(" CHECK (%s)", col.Check)
@@ -779,7 +844,13 @@ func (s *SQLiteDialect) AddColumnSQL(ac AddColumn, tableName string) ([]string, 
 	}
 	if ac.Default != "" {
 		def := s.convertDefault(ac.Default, ac.Type)
-		sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))
+		if !ac.Nullable {
+			if def != "NULL" {
+				sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))
+			}
+		} else {
+			sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))
+		}
 	}
 	if ac.Check != "" {
 		sb.WriteString(fmt.Sprintf(" CHECK (%s)", ac.Check))
@@ -933,15 +1004,26 @@ func (s *SQLiteDialect) RecreateTableForAlter(tableName string, newSchema Create
 	return queries, nil
 }
 
-func (s *SQLiteDialect) InsertSQL(table string, columns []string, values []string) (string, error) {
+func (s *SQLiteDialect) InsertSQL(table string, columns []string, values []any) (string, error) {
 	quotedCols := []string{}
 	for _, col := range columns {
 		quotedCols = append(quotedCols, s.quoteIdentifier(col))
 	}
+	quotedVals := []string{}
+	for _, val := range values {
+		switch v := val.(type) {
+		case string:
+			quotedVals = append(quotedVals, fmt.Sprintf("'%s'", v))
+		case nil:
+			quotedVals = append(quotedVals, "NULL")
+		default:
+			quotedVals = append(quotedVals, fmt.Sprintf("%v", v))
+		}
+	}
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s);",
 		s.quoteIdentifier(table),
 		strings.Join(quotedCols, ", "),
-		strings.Join(values, ", "),
+		strings.Join(quotedVals, ", "),
 	)
 	return query, nil
 }

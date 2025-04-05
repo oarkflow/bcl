@@ -624,3 +624,15 @@ func NewDriver(driver string, dsn string) (IDatabaseDriver, error) {
 	}
 	return nil, fmt.Errorf("unsupported driver: %s", driver)
 }
+
+// NewHistoryDriver returns an implementation of HistoryDriver (file, db, etc.)
+func NewHistoryDriver(driver, dialect, config string) (HistoryDriver, error) {
+	switch driver {
+	case "file":
+		return NewFileHistoryDriver(config), nil
+	case "db":
+		return NewDatabaseHistoryDriver(dialect, config)
+	default:
+		return nil, fmt.Errorf("unsupported history driver: %s", driver)
+	}
+}

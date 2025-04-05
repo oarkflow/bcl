@@ -5,19 +5,19 @@ import (
 	"fmt"
 	"io/fs"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/oarkflow/bcl"
 	"github.com/oarkflow/cli"
 	"github.com/oarkflow/cli/console"
 	"github.com/oarkflow/cli/contracts"
-
-	"github.com/oarkflow/bcl"
+	"github.com/oarkflow/json"
+	"github.com/oarkflow/log"
+	"github.com/oarkflow/squealx"
 )
 
 var (
@@ -25,9 +25,20 @@ var (
 	Version = "v0.0.1"
 )
 
+var logger = log.Logger{
+	TimeFormat: "15:04:05",
+	Caller:     1,
+	Writer: &log.ConsoleWriter{
+		ColorOutput:    true,
+		QuoteString:    true,
+		EndWithMessage: true,
+	},
+}
+
 // New interface for applying SQL statements on any database.
 type IDatabaseDriver interface {
 	ApplySQL(queries []string) error
+	DB() *squealx.DB
 }
 
 type IManager interface {
@@ -36,42 +47,80 @@ type IManager interface {
 	ResetMigrations() error
 	ValidateMigrations() error
 	CreateMigrationFile(name string) error
+	ValidateHistoryStorage() error
 }
 
 type Manager struct {
-	migrationDir      string
-	historyFile       string
-	historyMutex      sync.Mutex
-	appliedMigrations map[string]string
-	dialect           string
-	client            contracts.Cli
-	dbDriver          IDatabaseDriver // added field for DB driver
+	migrationDir  string
+	dialect       string
+	client        contracts.Cli
+	dbDriver      IDatabaseDriver
+	historyDriver HistoryDriver
 }
 
-func NewManager() *Manager {
+// ManagerOption defines a function signature for Manager options.
+type ManagerOption func(*Manager)
+
+// WithMigrationDir allows setting a custom migration directory.
+func WithMigrationDir(dir string) ManagerOption {
+	return func(m *Manager) {
+		m.migrationDir = dir
+	}
+}
+
+// WithDriver allows setting a custom history driver.
+func WithDriver(driver IDatabaseDriver) ManagerOption {
+	return func(m *Manager) {
+		m.dbDriver = driver
+	}
+}
+
+// WithHistoryDriver allows setting a custom history driver.
+func WithHistoryDriver(driver HistoryDriver) ManagerOption {
+	return func(m *Manager) {
+		m.historyDriver = driver
+	}
+}
+
+// WithDialect allows setting an initial dialect.
+func WithDialect(dialect string) ManagerOption {
+	return func(m *Manager) {
+		m.dialect = dialect
+	}
+}
+
+// defaultManager returns a slice of default options for Manager.
+func defaultManager(client contracts.Cli) *Manager {
+	return &Manager{
+		migrationDir:  "migrations",
+		dialect:       "postgres",
+		historyDriver: NewFileHistoryDriver("migration_history.txt"),
+		client:        client,
+	}
+}
+
+func NewManager(opts ...ManagerOption) *Manager {
 	dir := "migrations"
 	if err := os.MkdirAll(dir, fs.ModePerm); err != nil {
-		log.Fatalf("Failed to create migration directory: %v", err)
+		logger.Fatal().Msgf("Failed to create migration directory: %v", err)
 	}
 	cli.SetName(Name)
 	cli.SetVersion(Version)
 	app := cli.New()
 	client := app.Instance.Client()
-	d := &Manager{
-		migrationDir:      dir,
-		historyFile:       "migration_history.txt",
-		appliedMigrations: make(map[string]string),
-		client:            client,
+	m := defaultManager(client)
+	for _, opt := range opts {
+		opt(m)
 	}
 	client.Register([]contracts.Command{
 		console.NewListCommand(client),
-		&MakeMigrationCommand{Driver: d},
-		&MigrateCommand{Driver: d},
-		&RollbackCommand{Driver: d},
-		&ResetCommand{Driver: d},
-		&ValidateCommand{Driver: d},
+		&MakeMigrationCommand{Driver: m},
+		&MigrateCommand{Driver: m},
+		&RollbackCommand{Driver: m},
+		&ResetCommand{Driver: m},
+		&ValidateCommand{Driver: m},
 	})
-	return d
+	return m
 }
 
 func (d *Manager) Run() {
@@ -86,42 +135,8 @@ func (d *Manager) GetDialect() string {
 	return d.dialect
 }
 
-// SetDriver allows injecting a database driver into the Manager.
-func (d *Manager) SetDriver(driver IDatabaseDriver) {
-	d.dbDriver = driver
-}
-
-func (d *Manager) loadHistory() error {
-	d.historyMutex.Lock()
-	defer d.historyMutex.Unlock()
-	data, err := os.ReadFile(d.historyFile)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) == 2 {
-			d.appliedMigrations[parts[0]] = parts[1]
-		}
-	}
-	return nil
-}
-
-func (d *Manager) saveHistory() error {
-	d.historyMutex.Lock()
-	defer d.historyMutex.Unlock()
-	var lines []string
-	for name, cs := range d.appliedMigrations {
-		lines = append(lines, fmt.Sprintf("%s:%s", name, cs))
-	}
-	return os.WriteFile(d.historyFile, []byte(strings.Join(lines, "\n")), 0644)
+func (d *Manager) ValidateHistoryStorage() error {
+	return d.historyDriver.ValidateStorage()
 }
 
 func (d *Manager) ApplyMigration(m Migration) error {
@@ -131,8 +146,17 @@ func (d *Manager) ApplyMigration(m Migration) error {
 		return fmt.Errorf("failed to read migration file: %w", err)
 	}
 	checksum := computeChecksum(data)
-	if prev, ok := d.appliedMigrations[m.Name]; ok && prev != checksum {
-		return fmt.Errorf("checksum mismatch for migration %s", m.Name)
+	histories, err := d.historyDriver.Load()
+	if err != nil {
+		return err
+	}
+	for _, h := range histories {
+		if h.Name == m.Name {
+			if h.Checksum == checksum {
+				return nil
+			}
+			return fmt.Errorf("checksum mismatch for migration %s", m.Name)
+		}
 	}
 	var cfg Config
 	if _, err := bcl.Unmarshal(data, &cfg); err != nil {
@@ -146,27 +170,120 @@ func (d *Manager) ApplyMigration(m Migration) error {
 	if err != nil {
 		return fmt.Errorf("failed to generate SQL: %w", err)
 	}
-	// Ensure a valid DB driver is set.
 	if d.dbDriver == nil {
 		return fmt.Errorf("no database driver configured")
 	}
-	// Delegate applying SQL to the driver.
+	for _, val := range migration.Validate {
+		if err := runPreUpChecks(val.PreUpChecks); err != nil {
+			return fmt.Errorf("pre-up validation failed for migration %s: %w", migration.Name, err)
+		}
+	}
 	if err := d.dbDriver.ApplySQL(queries); err != nil {
 		return fmt.Errorf("failed to apply migration %s: %w", m.Name, err)
 	}
-	d.appliedMigrations[m.Name] = checksum
-	return d.saveHistory()
+	for _, val := range migration.Validate {
+		if err := runPostUpChecks(val.PostUpChecks); err != nil {
+			return fmt.Errorf("post-up validation failed for migration %s: %w", migration.Name, err)
+		}
+	}
+	now := time.Now()
+	logger.Info().Msgf("Applied migration: %s at %v", m.Name, now.Format(time.DateTime))
+	history := MigrationHistory{
+		Name:        m.Name,
+		Version:     m.Version,
+		Description: m.Description,
+		Checksum:    checksum,
+		AppliedAt:   now,
+	}
+	return d.historyDriver.Save(history)
 }
 
 func (d *Manager) RollbackMigration(step int) error {
-	log.Printf("Rolling back %d migration(s)...", step)
+	// Load history from driver.
+	histories, err := d.historyDriver.Load()
+	if err != nil {
+		return err
+	}
+	total := len(histories)
+	if step <= 0 || step > total {
+		return fmt.Errorf("rollback step %d is out of range, total applied: %d", step, total)
+	}
+	// Rollback in reverse order.
+	for i := 0; i < step; i++ {
+		last := histories[len(histories)-1]
+		name := last.Name
+		path := filepath.Join(d.migrationDir, name+".bcl")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read migration file %s for rollback: %w", name, err)
+		}
+		var cfg Config
+		if _, err := bcl.Unmarshal(data, &cfg); err != nil {
+			return fmt.Errorf("failed to unmarshal migration file %s for rollback: %w", name, err)
+		}
+		if len(cfg.Migrations) == 0 {
+			return fmt.Errorf("no migration found in file %s for rollback", name)
+		}
+		migration := cfg.Migrations[0]
+		downQueries, err := migration.ToSQL(d.dialect, false)
+		if err != nil {
+			return fmt.Errorf("failed to generate rollback SQL for migration %s: %w", name, err)
+		}
+		if err := d.dbDriver.ApplySQL(downQueries); err != nil {
+			return fmt.Errorf("failed to rollback migration %s: %w", name, err)
+		}
+		logger.Info().Msg("Rolled back migration: " + name)
+		// Remove last history record.
+		histories = histories[:len(histories)-1]
+	}
+	// If using file-based history, overwrite with new history.
+	if fh, ok := d.historyDriver.(*FileHistoryDriver); ok {
+		data, err := json.Marshal(histories)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(fh.filePath, data, 0644)
+	}
 	return nil
 }
 
 func (d *Manager) ResetMigrations() error {
-	log.Println("Resetting migrations...")
-	d.appliedMigrations = make(map[string]string)
-	return d.saveHistory()
+	logger.Info().Msg("Resetting migrations...")
+	// Load applied history.
+	histories, err := d.historyDriver.Load()
+	if err != nil {
+		return err
+	}
+	// Rollback all migrations in reverse order.
+	for i := len(histories) - 1; i >= 0; i-- {
+		name := histories[i].Name
+		path := filepath.Join(d.migrationDir, name+".bcl")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read migration file %s for rollback: %w", name, err)
+		}
+		var cfg Config
+		if _, err := bcl.Unmarshal(data, &cfg); err != nil {
+			return fmt.Errorf("failed to unmarshal migration file %s for rollback: %w", name, err)
+		}
+		if len(cfg.Migrations) == 0 {
+			return fmt.Errorf("no migration found in file %s for rollback", name)
+		}
+		migration := cfg.Migrations[0]
+		downQueries, err := migration.ToSQL(d.dialect, false)
+		if err != nil {
+			return fmt.Errorf("failed to generate rollback SQL for migration %s: %w", name, err)
+		}
+		if err := d.dbDriver.ApplySQL(downQueries); err != nil {
+			return fmt.Errorf("failed to rollback migration %s: %w", name, err)
+		}
+		logger.Info().Msg("Rolled back migration: " + name)
+	}
+	// Clear history completely.
+	if fh, ok := d.historyDriver.(*FileHistoryDriver); ok {
+		return os.WriteFile(fh.filePath, []byte("[]"), 0644)
+	}
+	return nil
 }
 
 func (d *Manager) ValidateMigrations() error {
@@ -174,19 +291,30 @@ func (d *Manager) ValidateMigrations() error {
 	if err != nil {
 		return fmt.Errorf("failed to read migration directory: %w", err)
 	}
+	histories, err := d.historyDriver.Load()
+	if err != nil {
+		return err
+	}
+	// Create a map of applied migration names from persistent history.
+	applied := make(map[string]bool)
+	for _, h := range histories {
+		applied[h.Name] = true
+	}
 	var missing []string
 	for _, file := range files {
 		if !file.IsDir() && strings.HasSuffix(file.Name(), ".bcl") {
 			name := strings.TrimSuffix(file.Name(), ".bcl")
-			if _, ok := d.appliedMigrations[name]; !ok {
+			if !applied[name] {
 				missing = append(missing, name)
 			}
 		}
 	}
-	if len(missing) > 0 {
-		return fmt.Errorf("missing applied migrations: %v", missing)
+	toApply := len(missing)
+	if toApply > 0 {
+		logger.Info().Msgf("Migration initiated for : %v migrations", toApply)
+		return nil
 	}
-	log.Println("All migrations validated.")
+	logger.Info().Msg("Migrations are up to date.")
 	return nil
 }
 
@@ -453,7 +581,7 @@ func (d *Manager) CreateMigrationFile(name string) error {
 	if err := os.WriteFile(filename, []byte(template), 0644); err != nil {
 		return fmt.Errorf("failed to create migration file: %w", err)
 	}
-	log.Printf("Migration file created: %s", filename)
+	logger.Printf("Migration file created: %s", filename)
 	return nil
 }
 
@@ -535,39 +663,43 @@ func releaseLock() error {
 
 func runPreUpChecks(checks []string) error {
 	for _, check := range checks {
-		log.Printf("Executing PreUpCheck: %s", check)
+		logger.Printf("Executing PreUpCheck: %s", check)
 
 		if strings.Contains(strings.ToLower(check), "fail") {
 			return fmt.Errorf("PreUp check failed: %s", check)
 		}
 	}
-	log.Println("All PreUpChecks passed.")
+	logger.Info().Msg("All PreUpChecks passed.")
 	return nil
 }
 
 func runPostUpChecks(checks []string) error {
 	for _, check := range checks {
-		log.Printf("Executing PostUpCheck: %s", check)
+		logger.Printf("Executing PostUpCheck: %s", check)
 
 		if strings.Contains(strings.ToLower(check), "fail") {
 			return fmt.Errorf("PostUp check failed: %s", check)
 		}
 	}
-	log.Println("All PostUpChecks passed.")
+	logger.Info().Msg("All PostUpChecks passed.")
 	return nil
 }
 
 func (c *MigrateCommand) Handle(ctx contracts.Context) error {
+	// Validate that history storage exists before proceeding.
+	if err := c.Driver.ValidateHistoryStorage(); err != nil {
+		return fmt.Errorf("history storage validation failed: %w", err)
+	}
 	if err := acquireLock(); err != nil {
 		return fmt.Errorf("cannot start migration: %w", err)
 	}
 	defer func() {
 		if err := releaseLock(); err != nil {
-			log.Printf("Warning releasing lock: %v", err)
+			logger.Printf("Warning releasing lock: %v", err)
 		}
 	}()
 	if err := c.Driver.ValidateMigrations(); err != nil {
-		log.Printf("Validation warning: %v", err)
+		logger.Printf("Validation warning: %v", err)
 	}
 	files, err := os.ReadDir("migrations")
 	if err != nil {
@@ -583,8 +715,6 @@ func (c *MigrateCommand) Handle(ctx contracts.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to read migration file %s: %w", name, err)
 		}
-		checksum := computeChecksum(data)
-		log.Printf("Migration file %s checksum: %s", name, checksum)
 		var cfg Config
 		if _, err := bcl.Unmarshal(data, &cfg); err != nil {
 			return fmt.Errorf("failed to unmarshal migration file %s: %w", name, err)
@@ -592,18 +722,20 @@ func (c *MigrateCommand) Handle(ctx contracts.Context) error {
 		if len(cfg.Migrations) == 0 {
 			return fmt.Errorf("no migration found in file %s", name)
 		}
-		migration := cfg.Migrations[0]
-		for _, val := range migration.Validate {
-			if err := runPreUpChecks(val.PreUpChecks); err != nil {
-				return fmt.Errorf("pre-up validation failed for migration %s: %w", migration.Name, err)
+		for _, migration := range cfg.Migrations {
+			for _, val := range migration.Validate {
+				if err := runPreUpChecks(val.PreUpChecks); err != nil {
+					return fmt.Errorf("pre-up validation failed for migration %s: %w", migration.Name, err)
+				}
 			}
-		}
-		if err := c.Driver.ApplyMigration(Migration{Name: migration.Name}); err != nil {
-			return fmt.Errorf("failed to apply migration %s: %w", migration.Name, err)
-		}
-		for _, val := range migration.Validate {
-			if err := runPostUpChecks(val.PostUpChecks); err != nil {
-				return fmt.Errorf("post-up validation failed for migration %s: %w", migration.Name, err)
+			if err := c.Driver.ApplyMigration(migration); err != nil {
+				logger.Error().Msgf("Failed to apply migration %s: %v", migration.Name, err)
+				return fmt.Errorf("failed to apply migration %s: %w", migration.Name, err)
+			}
+			for _, val := range migration.Validate {
+				if err := runPostUpChecks(val.PostUpChecks); err != nil {
+					return fmt.Errorf("post-up validation failed for migration %s: %w", migration.Name, err)
+				}
 			}
 		}
 	}

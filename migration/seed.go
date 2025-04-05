@@ -49,7 +49,7 @@ func (s SeedDefinition) ToSQL(dialect string) ([]string, error) {
 	queries := []string{}
 	for i := 0; i < s.Rows; i++ {
 		cols := []string{}
-		vals := []string{}
+		vals := []any{}
 		for _, field := range s.Fields {
 			val := fmt.Sprintf("%v", field.Value)
 			cols = append(cols, field.Name)

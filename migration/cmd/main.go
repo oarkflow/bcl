@@ -15,7 +15,7 @@ func Run(dialect string, cfg ...Config) error {
 	if len(cfg) > 0 {
 		config = cfg[0]
 	}
-	manager := migration.NewManager()
+	var opts []migration.ManagerOption
 	if config.Config.Driver != "" {
 		dsn := config.ToString()
 		if dsn != "" {
@@ -23,9 +23,15 @@ func Run(dialect string, cfg ...Config) error {
 			if err != nil {
 				return err
 			}
-			manager.SetDriver(driver)
+			opts = append(opts, migration.WithDriver(driver))
+			historyDriver, err := migration.NewHistoryDriver("db", dialect, dsn)
+			if err != nil {
+				return err
+			}
+			opts = append(opts, migration.WithHistoryDriver(historyDriver))
 		}
 	}
+	manager := migration.NewManager(opts...)
 	manager.SetDialect(dialect)
 	manager.Run()
 	return nil

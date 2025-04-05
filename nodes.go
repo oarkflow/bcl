@@ -4,10 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/goccy/go-reflect"
 )
 
 // Reuse builders to reduce allocations

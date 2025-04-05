@@ -1,8 +1,9 @@
 package bcl
 
 import (
-	"encoding/json"
 	"testing"
+
+	"github.com/oarkflow/json"
 )
 
 type Tunnel struct {
