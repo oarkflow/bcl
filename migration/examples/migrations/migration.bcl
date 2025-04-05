@@ -32,6 +32,10 @@ Migration "explicit_operations" {
         unique = true
       }
     }
+    CreateView "core.active_users" {
+      definition = "SELECT * FROM core.users WHERE active = true"
+      or_replace = true
+    }
   }
   Down {
     DropRowPolicy "user_access_policy" {
@@ -67,6 +71,9 @@ Migration "explicit_operations" {
     DropSchema "core" {
       Cascade = true
       IfExists = true
+    }
+    DropView "core.active_users" {
+      if_exists = true
     }
   }
 }

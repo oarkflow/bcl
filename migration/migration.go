@@ -43,6 +43,18 @@ type Operation struct {
 	DropTable            []DropTable            `json:"DropTable,omitempty"`
 	DropSchema           []DropSchema           `json:"DropSchema,omitempty"`
 	RenameTable          []RenameTable          `json:"RenameTable,omitempty"`
+	CreateView           []CreateView           `json:"CreateView,omitempty"`
+	DropView             []DropView             `json:"DropView,omitempty"`
+	RenameView           []RenameView           `json:"RenameView,omitempty"`
+	CreateFunction       []CreateFunction       `json:"CreateFunction,omitempty"`
+	DropFunction         []DropFunction         `json:"DropFunction,omitempty"`
+	RenameFunction       []RenameFunction       `json:"RenameFunction,omitempty"`
+	CreateProcedure      []CreateProcedure      `json:"CreateProcedure,omitempty"`
+	DropProcedure        []DropProcedure        `json:"DropProcedure,omitempty"`
+	RenameProcedure      []RenameProcedure      `json:"RenameProcedure,omitempty"`
+	CreateTrigger        []CreateTrigger        `json:"CreateTrigger,omitempty"`
+	DropTrigger          []DropTrigger          `json:"DropTrigger,omitempty"`
+	RenameTrigger        []RenameTrigger        `json:"RenameTrigger,omitempty"`
 }
 
 type AlterTable struct {
@@ -180,6 +192,122 @@ type Validation struct {
 
 func (a AddColumn) ToSQL(dialect, tableName string) ([]string, error) {
 	return getDialect(dialect).AddColumnSQL(a, tableName)
+}
+
+type CreateView struct {
+	Name       string `json:"name"`
+	Definition string `json:"definition"`
+	OrReplace  bool   `json:"or_replace,omitempty"`
+}
+
+func (cv CreateView) ToSQL(dialect string) (string, error) {
+	return getDialect(dialect).CreateViewSQL(cv)
+}
+
+type DropView struct {
+	Name     string `json:"name"`
+	Cascade  bool   `json:"cascade,omitempty"`
+	IfExists bool   `json:"if_exists,omitempty"`
+}
+
+func (dv DropView) ToSQL(dialect string) (string, error) {
+	return getDialect(dialect).DropViewSQL(dv)
+}
+
+type RenameView struct {
+	OldName string `json:"old_name"`
+	NewName string `json:"new_name"`
+}
+
+func (rv RenameView) ToSQL(dialect string) (string, error) {
+	return getDialect(dialect).RenameViewSQL(rv)
+}
+
+type CreateFunction struct {
+	Name       string `json:"name"`
+	Definition string `json:"definition"`
+	OrReplace  bool   `json:"or_replace,omitempty"`
+}
+
+func (cf CreateFunction) ToSQL(dialect string) (string, error) {
+	return getDialect(dialect).CreateFunctionSQL(cf)
+}
+
+type DropFunction struct {
+	Name     string `json:"name"`
+	Cascade  bool   `json:"cascade,omitempty"`
+	IfExists bool   `json:"if_exists,omitempty"`
+}
+
+func (df DropFunction) ToSQL(dialect string) (string, error) {
+	return getDialect(dialect).DropFunctionSQL(df)
+}
+
+type RenameFunction struct {
+	OldName string `json:"old_name"`
+	NewName string `json:"new_name"`
+}
+
+func (rf RenameFunction) ToSQL(dialect string) (string, error) {
+	return getDialect(dialect).RenameFunctionSQL(rf)
+}
+
+type CreateProcedure struct {
+	Name       string `json:"name"`
+	Definition string `json:"definition"`
+	OrReplace  bool   `json:"or_replace,omitempty"`
+}
+
+func (cp CreateProcedure) ToSQL(dialect string) (string, error) {
+	return getDialect(dialect).CreateProcedureSQL(cp)
+}
+
+type DropProcedure struct {
+	Name     string `json:"name"`
+	Cascade  bool   `json:"cascade,omitempty"`
+	IfExists bool   `json:"if_exists,omitempty"`
+}
+
+func (dp DropProcedure) ToSQL(dialect string) (string, error) {
+	return getDialect(dialect).DropProcedureSQL(dp)
+}
+
+type RenameProcedure struct {
+	OldName string `json:"old_name"`
+	NewName string `json:"new_name"`
+}
+
+func (rp RenameProcedure) ToSQL(dialect string) (string, error) {
+	return getDialect(dialect).RenameProcedureSQL(rp)
+}
+
+type CreateTrigger struct {
+	Name       string `json:"name"`
+	Definition string `json:"definition"`
+	OrReplace  bool   `json:"or_replace,omitempty"`
+}
+
+func (ct CreateTrigger) ToSQL(dialect string) (string, error) {
+	return getDialect(dialect).CreateTriggerSQL(ct)
+}
+
+type DropTrigger struct {
+	Name     string `json:"name"`
+	Cascade  bool   `json:"cascade,omitempty"`
+	IfExists bool   `json:"if_exists,omitempty"`
+}
+
+func (dt DropTrigger) ToSQL(dialect string) (string, error) {
+	return getDialect(dialect).DropTriggerSQL(dt)
+}
+
+type RenameTrigger struct {
+	OldName string `json:"old_name"`
+	NewName string `json:"new_name"`
+}
+
+func (rt RenameTrigger) ToSQL(dialect string) (string, error) {
+	return getDialect(dialect).RenameTriggerSQL(rt)
 }
 
 func handleSQLiteAlterTable(at AlterTable) ([]string, error) {
@@ -354,6 +482,90 @@ func (op Operation) ToSQL(dialect string) ([]string, error) {
 		q, err := rt.ToSQL(dialect)
 		if err != nil {
 			return nil, fmt.Errorf("error in RenameTable: %w", err)
+		}
+		queries = append(queries, q)
+	}
+	for _, cv := range op.CreateView {
+		q, err := cv.ToSQL(dialect)
+		if err != nil {
+			return nil, fmt.Errorf("error in CreateView: %w", err)
+		}
+		queries = append(queries, q)
+	}
+	for _, dv := range op.DropView {
+		q, err := dv.ToSQL(dialect)
+		if err != nil {
+			return nil, fmt.Errorf("error in DropView: %w", err)
+		}
+		queries = append(queries, q)
+	}
+	for _, rv := range op.RenameView {
+		q, err := rv.ToSQL(dialect)
+		if err != nil {
+			return nil, fmt.Errorf("error in RenameView: %w", err)
+		}
+		queries = append(queries, q)
+	}
+	for _, cf := range op.CreateFunction {
+		q, err := cf.ToSQL(dialect)
+		if err != nil {
+			return nil, fmt.Errorf("error in CreateFunction: %w", err)
+		}
+		queries = append(queries, q)
+	}
+	for _, df := range op.DropFunction {
+		q, err := df.ToSQL(dialect)
+		if err != nil {
+			return nil, fmt.Errorf("error in DropFunction: %w", err)
+		}
+		queries = append(queries, q)
+	}
+	for _, rf := range op.RenameFunction {
+		q, err := rf.ToSQL(dialect)
+		if err != nil {
+			return nil, fmt.Errorf("error in RenameFunction: %w", err)
+		}
+		queries = append(queries, q)
+	}
+	for _, cp := range op.CreateProcedure {
+		q, err := cp.ToSQL(dialect)
+		if err != nil {
+			return nil, fmt.Errorf("error in CreateProcedure: %w", err)
+		}
+		queries = append(queries, q)
+	}
+	for _, dp := range op.DropProcedure {
+		q, err := dp.ToSQL(dialect)
+		if err != nil {
+			return nil, fmt.Errorf("error in DropProcedure: %w", err)
+		}
+		queries = append(queries, q)
+	}
+	for _, rp := range op.RenameProcedure {
+		q, err := rp.ToSQL(dialect)
+		if err != nil {
+			return nil, fmt.Errorf("error in RenameProcedure: %w", err)
+		}
+		queries = append(queries, q)
+	}
+	for _, ct := range op.CreateTrigger {
+		q, err := ct.ToSQL(dialect)
+		if err != nil {
+			return nil, fmt.Errorf("error in CreateTrigger: %w", err)
+		}
+		queries = append(queries, q)
+	}
+	for _, dt := range op.DropTrigger {
+		q, err := dt.ToSQL(dialect)
+		if err != nil {
+			return nil, fmt.Errorf("error in DropTrigger: %w", err)
+		}
+		queries = append(queries, q)
+	}
+	for _, rt := range op.RenameTrigger {
+		q, err := rt.ToSQL(dialect)
+		if err != nil {
+			return nil, fmt.Errorf("error in RenameTrigger: %w", err)
 		}
 		queries = append(queries, q)
 	}

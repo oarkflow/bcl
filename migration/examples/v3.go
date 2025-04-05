@@ -1,15 +1,17 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
 	"github.com/oarkflow/bcl"
+
 	"github.com/oarkflow/migration"
 )
 
 func main() {
-	data, err := os.ReadFile("migrations/migration.bcl")
+	data, err := os.ReadFile("migrations/functions.bcl")
 	if err != nil {
 		log.Fatalf("Failed to read config file: %v", err)
 	}
@@ -17,6 +19,8 @@ func main() {
 	if _, err := bcl.Unmarshal(data, &cfg); err != nil {
 		log.Fatalf("Failed to unmarshal migration file: %v", err)
 	}
+	fmt.Println(cfg)
+	panic(1)
 	dialect := "postgres"
 	for _, mig := range cfg.Migrations {
 		upQueries, err := mig.ToSQL(dialect, true)

@@ -21,6 +21,23 @@ type Dialect interface {
 	RenameColumnSQL(rc RenameColumn, tableName string) (string, error)
 	MapDataType(genericType string, size int, autoIncrement, primaryKey bool) string
 
+	// New functions for views, functions, procedures, and triggers.
+	CreateViewSQL(cv CreateView) (string, error)
+	DropViewSQL(dv DropView) (string, error)
+	RenameViewSQL(rv RenameView) (string, error)
+
+	CreateFunctionSQL(cf CreateFunction) (string, error)
+	DropFunctionSQL(df DropFunction) (string, error)
+	RenameFunctionSQL(rf RenameFunction) (string, error)
+
+	CreateProcedureSQL(cp CreateProcedure) (string, error)
+	DropProcedureSQL(dp DropProcedure) (string, error)
+	RenameProcedureSQL(rp RenameProcedure) (string, error)
+
+	CreateTriggerSQL(ct CreateTrigger) (string, error)
+	DropTriggerSQL(dt DropTrigger) (string, error)
+	RenameTriggerSQL(rt RenameTrigger) (string, error)
+
 	// New transaction wrappers.
 	WrapInTransaction(queries []string) []string
 	WrapInTransactionWithConfig(queries []string, trans Transaction) []string
@@ -31,7 +48,6 @@ type Dialect interface {
 // ---------------------
 type PostgresDialect struct{}
 
-// Add helper methods for quoting identifiers.
 func (p *PostgresDialect) quoteIdentifier(id string) string {
 	return fmt.Sprintf("\"%s\"", id)
 }
@@ -39,11 +55,9 @@ func (p *PostgresDialect) quoteIdentifier(id string) string {
 func (p *PostgresDialect) CreateTableSQL(ct CreateTable, up bool) (string, error) {
 	if up {
 		var sb strings.Builder
-		// Updated: quote table name.
 		sb.WriteString(fmt.Sprintf("CREATE TABLE %s (", p.quoteIdentifier(ct.Name)))
 		var cols []string
 		for _, col := range ct.Columns {
-			// Updated: quote column name.
 			colDef := fmt.Sprintf("%s %s", p.quoteIdentifier(col.Name), p.MapDataType(col.Type, col.Size, col.AutoIncrement, col.PrimaryKey))
 			if !col.Nullable {
 				colDef += " NOT NULL"
@@ -61,7 +75,6 @@ func (p *PostgresDialect) CreateTableSQL(ct CreateTable, up bool) (string, error
 			cols = append(cols, colDef)
 		}
 		if len(ct.PrimaryKey) > 0 {
-			// Updated: quote each primary key column.
 			var pkCols []string
 			for _, col := range ct.PrimaryKey {
 				pkCols = append(pkCols, p.quoteIdentifier(col))
@@ -72,12 +85,10 @@ func (p *PostgresDialect) CreateTableSQL(ct CreateTable, up bool) (string, error
 		sb.WriteString(");")
 		return sb.String(), nil
 	}
-	// Updated: quote table name.
 	return fmt.Sprintf("DROP TABLE IF EXISTS %s;", p.quoteIdentifier(ct.Name)), nil
 }
 
 func (p *PostgresDialect) RenameTableSQL(rt RenameTable) (string, error) {
-	// Updated: quote table names.
 	return fmt.Sprintf("ALTER TABLE %s RENAME TO %s;", p.quoteIdentifier(rt.OldName), p.quoteIdentifier(rt.NewName)), nil
 }
 
@@ -129,7 +140,6 @@ func (p *PostgresDialect) DropSchemaSQL(ds DropSchema) (string, error) {
 func (p *PostgresDialect) AddColumnSQL(ac AddColumn, tableName string) ([]string, error) {
 	var queries []string
 	var sb strings.Builder
-	// Updated: quote table and column names.
 	sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", p.quoteIdentifier(tableName), p.quoteIdentifier(ac.Name)))
 	sb.WriteString(p.MapDataType(ac.Type, ac.Size, ac.AutoIncrement, ac.PrimaryKey))
 	if !ac.Nullable {
@@ -199,6 +209,98 @@ func (p *PostgresDialect) MapDataType(genericType string, size int, autoIncremen
 	}
 }
 
+// New implementations for views.
+func (p *PostgresDialect) CreateViewSQL(cv CreateView) (string, error) {
+	if cv.OrReplace {
+		return fmt.Sprintf("CREATE OR REPLACE VIEW %s AS %s;", p.quoteIdentifier(cv.Name), cv.Definition), nil
+	}
+	return fmt.Sprintf("CREATE VIEW %s AS %s;", p.quoteIdentifier(cv.Name), cv.Definition), nil
+}
+
+func (p *PostgresDialect) DropViewSQL(dv DropView) (string, error) {
+	cascade := ""
+	if dv.Cascade {
+		cascade = " CASCADE"
+	}
+	if dv.IfExists {
+		return fmt.Sprintf("DROP VIEW IF EXISTS %s%s;", p.quoteIdentifier(dv.Name), cascade), nil
+	}
+	return fmt.Sprintf("DROP VIEW %s%s;", p.quoteIdentifier(dv.Name), cascade), nil
+}
+
+func (p *PostgresDialect) RenameViewSQL(rv RenameView) (string, error) {
+	return fmt.Sprintf("ALTER VIEW %s RENAME TO %s;", p.quoteIdentifier(rv.OldName), p.quoteIdentifier(rv.NewName)), nil
+}
+
+// New implementations for functions.
+func (p *PostgresDialect) CreateFunctionSQL(cf CreateFunction) (string, error) {
+	if cf.OrReplace {
+		return fmt.Sprintf("CREATE OR REPLACE FUNCTION %s AS %s;", p.quoteIdentifier(cf.Name), cf.Definition), nil
+	}
+	return fmt.Sprintf("CREATE FUNCTION %s AS %s;", p.quoteIdentifier(cf.Name), cf.Definition), nil
+}
+
+func (p *PostgresDialect) DropFunctionSQL(df DropFunction) (string, error) {
+	cascade := ""
+	if df.Cascade {
+		cascade = " CASCADE"
+	}
+	if df.IfExists {
+		return fmt.Sprintf("DROP FUNCTION IF EXISTS %s%s;", p.quoteIdentifier(df.Name), cascade), nil
+	}
+	return fmt.Sprintf("DROP FUNCTION %s%s;", p.quoteIdentifier(df.Name), cascade), nil
+}
+
+func (p *PostgresDialect) RenameFunctionSQL(rf RenameFunction) (string, error) {
+	return fmt.Sprintf("ALTER FUNCTION %s RENAME TO %s;", p.quoteIdentifier(rf.OldName), p.quoteIdentifier(rf.NewName)), nil
+}
+
+// New implementations for procedures.
+func (p *PostgresDialect) CreateProcedureSQL(cp CreateProcedure) (string, error) {
+	if cp.OrReplace {
+		return fmt.Sprintf("CREATE OR REPLACE PROCEDURE %s AS %s;", p.quoteIdentifier(cp.Name), cp.Definition), nil
+	}
+	return fmt.Sprintf("CREATE PROCEDURE %s AS %s;", p.quoteIdentifier(cp.Name), cp.Definition), nil
+}
+
+func (p *PostgresDialect) DropProcedureSQL(dp DropProcedure) (string, error) {
+	cascade := ""
+	if dp.Cascade {
+		cascade = " CASCADE"
+	}
+	if dp.IfExists {
+		return fmt.Sprintf("DROP PROCEDURE IF EXISTS %s%s;", p.quoteIdentifier(dp.Name), cascade), nil
+	}
+	return fmt.Sprintf("DROP PROCEDURE %s%s;", p.quoteIdentifier(dp.Name), cascade), nil
+}
+
+func (p *PostgresDialect) RenameProcedureSQL(rp RenameProcedure) (string, error) {
+	return fmt.Sprintf("ALTER PROCEDURE %s RENAME TO %s;", p.quoteIdentifier(rp.OldName), p.quoteIdentifier(rp.NewName)), nil
+}
+
+// New implementations for triggers.
+func (p *PostgresDialect) CreateTriggerSQL(ct CreateTrigger) (string, error) {
+	if ct.OrReplace {
+		return fmt.Sprintf("CREATE OR REPLACE TRIGGER %s %s;", p.quoteIdentifier(ct.Name), ct.Definition), nil
+	}
+	return fmt.Sprintf("CREATE TRIGGER %s %s;", p.quoteIdentifier(ct.Name), ct.Definition), nil
+}
+
+func (p *PostgresDialect) DropTriggerSQL(dt DropTrigger) (string, error) {
+	cascade := ""
+	if dt.Cascade {
+		cascade = " CASCADE"
+	}
+	if dt.IfExists {
+		return fmt.Sprintf("DROP TRIGGER IF EXISTS %s%s;", p.quoteIdentifier(dt.Name), cascade), nil
+	}
+	return fmt.Sprintf("DROP TRIGGER %s%s;", p.quoteIdentifier(dt.Name), cascade), nil
+}
+
+func (p *PostgresDialect) RenameTriggerSQL(rt RenameTrigger) (string, error) {
+	return fmt.Sprintf("ALTER TRIGGER %s RENAME TO %s;", p.quoteIdentifier(rt.OldName), p.quoteIdentifier(rt.NewName)), nil
+}
+
 // Transaction wrappers for Postgres.
 func (p *PostgresDialect) WrapInTransaction(queries []string) []string {
 	tx := []string{"BEGIN;"}
@@ -225,7 +327,6 @@ func (p *PostgresDialect) WrapInTransactionWithConfig(queries []string, trans Tr
 // ---------------------
 type MySQLDialect struct{}
 
-// Add helper methods for quoting identifiers.
 func (m *MySQLDialect) quoteIdentifier(id string) string {
 	return fmt.Sprintf("`%s`", id)
 }
@@ -297,7 +398,6 @@ func (m *MySQLDialect) DropSchemaSQL(ds DropSchema) (string, error) {
 func (m *MySQLDialect) AddColumnSQL(ac AddColumn, tableName string) ([]string, error) {
 	var queries []string
 	var sb strings.Builder
-	// Updated: quote table and column names.
 	sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", m.quoteIdentifier(tableName), m.quoteIdentifier(ac.Name)))
 	sb.WriteString(m.MapDataType(ac.Type, ac.Size, ac.AutoIncrement, ac.PrimaryKey))
 	if ac.AutoIncrement {
@@ -390,12 +490,73 @@ func (m *MySQLDialect) WrapInTransactionWithConfig(queries []string, trans Trans
 	return tx
 }
 
+// New implementations for views.
+func (m *MySQLDialect) CreateViewSQL(cv CreateView) (string, error) {
+	if cv.OrReplace {
+		return fmt.Sprintf("CREATE OR REPLACE VIEW %s AS %s;", m.quoteIdentifier(cv.Name), cv.Definition), nil
+	}
+	return fmt.Sprintf("CREATE VIEW %s AS %s;", m.quoteIdentifier(cv.Name), cv.Definition), nil
+}
+
+func (m *MySQLDialect) DropViewSQL(dv DropView) (string, error) {
+	cascade := ""
+	if dv.Cascade {
+		cascade = " CASCADE"
+	}
+	if dv.IfExists {
+		return fmt.Sprintf("DROP VIEW IF EXISTS %s%s;", m.quoteIdentifier(dv.Name), cascade), nil
+	}
+	return fmt.Sprintf("DROP VIEW %s%s;", m.quoteIdentifier(dv.Name), cascade), nil
+}
+
+func (m *MySQLDialect) RenameViewSQL(rv RenameView) (string, error) {
+	return "", errors.New("RENAME VIEW is not supported in MySQL")
+}
+
+// New implementations for functions.
+func (m *MySQLDialect) CreateFunctionSQL(cf CreateFunction) (string, error) {
+	return "", errors.New("CREATE FUNCTION is not supported in this MySQL dialect implementation")
+}
+
+func (m *MySQLDialect) DropFunctionSQL(df DropFunction) (string, error) {
+	return "", errors.New("DROP FUNCTION is not supported in this MySQL dialect implementation")
+}
+
+func (m *MySQLDialect) RenameFunctionSQL(rf RenameFunction) (string, error) {
+	return "", errors.New("RENAME FUNCTION is not supported in this MySQL dialect implementation")
+}
+
+// New implementations for procedures.
+func (m *MySQLDialect) CreateProcedureSQL(cp CreateProcedure) (string, error) {
+	return "", errors.New("CREATE PROCEDURE is not supported in this MySQL dialect implementation")
+}
+
+func (m *MySQLDialect) DropProcedureSQL(dp DropProcedure) (string, error) {
+	return "", errors.New("DROP PROCEDURE is not supported in this MySQL dialect implementation")
+}
+
+func (m *MySQLDialect) RenameProcedureSQL(rp RenameProcedure) (string, error) {
+	return "", errors.New("RENAME PROCEDURE is not supported in this MySQL dialect implementation")
+}
+
+// New implementations for triggers.
+func (m *MySQLDialect) CreateTriggerSQL(ct CreateTrigger) (string, error) {
+	return "", errors.New("CREATE TRIGGER is not supported in this MySQL dialect implementation")
+}
+
+func (m *MySQLDialect) DropTriggerSQL(dt DropTrigger) (string, error) {
+	return "", errors.New("DROP TRIGGER is not supported in this MySQL dialect implementation")
+}
+
+func (m *MySQLDialect) RenameTriggerSQL(rt RenameTrigger) (string, error) {
+	return "", errors.New("RENAME TRIGGER is not supported in this MySQL dialect implementation")
+}
+
 // ---------------------
 // SQLite Implementation
 // ---------------------
 type SQLiteDialect struct{}
 
-// Add helper methods for quoting identifiers.
 func (s *SQLiteDialect) quoteIdentifier(id string) string {
 	return fmt.Sprintf("\"%s\"", id)
 }
@@ -467,7 +628,6 @@ func (s *SQLiteDialect) DropSchemaSQL(ds DropSchema) (string, error) {
 func (s *SQLiteDialect) AddColumnSQL(ac AddColumn, tableName string) ([]string, error) {
 	var queries []string
 	var sb strings.Builder
-	// Updated: quote table and column names.
 	sb.WriteString(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s ", s.quoteIdentifier(tableName), s.quoteIdentifier(ac.Name)))
 	sb.WriteString(s.MapDataType(ac.Type, ac.Size, ac.AutoIncrement, ac.PrimaryKey))
 	if !ac.Nullable {
@@ -530,7 +690,6 @@ func (s *SQLiteDialect) MapDataType(genericType string, size int, autoIncrement,
 }
 
 func (s *SQLiteDialect) WrapInTransaction(queries []string) []string {
-	// SQLite uses BEGIN and COMMIT similarly.
 	tx := []string{"BEGIN;"}
 	tx = append(tx, queries...)
 	tx = append(tx, "COMMIT;")
@@ -538,8 +697,71 @@ func (s *SQLiteDialect) WrapInTransaction(queries []string) []string {
 }
 
 func (s *SQLiteDialect) WrapInTransactionWithConfig(queries []string, trans Transaction) []string {
-	// SQLite does not support isolation level configuration.
 	return s.WrapInTransaction(queries)
+}
+
+// New implementations for views.
+func (s *SQLiteDialect) CreateViewSQL(cv CreateView) (string, error) {
+	if cv.OrReplace {
+		return fmt.Sprintf("CREATE VIEW IF NOT EXISTS %s AS %s;", s.quoteIdentifier(cv.Name), cv.Definition), nil
+	}
+	return fmt.Sprintf("CREATE VIEW %s AS %s;", s.quoteIdentifier(cv.Name), cv.Definition), nil
+}
+
+func (s *SQLiteDialect) DropViewSQL(dv DropView) (string, error) {
+	if dv.IfExists {
+		return fmt.Sprintf("DROP VIEW IF EXISTS %s;", s.quoteIdentifier(dv.Name)), nil
+	}
+	return fmt.Sprintf("DROP VIEW %s;", s.quoteIdentifier(dv.Name)), nil
+}
+
+func (s *SQLiteDialect) RenameViewSQL(rv RenameView) (string, error) {
+	return "", errors.New("RENAME VIEW is not supported in SQLite")
+}
+
+// New implementations for functions.
+func (s *SQLiteDialect) CreateFunctionSQL(cf CreateFunction) (string, error) {
+	return "", errors.New("CREATE FUNCTION is not supported in SQLite")
+}
+
+func (s *SQLiteDialect) DropFunctionSQL(df DropFunction) (string, error) {
+	return "", errors.New("DROP FUNCTION is not supported in SQLite")
+}
+
+func (s *SQLiteDialect) RenameFunctionSQL(rf RenameFunction) (string, error) {
+	return "", errors.New("RENAME FUNCTION is not supported in SQLite")
+}
+
+// New implementations for procedures.
+func (s *SQLiteDialect) CreateProcedureSQL(cp CreateProcedure) (string, error) {
+	return "", errors.New("CREATE PROCEDURE is not supported in SQLite")
+}
+
+func (s *SQLiteDialect) DropProcedureSQL(dp DropProcedure) (string, error) {
+	return "", errors.New("DROP PROCEDURE is not supported in SQLite")
+}
+
+func (s *SQLiteDialect) RenameProcedureSQL(rp RenameProcedure) (string, error) {
+	return "", errors.New("RENAME PROCEDURE is not supported in SQLite")
+}
+
+// New implementations for triggers.
+func (s *SQLiteDialect) CreateTriggerSQL(ct CreateTrigger) (string, error) {
+	if ct.OrReplace {
+		return fmt.Sprintf("DROP TRIGGER IF EXISTS %s; CREATE TRIGGER %s %s;", s.quoteIdentifier(ct.Name), s.quoteIdentifier(ct.Name), ct.Definition), nil
+	}
+	return fmt.Sprintf("CREATE TRIGGER %s %s;", s.quoteIdentifier(ct.Name), ct.Definition), nil
+}
+
+func (s *SQLiteDialect) DropTriggerSQL(dt DropTrigger) (string, error) {
+	if dt.IfExists {
+		return fmt.Sprintf("DROP TRIGGER IF EXISTS %s;", s.quoteIdentifier(dt.Name)), nil
+	}
+	return fmt.Sprintf("DROP TRIGGER %s;", s.quoteIdentifier(dt.Name)), nil
+}
+
+func (s *SQLiteDialect) RenameTriggerSQL(rt RenameTrigger) (string, error) {
+	return "", errors.New("RENAME TRIGGER is not supported in SQLite")
 }
 
 // Move the table recreation logic into SQLiteDialect.
@@ -586,6 +808,5 @@ func getDialect(name string) Dialect {
 	if d, ok := dialectRegistry[name]; ok {
 		return d
 	}
-	// Fallback: return PostgresDialect.
 	return dialectRegistry[DialectPostgres]
 }

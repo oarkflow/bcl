@@ -136,21 +136,249 @@ func (d *DummyDriver) ValidateMigrations() error {
 func (d *DummyDriver) CreateMigrationFile(name string) error {
 	name = fmt.Sprintf("%d_%s", time.Now().Unix(), name)
 	filename := filepath.Join(d.migrationDir, name+".bcl")
-	template := fmt.Sprintf(`Migration "%s" {
-  Version = "1.0.0"
-  Description = "New migration"
-  Up {
 
+	// Parse migration name tokens
+	tokens := strings.Split(name, "_")
+	var template string
+	if len(tokens) < 2 {
+		template = defaultTemplate(name)
+	} else {
+		// tokens[0] is timestamp; tokens[1] is the operation
+		op := strings.ToLower(tokens[1])
+		// Determine the object type (table, view, function, trigger)
+		objType := ""
+		if len(tokens) > 2 {
+			last := strings.ToLower(tokens[len(tokens)-1])
+			if last == "table" || last == "view" || last == "function" || last == "trigger" {
+				objType = last
+			}
+		}
+		switch op {
+		case "create":
+			if objType == "view" {
+				// Expected: timestamp_create_<viewname>_view
+				viewName := strings.Join(tokens[2:len(tokens)-1], "_")
+				template = fmt.Sprintf(`Migration "%s" {
+  Version = "1.0.0"
+  Description = "Create view %s."
+  Up {
+    CreateView "%s" {
+      // Define view SQL query.
+    }
   }
   Down {
-
+    DropView "%s" {
+      Cascade = true
+    }
   }
-}`, name)
+}`, name, viewName, viewName, viewName)
+			} else if objType == "function" {
+				// Expected: timestamp_create_<funcname>_function
+				funcName := strings.Join(tokens[2:len(tokens)-1], "_")
+				template = fmt.Sprintf(`Migration "%s" {
+  Version = "1.0.0"
+  Description = "Create function %s."
+  Up {
+    CreateFunction "%s" {
+      // Define function signature and body.
+    }
+  }
+  Down {
+    DropFunction "%s" {
+      Cascade = true
+    }
+  }
+}`, name, funcName, funcName, funcName)
+			} else if objType == "trigger" {
+				// Expected: timestamp_create_<triggername>_trigger
+				triggerName := strings.Join(tokens[2:len(tokens)-1], "_")
+				template = fmt.Sprintf(`Migration "%s" {
+  Version = "1.0.0"
+  Description = "Create trigger %s."
+  Up {
+    CreateTrigger "%s" {
+      // Define trigger logic.
+    }
+  }
+  Down {
+    DropTrigger "%s" {
+      Cascade = true
+    }
+  }
+}`, name, triggerName, triggerName, triggerName)
+			} else {
+				// Default to table creation (either objType is empty or explicitly "table")
+				var table string
+				if objType == "table" {
+					table = strings.Join(tokens[2:len(tokens)-1], "_")
+				} else {
+					table = strings.Join(tokens[2:], "_")
+				}
+				template = fmt.Sprintf(`Migration "%s" {
+  Version = "1.0.0"
+  Description = "Create table %s."
+  Up {
+    CreateTable "%s" {
+      // Define columns here.
+    }
+  }
+  Down {
+    DropTable "%s" {
+      Cascade = true
+    }
+  }
+}`, name, table, table, table)
+			}
+		case "alter":
+			if objType == "view" {
+				viewName := strings.Join(tokens[2:len(tokens)-1], "_")
+				template = fmt.Sprintf(`Migration "%s" {
+  Version = "1.0.0"
+  Description = "Alter view %s."
+  Up {
+    AlterView "%s" {
+      // Define alterations for view.
+    }
+  }
+  Down {
+    // Define rollback for view alterations.
+  }
+}`, name, viewName, viewName)
+			} else if objType == "function" {
+				funcName := strings.Join(tokens[2:len(tokens)-1], "_")
+				template = fmt.Sprintf(`Migration "%s" {
+  Version = "1.0.0"
+  Description = "Alter function %s."
+  Up {
+    AlterFunction "%s" {
+      // Define function alterations.
+    }
+  }
+  Down {
+    // Define rollback for function alterations.
+  }
+}`, name, funcName, funcName)
+			} else if objType == "trigger" {
+				triggerName := strings.Join(tokens[2:len(tokens)-1], "_")
+				template = fmt.Sprintf(`Migration "%s" {
+  Version = "1.0.0"
+  Description = "Alter trigger %s."
+  Up {
+    AlterTrigger "%s" {
+      // Define trigger alterations.
+    }
+  }
+  Down {
+    // Define rollback for trigger alterations.
+  }
+}`, name, triggerName, triggerName)
+			} else {
+				// Default to altering a table
+				var table string
+				if objType == "table" {
+					table = strings.Join(tokens[2:len(tokens)-1], "_")
+				} else {
+					table = strings.Join(tokens[2:], "_")
+				}
+				template = fmt.Sprintf(`Migration "%s" {
+  Version = "1.0.0"
+  Description = "Alter table %s."
+  Up {
+    AlterTable "%s" {
+      // Define alterations here.
+    }
+  }
+  Down {
+    // Define rollback for alterations.
+  }
+}`, name, table, table)
+			}
+		case "drop":
+			if objType == "view" {
+				viewName := strings.Join(tokens[2:len(tokens)-1], "_")
+				template = fmt.Sprintf(`Migration "%s" {
+  Version = "1.0.0"
+  Description = "Drop view %s."
+  Up {
+    DropView "%s" {
+      Cascade = true
+    }
+  }
+  Down {
+    // Optionally define rollback for view drop.
+  }
+}`, name, viewName, viewName)
+			} else if objType == "function" {
+				funcName := strings.Join(tokens[2:len(tokens)-1], "_")
+				template = fmt.Sprintf(`Migration "%s" {
+  Version = "1.0.0"
+  Description = "Drop function %s."
+  Up {
+    DropFunction "%s" {
+      Cascade = true
+    }
+  }
+  Down {
+    // Optionally define rollback for function drop.
+  }
+}`, name, funcName, funcName)
+			} else if objType == "trigger" {
+				triggerName := strings.Join(tokens[2:len(tokens)-1], "_")
+				template = fmt.Sprintf(`Migration "%s" {
+  Version = "1.0.0"
+  Description = "Drop trigger %s."
+  Up {
+    DropTrigger "%s" {
+      Cascade = true
+    }
+  }
+  Down {
+    // Optionally define rollback for trigger drop.
+  }
+}`, name, triggerName, triggerName)
+			} else {
+				// Default to table drop
+				var table string
+				if objType == "table" {
+					table = strings.Join(tokens[2:len(tokens)-1], "_")
+				} else {
+					table = strings.Join(tokens[2:], "_")
+				}
+				template = fmt.Sprintf(`Migration "%s" {
+  Version = "1.0.0"
+  Description = "Drop table %s."
+  Up {
+    DropTable "%s" {
+      Cascade = true
+    }
+  }
+  Down {
+    // Optionally define rollback for table drop.
+  }
+}`, name, table, table)
+			}
+		default:
+			template = defaultTemplate(name)
+		}
+	}
 	if err := os.WriteFile(filename, []byte(template), 0644); err != nil {
 		return fmt.Errorf("failed to create migration file: %w", err)
 	}
 	log.Printf("Migration file created: %s", filename)
 	return nil
+}
+
+func defaultTemplate(name string) string {
+	return fmt.Sprintf(`Migration "%s" {
+  Version = "1.0.0"
+  Description = "New migration"
+  Up {
+    // Define migration operations here.
+  }
+  Down {
+    // Define rollback operations here.
+  }
+}`, name)
 }
 
 type MakeMigrationCommand struct {
