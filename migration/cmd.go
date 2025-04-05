@@ -3,6 +3,7 @@ package migration
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"io/ioutil"
 	"log"
 	"os"
@@ -13,10 +14,17 @@ import (
 	"time"
 
 	"github.com/oarkflow/bcl"
+	"github.com/oarkflow/cli"
+	"github.com/oarkflow/cli/console"
 	"github.com/oarkflow/cli/contracts"
 )
 
-type Driver interface {
+var (
+	Name    = "Migration"
+	Version = "v0.0.1"
+)
+
+type IManager interface {
 	ApplyMigration(m Migration) error
 	RollbackMigration(step int) error
 	ResetMigrations() error
@@ -24,24 +32,54 @@ type Driver interface {
 	CreateMigrationFile(name string) error
 }
 
-type DummyDriver struct {
+type Manager struct {
 	migrationDir      string
 	historyFile       string
 	historyMutex      sync.Mutex
 	appliedMigrations map[string]string
 	dialect           string
+	client            contracts.Cli
 }
 
-func NewDummyDriver(migrationDir, historyFile, dialect string) *DummyDriver {
-	return &DummyDriver{
-		migrationDir:      migrationDir,
-		historyFile:       historyFile,
-		appliedMigrations: make(map[string]string),
-		dialect:           dialect,
+func NewManager() *Manager {
+	dir := "migrations"
+	if err := os.MkdirAll(dir, fs.ModePerm); err != nil {
+		log.Fatalf("Failed to create migration directory: %v", err)
 	}
+	cli.SetName(Name)
+	cli.SetVersion(Version)
+	app := cli.New()
+	client := app.Instance.Client()
+	d := &Manager{
+		migrationDir:      dir,
+		historyFile:       "migration_history.txt",
+		appliedMigrations: make(map[string]string),
+		client:            client,
+	}
+	client.Register([]contracts.Command{
+		console.NewListCommand(client),
+		&MakeMigrationCommand{Driver: d},
+		&MigrateCommand{Driver: d},
+		&RollbackCommand{Driver: d},
+		&ResetCommand{Driver: d},
+		&ValidateCommand{Driver: d},
+	})
+	return d
 }
 
-func (d *DummyDriver) loadHistory() error {
+func (d *Manager) Run() {
+	d.client.Run(os.Args, true)
+}
+
+func (d *Manager) SetDialect(dialect string) {
+	d.dialect = dialect
+}
+
+func (d *Manager) GetDialect() string {
+	return d.dialect
+}
+
+func (d *Manager) loadHistory() error {
 	d.historyMutex.Lock()
 	defer d.historyMutex.Unlock()
 	data, err := os.ReadFile(d.historyFile)
@@ -64,17 +102,17 @@ func (d *DummyDriver) loadHistory() error {
 	return nil
 }
 
-func (d *DummyDriver) saveHistory() error {
+func (d *Manager) saveHistory() error {
 	d.historyMutex.Lock()
 	defer d.historyMutex.Unlock()
 	var lines []string
 	for name, cs := range d.appliedMigrations {
 		lines = append(lines, fmt.Sprintf("%s:%s", name, cs))
 	}
-	return ioutil.WriteFile(d.historyFile, []byte(strings.Join(lines, "\n")), 0644)
+	return os.WriteFile(d.historyFile, []byte(strings.Join(lines, "\n")), 0644)
 }
 
-func (d *DummyDriver) ApplyMigration(m Migration) error {
+func (d *Manager) ApplyMigration(m Migration) error {
 	path := filepath.Join(d.migrationDir, m.Name+".bcl")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -101,18 +139,18 @@ func (d *DummyDriver) ApplyMigration(m Migration) error {
 	return d.saveHistory()
 }
 
-func (d *DummyDriver) RollbackMigration(step int) error {
+func (d *Manager) RollbackMigration(step int) error {
 	log.Printf("Rolling back %d migration(s)...", step)
 	return nil
 }
 
-func (d *DummyDriver) ResetMigrations() error {
+func (d *Manager) ResetMigrations() error {
 	log.Println("Resetting migrations...")
 	d.appliedMigrations = make(map[string]string)
 	return d.saveHistory()
 }
 
-func (d *DummyDriver) ValidateMigrations() error {
+func (d *Manager) ValidateMigrations() error {
 	files, err := ioutil.ReadDir(d.migrationDir)
 	if err != nil {
 		return fmt.Errorf("failed to read migration directory: %w", err)
@@ -133,19 +171,15 @@ func (d *DummyDriver) ValidateMigrations() error {
 	return nil
 }
 
-func (d *DummyDriver) CreateMigrationFile(name string) error {
+func (d *Manager) CreateMigrationFile(name string) error {
 	name = fmt.Sprintf("%d_%s", time.Now().Unix(), name)
 	filename := filepath.Join(d.migrationDir, name+".bcl")
-
-	// Parse migration name tokens
 	tokens := strings.Split(name, "_")
 	var template string
 	if len(tokens) < 2 {
 		template = defaultTemplate(name)
 	} else {
-		// tokens[0] is timestamp; tokens[1] is the operation
 		op := strings.ToLower(tokens[1])
-		// Determine the object type (table, view, function, trigger)
 		objType := ""
 		if len(tokens) > 2 {
 			last := strings.ToLower(tokens[len(tokens)-1])
@@ -156,14 +190,14 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
 		switch op {
 		case "create":
 			if objType == "view" {
-				// Expected: timestamp_create_<viewname>_view
 				viewName := strings.Join(tokens[2:len(tokens)-1], "_")
 				template = fmt.Sprintf(`Migration "%s" {
   Version = "1.0.0"
   Description = "Create view %s."
+  Connection = "default"
   Up {
     CreateView "%s" {
-      // Define view SQL query.
+      # Define view SQL query.
     }
   }
   Down {
@@ -173,14 +207,15 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
   }
 }`, name, viewName, viewName, viewName)
 			} else if objType == "function" {
-				// Expected: timestamp_create_<funcname>_function
+
 				funcName := strings.Join(tokens[2:len(tokens)-1], "_")
 				template = fmt.Sprintf(`Migration "%s" {
   Version = "1.0.0"
   Description = "Create function %s."
+  Connection = "default"
   Up {
     CreateFunction "%s" {
-      // Define function signature and body.
+      # Define function signature and body.
     }
   }
   Down {
@@ -190,14 +225,14 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
   }
 }`, name, funcName, funcName, funcName)
 			} else if objType == "trigger" {
-				// Expected: timestamp_create_<triggername>_trigger
 				triggerName := strings.Join(tokens[2:len(tokens)-1], "_")
 				template = fmt.Sprintf(`Migration "%s" {
   Version = "1.0.0"
   Description = "Create trigger %s."
+  Connection = "default"
   Up {
     CreateTrigger "%s" {
-      // Define trigger logic.
+      # Define trigger logic.
     }
   }
   Down {
@@ -207,7 +242,6 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
   }
 }`, name, triggerName, triggerName, triggerName)
 			} else {
-				// Default to table creation (either objType is empty or explicitly "table")
 				var table string
 				if objType == "table" {
 					table = strings.Join(tokens[2:len(tokens)-1], "_")
@@ -217,6 +251,7 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
 				template = fmt.Sprintf(`Migration "%s" {
   Version = "1.0.0"
   Description = "Create table %s."
+  Connection = "default"
   Up {
     CreateTable "%s" {
       Column "id" {
@@ -262,13 +297,14 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
 				template = fmt.Sprintf(`Migration "%s" {
   Version = "1.0.0"
   Description = "Alter view %s."
+  Connection = "default"
   Up {
     AlterView "%s" {
-      // Define alterations for view.
+      # Define alterations for view.
     }
   }
   Down {
-    // Define rollback for view alterations.
+    # Define rollback for view alterations.
   }
 }`, name, viewName, viewName)
 			} else if objType == "function" {
@@ -276,13 +312,14 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
 				template = fmt.Sprintf(`Migration "%s" {
   Version = "1.0.0"
   Description = "Alter function %s."
+  Connection = "default"
   Up {
     AlterFunction "%s" {
-      // Define function alterations.
+      # Define function alterations.
     }
   }
   Down {
-    // Define rollback for function alterations.
+    # Define rollback for function alterations.
   }
 }`, name, funcName, funcName)
 			} else if objType == "trigger" {
@@ -290,17 +327,18 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
 				template = fmt.Sprintf(`Migration "%s" {
   Version = "1.0.0"
   Description = "Alter trigger %s."
+  Connection = "default"
   Up {
     AlterTrigger "%s" {
-      // Define trigger alterations.
+      # Define trigger alterations.
     }
   }
   Down {
-    // Define rollback for trigger alterations.
+    # Define rollback for trigger alterations.
   }
 }`, name, triggerName, triggerName)
 			} else {
-				// Default to altering a table
+
 				var table string
 				if objType == "table" {
 					table = strings.Join(tokens[2:len(tokens)-1], "_")
@@ -310,13 +348,14 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
 				template = fmt.Sprintf(`Migration "%s" {
   Version = "1.0.0"
   Description = "Alter table %s."
+  Connection = "default"
   Up {
     AlterTable "%s" {
-      // Define alterations here.
+      # Define alterations here.
     }
   }
   Down {
-    // Define rollback for alterations.
+    # Define rollback for alterations.
   }
 }`, name, table, table)
 			}
@@ -326,13 +365,14 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
 				template = fmt.Sprintf(`Migration "%s" {
   Version = "1.0.0"
   Description = "Drop view %s."
+  Connection = "default"
   Up {
     DropView "%s" {
       Cascade = true
     }
   }
   Down {
-    // Optionally define rollback for view drop.
+    # Optionally define rollback for view drop.
   }
 }`, name, viewName, viewName)
 			} else if objType == "function" {
@@ -340,13 +380,14 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
 				template = fmt.Sprintf(`Migration "%s" {
   Version = "1.0.0"
   Description = "Drop function %s."
+  Connection = "default"
   Up {
     DropFunction "%s" {
       Cascade = true
     }
   }
   Down {
-    // Optionally define rollback for function drop.
+    # Optionally define rollback for function drop.
   }
 }`, name, funcName, funcName)
 			} else if objType == "trigger" {
@@ -354,17 +395,18 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
 				template = fmt.Sprintf(`Migration "%s" {
   Version = "1.0.0"
   Description = "Drop trigger %s."
+  Connection = "default"
   Up {
     DropTrigger "%s" {
       Cascade = true
     }
   }
   Down {
-    // Optionally define rollback for trigger drop.
+    # Optionally define rollback for trigger drop.
   }
 }`, name, triggerName, triggerName)
 			} else {
-				// Default to table drop
+
 				var table string
 				if objType == "table" {
 					table = strings.Join(tokens[2:len(tokens)-1], "_")
@@ -374,13 +416,14 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
 				template = fmt.Sprintf(`Migration "%s" {
   Version = "1.0.0"
   Description = "Drop table %s."
+  Connection = "default"
   Up {
     DropTable "%s" {
       Cascade = true
     }
   }
   Down {
-    // Optionally define rollback for table drop.
+    # Optionally define rollback for table drop.
   }
 }`, name, table, table)
 			}
@@ -399,18 +442,19 @@ func defaultTemplate(name string) string {
 	return fmt.Sprintf(`Migration "%s" {
   Version = "1.0.0"
   Description = "New migration"
+  Connection = "default"
   Up {
-    // Define migration operations here.
+    # Define migration operations here.
   }
   Down {
-    // Define rollback operations here.
+    # Define rollback operations here.
   }
 }`, name)
 }
 
 type MakeMigrationCommand struct {
 	extend contracts.Extend
-	Driver Driver
+	Driver IManager
 }
 
 func (c *MakeMigrationCommand) Signature() string {
@@ -436,7 +480,7 @@ func (c *MakeMigrationCommand) Handle(ctx contracts.Context) error {
 
 type MigrateCommand struct {
 	extend contracts.Extend
-	Driver Driver
+	Driver IManager
 }
 
 func (c *MigrateCommand) Signature() string {
@@ -473,7 +517,7 @@ func releaseLock() error {
 func runPreUpChecks(checks []string) error {
 	for _, check := range checks {
 		log.Printf("Executing PreUpCheck: %s", check)
-		// Simulate check execution: if check contains "fail", then return an error.
+
 		if strings.Contains(strings.ToLower(check), "fail") {
 			return fmt.Errorf("PreUp check failed: %s", check)
 		}
@@ -485,7 +529,7 @@ func runPreUpChecks(checks []string) error {
 func runPostUpChecks(checks []string) error {
 	for _, check := range checks {
 		log.Printf("Executing PostUpCheck: %s", check)
-		// Simulate check execution: if check contains "fail", then return an error.
+
 		if strings.Contains(strings.ToLower(check), "fail") {
 			return fmt.Errorf("PostUp check failed: %s", check)
 		}
@@ -495,7 +539,6 @@ func runPostUpChecks(checks []string) error {
 }
 
 func (c *MigrateCommand) Handle(ctx contracts.Context) error {
-	// Acquire migration lock.
 	if err := acquireLock(); err != nil {
 		return fmt.Errorf("cannot start migration: %w", err)
 	}
@@ -504,34 +547,25 @@ func (c *MigrateCommand) Handle(ctx contracts.Context) error {
 			log.Printf("Warning releasing lock: %v", err)
 		}
 	}()
-
-	// Validate currently applied migrations.
 	if err := c.Driver.ValidateMigrations(); err != nil {
 		log.Printf("Validation warning: %v", err)
 	}
-
 	files, err := os.ReadDir("migrations")
 	if err != nil {
 		return fmt.Errorf("failed to read migration directory: %w", err)
 	}
-
-	// Iterate migration files.
 	for _, file := range files {
-		// Ignore directories and non-.bcl files.
 		if file.IsDir() || !strings.HasSuffix(file.Name(), ".bcl") {
 			continue
 		}
 		name := strings.TrimSuffix(file.Name(), ".bcl")
 		path := filepath.Join("migrations", file.Name())
-
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("failed to read migration file %s: %w", name, err)
 		}
-
 		checksum := computeChecksum(data)
 		log.Printf("Migration file %s checksum: %s", name, checksum)
-
 		var cfg Config
 		if _, err := bcl.Unmarshal(data, &cfg); err != nil {
 			return fmt.Errorf("failed to unmarshal migration file %s: %w", name, err)
@@ -540,22 +574,14 @@ func (c *MigrateCommand) Handle(ctx contracts.Context) error {
 			return fmt.Errorf("no migration found in file %s", name)
 		}
 		migration := cfg.Migrations[0]
-
-		// Run PreUp validations.
 		for _, val := range migration.Validate {
 			if err := runPreUpChecks(val.PreUpChecks); err != nil {
 				return fmt.Errorf("pre-up validation failed for migration %s: %w", migration.Name, err)
 			}
 		}
-
-		// Apply migration.
-		// Note: DummyDriver.ApplyMigration reads the file again.
-		// We use migration.Name for consistency.
 		if err := c.Driver.ApplyMigration(Migration{Name: migration.Name}); err != nil {
 			return fmt.Errorf("failed to apply migration %s: %w", migration.Name, err)
 		}
-
-		// Run PostUp validations.
 		for _, val := range migration.Validate {
 			if err := runPostUpChecks(val.PostUpChecks); err != nil {
 				return fmt.Errorf("post-up validation failed for migration %s: %w", migration.Name, err)
@@ -567,7 +593,7 @@ func (c *MigrateCommand) Handle(ctx contracts.Context) error {
 
 type RollbackCommand struct {
 	extend contracts.Extend
-	Driver Driver
+	Driver IManager
 }
 
 func (c *RollbackCommand) Signature() string {
@@ -597,7 +623,7 @@ func (c *RollbackCommand) Handle(ctx contracts.Context) error {
 
 type ResetCommand struct {
 	extend contracts.Extend
-	Driver Driver
+	Driver IManager
 }
 
 func (c *ResetCommand) Signature() string {
@@ -618,7 +644,7 @@ func (c *ResetCommand) Handle(ctx contracts.Context) error {
 
 type ValidateCommand struct {
 	extend contracts.Extend
-	Driver Driver
+	Driver IManager
 }
 
 func (c *ValidateCommand) Signature() string {

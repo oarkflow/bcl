@@ -26,6 +26,7 @@ type Migration struct {
 	Name        string        `json:"name"`
 	Version     string        `json:"Version"`
 	Description string        `json:"Description"`
+	Connection  string        `json:"Connection"`
 	Up          []Operation   `json:"Up"`
 	Down        []Operation   `json:"Down"`
 	Transaction []Transaction `json:"Transaction"`
