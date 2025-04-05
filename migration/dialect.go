@@ -33,6 +33,7 @@ type Dialect interface {
 	RenameTriggerSQL(rt RenameTrigger) (string, error)
 	WrapInTransaction(queries []string) []string
 	WrapInTransactionWithConfig(queries []string, trans Transaction) []string
+	InsertSQL(table string, columns []string, values []string) (string, error)
 }
 
 type PostgresDialect struct{}
@@ -357,6 +358,19 @@ func (p *PostgresDialect) WrapInTransactionWithConfig(queries []string, trans Tr
 	return tx
 }
 
+func (p *PostgresDialect) InsertSQL(table string, columns []string, values []string) (string, error) {
+	quotedCols := []string{}
+	for _, col := range columns {
+		quotedCols = append(quotedCols, p.quoteIdentifier(col))
+	}
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s);\n",
+		p.quoteIdentifier(table),
+		strings.Join(quotedCols, ", "),
+		strings.Join(values, ", "),
+	)
+	return query, nil
+}
+
 type MySQLDialect struct{}
 
 func (m *MySQLDialect) quoteIdentifier(id string) string {
@@ -633,6 +647,19 @@ func (m *MySQLDialect) RenameTriggerSQL(rt RenameTrigger) (string, error) {
 	return "", errors.New("RENAME TRIGGER is not supported in this MySQL dialect implementation")
 }
 
+func (m *MySQLDialect) InsertSQL(table string, columns []string, values []string) (string, error) {
+	quotedCols := []string{}
+	for _, col := range columns {
+		quotedCols = append(quotedCols, m.quoteIdentifier(col))
+	}
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s);",
+		m.quoteIdentifier(table),
+		strings.Join(quotedCols, ", "),
+		strings.Join(values, ", "),
+	)
+	return query, nil
+}
+
 type SQLiteDialect struct{}
 
 func (s *SQLiteDialect) quoteIdentifier(id string) string {
@@ -904,6 +931,19 @@ func (s *SQLiteDialect) RecreateTableForAlter(tableName string, newSchema Create
 	queries = append(queries, fmt.Sprintf("DROP TABLE %s_backup;", s.quoteIdentifier(tableName)))
 	queries = append(queries, "PRAGMA foreign_keys=on;")
 	return queries, nil
+}
+
+func (s *SQLiteDialect) InsertSQL(table string, columns []string, values []string) (string, error) {
+	quotedCols := []string{}
+	for _, col := range columns {
+		quotedCols = append(quotedCols, s.quoteIdentifier(col))
+	}
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s);",
+		s.quoteIdentifier(table),
+		strings.Join(quotedCols, ", "),
+		strings.Join(values, ", "),
+	)
+	return query, nil
 }
 
 var dialectRegistry = map[string]Dialect{}

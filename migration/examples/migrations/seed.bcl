@@ -1,0 +1,17 @@
+age = 100
+Seed "extendedTest" {
+    table = "extended.table"
+    Field "id" {
+        value = "fake_uuid"
+        unique = true
+    }
+    Field "is_active" {
+        value = true
+    }
+    Field "allowed_to_vote" {
+        value = age > 20 ? true : false
+    }
+    combine = ["name", "status"]
+    condition = "if_exists"
+    rows = 2
+}

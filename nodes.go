@@ -1037,7 +1037,7 @@ func (f *FunctionNode) Eval(env *Environment) (any, error) {
 		}
 		args = append(args, val)
 	}
-	fn, ok := lookupFunction(f.FuncName)
+	fn, ok := LookupFunction(f.FuncName)
 	if !ok {
 		return nil, fmt.Errorf("unknown function %s", f.FuncName)
 	}
