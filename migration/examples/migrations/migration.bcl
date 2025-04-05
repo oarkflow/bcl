@@ -4,32 +4,24 @@ Migration "explicit_operations" {
   Up {
     AlterTable "core.users" {
       AddColumn "email" {
-        type = "string"
-        size = 255
-        unique = true
-        check = "email ~* '@'"
+        type = "string", size = 255, unique = true, check = "email ~* '@'"
       }
       DropColumn "temporary_flag" {}
       RenameColumn {
-        from = "signup_date"
-        to = "created_at"
+        from = "signup_date", to = "created_at"
       }
     }
 	AlterTable "core.products" {
       AddColumn "sku" {
-        type = "number"
-        size = 255
+        type = "number", size = 255
       }
-      RenameColumn {
-        from = "added_date"
+      RenameColumn "added_date" {
         to = "created_at"
       }
     }
     CreateTable "core.categories" {
       Column "email" {
-        type = "string"
-        size = 255
-        unique = true
+        type = "string", size = 255,unique = true
       }
     }
     CreateView "core.active_users" {
@@ -51,20 +43,15 @@ Migration "explicit_operations" {
         nullable = true
       }
       DropColumn "email" {}
-      RenameColumn {
-        from = "created_at"
+      RenameColumn "created_at" {
         to = "signup_date"
       }
     }
     DeleteData "core.users" {
       Where = "username LIKE 'admin%'"
     }
-    DropTable "core.profiles" {
-      Cascade = true
-    }
-    DropTable "core.users" {
-      Cascade = true
-    }
+    DropTable "core.profiles" {}
+    DropTable "core.users" {}
     DropEnumType "core.user_role" {
       IfExists = true
     }

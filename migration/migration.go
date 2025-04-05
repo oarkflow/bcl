@@ -104,6 +104,7 @@ func (d DropColumn) ToSQL(dialect, tableName string) (string, error) {
 }
 
 type RenameColumn struct {
+	Name string `json:"name"`
 	From string `json:"from"`
 	To   string `json:"to"`
 	Type string `json:"type,omitempty"`

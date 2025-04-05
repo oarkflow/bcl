@@ -10,7 +10,7 @@ import (
 )
 
 func main() {
-	data, err := os.ReadFile("migrations/functions.bcl")
+	data, err := os.ReadFile("migrations/migration.bcl")
 	if err != nil {
 		log.Fatalf("Failed to read config file: %v", err)
 	}

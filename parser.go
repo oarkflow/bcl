@@ -62,7 +62,6 @@ func (p *Parser) nextToken() {
 	text := p.scanner.TokenText()
 	pos := p.scanner.Pos()
 	p.offset = int(pos.Offset)
-	// Consolidated: handle "||" and "&&" operators.
 	if (text == "|" || text == "&") && p.scanner.Peek() == rune(text[0]) {
 		p.scanner.Next()
 		if text == "|" {
@@ -86,14 +85,12 @@ func (p *Parser) nextToken() {
 		p.lastLine = p.scanner.Pos().Line
 		return
 	}
-	// Handle "<=" operator
 	if text == "<" && p.scanner.Peek() == '=' {
 		p.scanner.Next()
 		p.curr = tokenInfo{typ: OPERATOR, value: "<="}
 		p.lastLine = p.scanner.Pos().Line
 		return
 	}
-	// Handle ">=" operator
 	if text == ">" && p.scanner.Peek() == '=' {
 		p.scanner.Next()
 		p.curr = tokenInfo{typ: OPERATOR, value: ">="}
@@ -200,7 +197,6 @@ func (p *Parser) nextToken() {
 	p.lastLine = p.scanner.Pos().Line
 }
 
-// Add helper for robust error reporting.
 func (p *Parser) parseError(msg string) error {
 	pos := p.scanner.Pos()
 	lines := strings.Split(p.input, "\n")
@@ -305,7 +301,6 @@ func (p *Parser) parseInclude() (Node, error) {
 
 func (p *Parser) parseFileName() (string, error) {
 	sb := getBuilder(16)
-	// Modified: Validate that string literals are properly closed.
 	if p.curr.typ == STRING {
 		unquoted, err := strconv.Unquote(p.curr.value)
 		if err != nil {
@@ -344,39 +339,84 @@ func (p *Parser) parseFileName() (string, error) {
 }
 
 func (p *Parser) parseAssignment(varName string) (Node, error) {
-	// Accept ASSIGN, or an OPERATOR with ":" for assignment.
-	if p.curr.typ != ASSIGN {
-		if p.curr.typ == OPERATOR && p.curr.value == ":" {
+	if p.curr.typ == COMMA {
+		lhs := []string{varName}
+		for p.curr.typ == COMMA {
 			p.nextToken()
-		} else if p.curr.typ == LBRACE || p.curr.typ == LBRACKET {
-			// Implicit '=' allowed for block, map or slice literals.
+			if p.curr.typ != IDENT {
+				return nil, p.parseError(fmt.Sprintf("expected identifier in multiple assignment, got %v", p.curr.value))
+			}
+			lhs = append(lhs, p.curr.value)
+			p.nextToken()
+		}
+		if p.curr.typ != ASSIGN {
+			if p.curr.typ == OPERATOR && p.curr.value == ":" {
+				p.nextToken()
+			} else {
+				return nil, p.parseError(fmt.Sprintf("expected '=' after variables, got %v", p.curr.value))
+			}
+		} else {
+			p.nextToken()
+		}
+		var rhs []Node
+		expr, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		rhs = append(rhs, expr)
+		for p.curr.typ == COMMA {
+			p.nextToken()
+			expr, err := p.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			rhs = append(rhs, expr)
+		}
+		if len(lhs) != len(rhs) {
+			return nil, p.parseError("number of variables and values do not match in multiple assignment")
+		}
+		var assignments []*AssignmentNode
+		for i, variable := range lhs {
+			assignments = append(assignments, &AssignmentNode{VarName: variable, Value: rhs[i]})
+		}
+		return &MultiAssignNode{Assignments: assignments}, nil
+	}
+
+	if p.curr.typ != ASSIGN && !(p.curr.typ == OPERATOR && p.curr.value == ":") {
+		if p.curr.typ == LBRACE || p.curr.typ == LBRACKET {
 		} else {
 			return nil, p.parseError(fmt.Sprintf("expected '=' after attribute name, got %v", p.curr.value))
 		}
 	} else {
 		p.nextToken()
 	}
-	// If the value is a map literal, parse and wrap it in an AssignmentNode.
-	if p.curr.typ == LBRACE {
-		m, err := p.parseMap()
-		if err != nil {
-			return nil, err
-		}
-		return &AssignmentNode{VarName: varName, Value: m}, nil
-	}
-	// If the value is a slice literal, parse and wrap it in an AssignmentNode.
-	if p.curr.typ == LBRACKET {
-		s, err := p.parseSlice()
-		if err != nil {
-			return nil, err
-		}
-		return &AssignmentNode{VarName: varName, Value: s}, nil
-	}
 	expr, err := p.parseExpression()
 	if err != nil {
 		return nil, err
 	}
-	return &AssignmentNode{VarName: varName, Value: expr}, nil
+	firstAssign := &AssignmentNode{VarName: varName, Value: expr}
+	assignments := []*AssignmentNode{firstAssign}
+	for p.curr.typ == COMMA {
+		p.nextToken()
+		if p.curr.typ != IDENT {
+			break
+		}
+		nextVar := p.curr.value
+		p.nextToken()
+		if p.curr.typ != ASSIGN && !(p.curr.typ == OPERATOR && p.curr.value == ":") {
+			break
+		}
+		p.nextToken()
+		nextExpr, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		assignments = append(assignments, &AssignmentNode{VarName: nextVar, Value: nextExpr})
+	}
+	if len(assignments) == 1 {
+		return firstAssign, nil
+	}
+	return &MultiAssignNode{Assignments: assignments}, nil
 }
 
 func (p *Parser) parseBlock(typ, label string) (Node, error) {
@@ -394,7 +434,6 @@ func (p *Parser) parseBlock(typ, label string) (Node, error) {
 			nodes = append(nodes, comment)
 			continue
 		}
-		// Expect a property key (IDENT)
 		if p.curr.typ != IDENT {
 			return nil, p.parseError(fmt.Sprintf("expected property name, got %v", p.curr.value))
 		}
@@ -408,13 +447,11 @@ func (p *Parser) parseBlock(typ, label string) (Node, error) {
 				return nil, err
 			}
 		} else if p.curr.typ == LBRACE {
-			// shorthand block with empty label
 			node, err = p.parseBlock(propName, "")
 			if err != nil {
 				return nil, err
 			}
 		} else if p.curr.typ == IDENT || p.curr.typ == STRING {
-			// Use next token as a label then expect a block start.
 			lbl := p.curr.value
 			p.nextToken()
 			if p.curr.typ != LBRACE {
@@ -518,11 +555,11 @@ func (p *Parser) parseBinaryExpression(minPrec int) (Node, error) {
 
 func (p *Parser) parseEnvLookup() (Node, error) {
 	envNode := &IdentifierNode{Name: "env"}
-	p.nextToken() // consume "env"
+	p.nextToken()
 	if p.curr.typ != DOT {
 		return envNode, nil
 	}
-	p.nextToken() // consume "."
+	p.nextToken()
 	var parts []string
 	if p.curr.typ != IDENT {
 		return nil, p.parseError(fmt.Sprintf("expected identifier after 'env.' but got %v", p.curr.value))
@@ -542,7 +579,6 @@ func (p *Parser) parsePrimary() (Node, error) {
 	}
 	switch p.curr.typ {
 	case STRING:
-		// Use unquoting only when the literal appears quoted.
 		value := p.curr.value
 		if len(value) > 0 && (value[0] == '"' || value[0] == '`') {
 			unquoted, err := strconv.Unquote(value)

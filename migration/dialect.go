@@ -208,7 +208,17 @@ func (p *PostgresDialect) DropColumnSQL(dc DropColumn, tableName string) (string
 }
 
 func (p *PostgresDialect) RenameColumnSQL(rc RenameColumn, tableName string) (string, error) {
-	return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s;", p.quoteIdentifier(tableName), p.quoteIdentifier(rc.From), p.quoteIdentifier(rc.To)), nil
+	from := rc.From
+	if from == "" && rc.Name != "" {
+		from = rc.Name
+	}
+	if from == "" {
+		return "", errors.New("Postgres requires column name for renaming column")
+	}
+	if rc.To == "" {
+		return "", errors.New("Postgres requires new column name for renaming column")
+	}
+	return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s;", p.quoteIdentifier(tableName), p.quoteIdentifier(from), p.quoteIdentifier(rc.To)), nil
 }
 
 func (p *PostgresDialect) MapDataType(genericType string, size int, autoIncrement, primaryKey bool) string {
@@ -507,7 +517,17 @@ func (m *MySQLDialect) RenameColumnSQL(rc RenameColumn, tableName string) (strin
 	if rc.Type == "" {
 		return "", errors.New("MySQL requires column type for renaming column")
 	}
-	return fmt.Sprintf("ALTER TABLE %s CHANGE %s %s %s;", m.quoteIdentifier(tableName), m.quoteIdentifier(rc.From), m.quoteIdentifier(rc.To), rc.Type), nil
+	from := rc.From
+	if from == "" && rc.Name != "" {
+		from = rc.Name
+	}
+	if from == "" {
+		return "", errors.New("MySQL requires column name for renaming column")
+	}
+	if rc.To == "" {
+		return "", errors.New("MySQL requires new column name for renaming column")
+	}
+	return fmt.Sprintf("ALTER TABLE %s CHANGE %s %s %s;", m.quoteIdentifier(tableName), m.quoteIdentifier(from), m.quoteIdentifier(rc.To), rc.Type), nil
 }
 
 func (m *MySQLDialect) MapDataType(genericType string, size int, autoIncrement, primaryKey bool) string {

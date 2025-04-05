@@ -70,6 +70,37 @@ func (a *AssignmentNode) ToBCL(indent string) string {
 
 func (a *AssignmentNode) NodeType() string { return "Assignment" }
 
+type MultiAssignNode struct {
+	Assignments []*AssignmentNode
+}
+
+func (m *MultiAssignNode) Eval(env *Environment) (any, error) {
+	result := make(map[string]any)
+	for _, assign := range m.Assignments {
+		val, err := assign.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		// Merge each assignment result into result map.
+		if mres, ok := val.(map[string]any); ok {
+			for k, v := range mres {
+				result[k] = v
+			}
+		}
+	}
+	return result, nil
+}
+
+func (m *MultiAssignNode) ToBCL(indent string) string {
+	var parts []string
+	for _, assign := range m.Assignments {
+		parts = append(parts, assign.ToBCL(""))
+	}
+	return indent + strings.Join(parts, ", ")
+}
+
+func (m *MultiAssignNode) NodeType() string { return "MultiAssign" }
+
 type BlockNode struct {
 	Type  string
 	Label string
