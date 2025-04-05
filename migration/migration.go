@@ -78,7 +78,7 @@ type AddColumn struct {
 	Name          string      `json:"name"`
 	Type          string      `json:"type"`
 	Nullable      bool        `json:"nullable"`
-	Default       string      `json:"default,omitempty"`
+	Default       any         `json:"default,omitempty"`
 	Check         string      `json:"check,omitempty"`
 	Size          int         `json:"size,omitempty"`
 	AutoIncrement bool        `json:"auto_increment,omitempty"`

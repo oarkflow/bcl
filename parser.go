@@ -542,13 +542,17 @@ func (p *Parser) parsePrimary() (Node, error) {
 	}
 	switch p.curr.typ {
 	case STRING:
-		// Modified: Validate string literal closure.
-		unquoted, err := strconv.Unquote(p.curr.value)
-		if err != nil {
-			return nil, p.parseError(fmt.Sprintf("missing or malformed closing double quote: %v", p.curr.value))
+		// Use unquoting only when the literal appears quoted.
+		value := p.curr.value
+		if len(value) > 0 && (value[0] == '"' || value[0] == '`') {
+			unquoted, err := strconv.Unquote(value)
+			if err != nil {
+				return nil, p.parseError(fmt.Sprintf("malformed quoted string: %v", value))
+			}
+			value = unquoted
 		}
 		p.nextToken()
-		return &PrimitiveNode{Value: unquoted}, nil
+		return &PrimitiveNode{Value: value}, nil
 	case NUMBER:
 		text := p.curr.value
 		p.nextToken()

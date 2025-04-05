@@ -219,7 +219,33 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
   Description = "Create table %s."
   Up {
     CreateTable "%s" {
-      // Define columns here.
+      Column "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+        index = true
+        unique = true
+      }
+      Column "is_active" {
+        type = "boolean"
+        default = false
+      }
+      Column "status" {
+        type = "string"
+        default = "active"
+      }
+      Column "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+      Column "updated_at" {
+        type = "datetime"
+        default = "now()"
+      }
+      Column "deleted_at" {
+        type = "datetime"
+        is_nullable = true
+      }
     }
   }
   Down {
@@ -227,7 +253,8 @@ func (d *DummyDriver) CreateMigrationFile(name string) error {
       Cascade = true
     }
   }
-}`, name, table, table, table)
+}
+`, name, table, table, table)
 			}
 		case "alter":
 			if objType == "view" {
