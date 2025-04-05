@@ -197,27 +197,16 @@ func (m *MySQLDialect) RenameColumnSQL(rc RenameColumn, tableName string) (strin
 
 func (m *MySQLDialect) MapDataType(genericType string, size int, autoIncrement, primaryKey bool) string {
 	lt := strings.ToLower(genericType)
-	switch lt {
-	case "string":
-		if size > 0 {
-			return fmt.Sprintf("VARCHAR(%d)", size)
+	if dt, ok := mysqlDataTypes[lt]; ok {
+		if (lt == "string" || lt == "varchar") && size > 0 {
+			return fmt.Sprintf("%s(%d)", dt, size)
+		} else if lt == "decimal" && size > 0 {
+			// Default scale of 2 is assumed
+			return fmt.Sprintf("DECIMAL(%d,2)", size)
 		}
-		return "VARCHAR(255)"
-	case "number":
-		return "INT"
-	case "boolean":
-		return "TINYINT(1)"
-	case "date":
-		return "DATE"
-	case "datetime":
-		return "DATETIME"
-	case "float":
-		return "FLOAT"
-	case "double":
-		return "DOUBLE"
-	default:
-		return genericType
+		return dt
 	}
+	return genericType
 }
 
 func (m *MySQLDialect) WrapInTransaction(queries []string) []string {

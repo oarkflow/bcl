@@ -213,34 +213,24 @@ func (p *PostgresDialect) RenameColumnSQL(rc RenameColumn, tableName string) (st
 }
 
 func (p *PostgresDialect) MapDataType(genericType string, size int, autoIncrement, primaryKey bool) string {
+	lt := strings.ToLower(genericType)
 	if autoIncrement {
+		// Use BIGSERIAL for bigint types
+		if lt == "bigint" {
+			return "BIGSERIAL"
+		}
 		return "SERIAL"
 	}
-	lt := strings.ToLower(genericType)
-	switch lt {
-	case "string":
-		if size > 0 {
-			return fmt.Sprintf("VARCHAR(%d)", size)
+	if dt, ok := postgresDataTypes[lt]; ok {
+		if (lt == "varchar" || lt == "char") && size > 0 {
+			return fmt.Sprintf("%s(%d)", dt, size)
+		} else if (lt == "decimal" || lt == "numeric") && size > 0 {
+			// Assumes a default scale of 2
+			return fmt.Sprintf("%s(%d,2)", dt, size)
 		}
-		return "TEXT"
-	case "number":
-		if autoIncrement {
-			return "SERIAL"
-		}
-		return "INTEGER"
-	case "boolean":
-		return "BOOLEAN"
-	case "date":
-		return "DATE"
-	case "datetime":
-		return "TIMESTAMP"
-	case "float":
-		return "REAL"
-	case "double":
-		return "DOUBLE PRECISION"
-	default:
-		return genericType
+		return dt
 	}
+	return genericType
 }
 
 func (p *PostgresDialect) CreateViewSQL(cv CreateView) (string, error) {

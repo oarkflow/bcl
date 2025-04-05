@@ -170,30 +170,16 @@ func (s *SQLiteDialect) RenameColumnSQL(rc RenameColumn, tableName string) (stri
 
 func (s *SQLiteDialect) MapDataType(genericType string, size int, autoIncrement, primaryKey bool) string {
 	lt := strings.ToLower(genericType)
-	switch lt {
-	case "string":
-		if size > 0 {
-			return fmt.Sprintf("VARCHAR(%d)", size)
+	if dt, ok := sqliteDataTypes[lt]; ok {
+		if (lt == "varchar" || lt == "char") && size > 0 {
+			return fmt.Sprintf("%s(%d)", dt, size)
+		} else if (lt == "decimal" || lt == "numeric") && size > 0 {
+			// Assumes a default scale of 2
+			return fmt.Sprintf("%s(%d,2)", dt, size)
 		}
-		return "TEXT"
-	case "number":
-		if autoIncrement && primaryKey {
-			return "INTEGER"
-		}
-		return "INTEGER"
-	case "boolean":
-		return "BOOLEAN"
-	case "date":
-		return "DATE"
-	case "datetime":
-		return "DATETIME"
-	case "float":
-		return "REAL"
-	case "double":
-		return "REAL"
-	default:
-		return genericType
+		return dt
 	}
+	return genericType
 }
 
 func (s *SQLiteDialect) WrapInTransaction(queries []string) []string {
