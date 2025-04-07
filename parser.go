@@ -97,6 +97,12 @@ func (p *Parser) nextToken() {
 		p.lastLine = p.scanner.Pos().Line
 		return
 	}
+	if text == "-" && p.scanner.Peek() == '>' {
+		p.scanner.Next()
+		p.curr = tokenInfo{typ: OPERATOR, value: "->"}
+		p.lastLine = p.scanner.Pos().Line
+		return
+	}
 	switch text {
 	case "<":
 		p.curr = tokenInfo{typ: OPERATOR, value: text}
@@ -244,7 +250,27 @@ func (p *Parser) parseStatement() (Node, error) {
 	if p.curr.typ == KEYWORD {
 		return p.parseControl()
 	}
-	if p.curr.typ == IDENT {
+	// Check for an explicit arrow type token
+	if p.curr.typ == IDENT && (p.curr.value == "Arrow" || p.curr.value == "Edge") {
+		arrowType := p.curr.value
+		p.nextToken()
+		// Look ahead for "->"
+		rem := strings.TrimLeft(p.input[p.offset:], " \t")
+		if strings.HasPrefix(rem, "->") {
+			return p.parseArrow(arrowType)
+		}
+		// Otherwise, fall through to normal processing
+		// (e.g., if type token is followed by a regular assignment)
+		// Here we treat it as a normal identifier.
+	}
+	// If no arrow type token, check if the next token is an arrow operator.
+	if p.curr.typ == IDENT || p.curr.typ == STRING {
+		rem := strings.TrimLeft(p.input[p.offset:], " \t")
+		if strings.HasPrefix(rem, "->") {
+			// Default arrow type to "Edge"
+			return p.parseArrow("Edge")
+		}
+		// Normal processing for blocks or assignments.
 		typeName := p.curr.value
 		p.nextToken()
 		if p.curr.typ == LBRACE {
@@ -258,6 +284,43 @@ func (p *Parser) parseStatement() (Node, error) {
 		return p.parseAssignment(typeName)
 	}
 	return nil, p.parseError(fmt.Sprintf("unexpected token: %v", p.curr.value))
+}
+
+func (p *Parser) parseArrow(arrowType string) (Node, error) {
+	// If the type token was provided (e.g. "Edge" or "Arrow"), use it;
+	// otherwise, arrowType may be "Edge" by default.
+	// Now, current token is the source.
+	source := p.curr.value
+	p.nextToken()
+	if p.curr.typ != OPERATOR || p.curr.value != "->" {
+		return nil, p.parseError(fmt.Sprintf("expected '->' operator after source, got %v", p.curr.value))
+	}
+	p.nextToken() // consume "->"
+	if p.curr.typ != IDENT && p.curr.typ != STRING {
+		return nil, p.parseError(fmt.Sprintf("expected target after '->', got %v", p.curr.value))
+	}
+	target := p.curr.value
+	p.nextToken() // consume target
+	if p.curr.typ != LBRACE {
+		return nil, p.parseError(fmt.Sprintf("expected '{' to start arrow block, got %v", p.curr.value))
+	}
+	_, err := p.expect(LBRACE)
+	if err != nil {
+		return nil, err
+	}
+	var nodes []Node
+	for p.curr.typ != RBRACE && p.curr.typ != EOF {
+		stmt, err := p.parseStatement()
+		if err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, stmt)
+	}
+	_, err = p.expect(RBRACE)
+	if err != nil {
+		return nil, err
+	}
+	return &ArrowNode{Type: arrowType, Source: source, Target: target, Props: nodes}, nil
 }
 
 func (p *Parser) parseInclude() (Node, error) {

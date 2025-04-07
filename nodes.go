@@ -160,6 +160,70 @@ func (b *BlockNode) ToBCL(indent string) string {
 
 func (b *BlockNode) NodeType() string { return "Block" }
 
+type ArrowNode struct {
+	Type   string
+	Source string
+	Target string
+	Props  []Node
+}
+
+func (a *ArrowNode) Eval(env *Environment) (any, error) {
+	local := NewEnv(env)
+	for _, n := range a.Props {
+		_, err := n.Eval(local)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Default type to "Edge" if empty.
+	if a.Type == "" {
+		a.Type = "Edge"
+	}
+	local.vars["source"] = a.Source
+	local.vars["target"] = a.Target
+	result := map[string]any{
+		"type":  a.Type,
+		"props": local.vars,
+	}
+	// Append the result to a slice at key "arrows"
+	arrows, ok := env.vars[a.Type].([]any)
+	if !ok {
+		arrows = []any{}
+	}
+	arrows = append(arrows, result)
+	env.vars[a.Type] = arrows
+	return result, nil
+}
+
+func (a *ArrowNode) ToBCL(indent string) string {
+	// Default type if not set.
+	typ := a.Type
+	if typ == "" {
+		typ = "Edge"
+	}
+	capacity := len(indent) + len(typ) + len(a.Source) + len(a.Target) + len(a.Props)*32 + 16
+	sb := getBuilder(capacity)
+	// Always print the type
+	sb.WriteString(indent)
+	sb.WriteString(typ)
+	sb.WriteString(" ")
+	sb.WriteString(a.Source)
+	sb.WriteString(" -> ")
+	sb.WriteString(a.Target)
+	sb.WriteString(" {\n")
+	for _, p := range a.Props {
+		sb.WriteString(p.ToBCL(indent + "    "))
+		sb.WriteByte('\n')
+	}
+	sb.WriteString(indent)
+	sb.WriteByte('}')
+	result := sb.String()
+	putBuilder(sb)
+	return result
+}
+
+func (a *ArrowNode) NodeType() string { return "Arrow" }
+
 type BlockContainerNode struct {
 	Type   string
 	Blocks []Node

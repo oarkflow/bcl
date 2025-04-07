@@ -84,6 +84,11 @@ IF (settings.debug) {
 This is # test.
 yet another test
 EOF
+
+"nodeA" -> "nodeB" {
+    label  = "Edge from A to B"
+    weight = 100
+}
 	`
 
 	var cfg map[string]any
