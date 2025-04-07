@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"text/scanner"
@@ -240,6 +241,63 @@ func (p *Parser) parseComment() (Node, error) {
 	return node, nil
 }
 
+var edgeTypes = []string{
+	"Arrow",
+	"Edge",
+	"Connection",
+	"Link",
+	"Relation",
+	"Relationship",
+	"Association",
+	"Dependency",
+	"Flow",
+	"Path",
+	"Route",
+	"Linkage",
+	"Bridge",
+	"Connector",
+	"Channel",
+	"Network",
+	"Pipeline",
+	"Stream",
+	"Nexus",
+	"Tie",
+	"Bond",
+	"Interface",
+	"Conduit",
+	"Join",
+	"Interconnection",
+	"Coupling",
+	"Union",
+	"Intersection",
+	"Convergence",
+	"Confluence",
+	"Adjacency",
+	"Contact",
+	"Junction",
+	"Merge",
+	"Overlay",
+	"Attachment",
+	"Interlock",
+	"Correlation",
+	"Affinity",
+	"Liaison",
+	"Integration",
+	"Synthesis",
+	"Binding",
+	"Chain",
+	"Concatenation",
+	"Sequence",
+	"Thread",
+	"Continuum",
+	"Series",
+	"Linkup",
+	"Tie-in",
+	"Interweave",
+	"Mesh",
+	"Grid",
+}
+
 func (p *Parser) parseStatement() (Node, error) {
 	if p.curr.typ == COMMENT {
 		return p.parseComment()
@@ -250,8 +308,7 @@ func (p *Parser) parseStatement() (Node, error) {
 	if p.curr.typ == KEYWORD {
 		return p.parseControl()
 	}
-	// Check for an explicit arrow type token
-	if p.curr.typ == IDENT && (p.curr.value == "Arrow" || p.curr.value == "Edge") {
+	if p.curr.typ == IDENT && slices.Contains(edgeTypes, p.curr.value) {
 		arrowType := p.curr.value
 		p.nextToken()
 		// Look ahead for "->"

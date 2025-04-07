@@ -85,7 +85,7 @@ This is # test.
 yet another test
 EOF
 
-"nodeA" -> "nodeB" {
+Link "nodeA" -> "nodeB" {
     label  = "Edge from A to B"
     weight = 100
 }
