@@ -865,7 +865,16 @@ func (p *Parser) parseMap() (Node, error) {
 			if err != nil {
 				return nil, err
 			}
-			entries = append(entries, assignment.(*AssignmentNode))
+			switch v := assignment.(type) {
+			case *AssignmentNode:
+				entries = append(entries, v)
+			case *MultiAssignNode:
+				if len(v.Assignments) == 1 {
+					entries = append(entries, v.Assignments[0])
+				} else {
+					entries = append(entries, v.Assignments...)
+				}
+			}
 		} else if p.curr.typ == LBRACE {
 			block, err := p.parseBlock(key, "")
 			if err != nil {

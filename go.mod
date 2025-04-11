@@ -8,4 +8,9 @@ require (
 	github.com/oarkflow/json v0.0.23
 )
 
-require github.com/oarkflow/expr v0.0.11 // indirect
+require golang.org/x/sys v0.32.0 // indirect
+
+require (
+	github.com/oarkflow/expr v0.0.11 // indirect
+	golang.org/x/crypto v0.37.0
+)
