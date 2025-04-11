@@ -22,7 +22,6 @@ import (
 	"github.com/oarkflow/bcl/network/dsl"
 )
 
-// Helper: getPort returns an int port from extra, or a default if not found.
 func getPort(extra map[string]interface{}, defaultPort int) int {
 	if port, ok := extra["port"]; ok {
 		switch v := port.(type) {
@@ -39,14 +38,10 @@ func getPort(extra map[string]interface{}, defaultPort int) int {
 	return defaultPort
 }
 
-// ----- Device Adapter Interface and Implementations ----- //
-
-// DeviceAdapter is an interface for applying configurations to a device.
 type DeviceAdapter interface {
 	ApplyConfig(ctx context.Context, d *dsl.Device) error
 }
 
-// SSHAdapter applies configurations to devices via SSH.
 type SSHAdapter struct{}
 
 func (a *SSHAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
@@ -62,34 +57,24 @@ func (a *SSHAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
 	if !ok {
 		return fmt.Errorf("SSH adapter: missing password for device %s", d.Name)
 	}
-
-	// Use provided port (default 22)
 	port := getPort(d.Extra, 22)
-
 	config := &ssh.ClientConfig{
 		User:            username,
 		Auth:            []ssh.AuthMethod{ssh.Password(password)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // In production, verify host keys!
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         5 * time.Second,
 	}
-
-	// Dial the SSH server.
 	conn, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", ip, port), config)
 	if err != nil {
 		return fmt.Errorf("SSH dial failed for device %s: %v", d.Name, err)
 	}
 	defer conn.Close()
-
 	session, err := conn.NewSession()
 	if err != nil {
 		return fmt.Errorf("SSH new session failed for device %s: %v", d.Name, err)
 	}
 	defer session.Close()
-
-	// Generate command(s) for this device. In production, use text/template for generating commands.
 	command := generateCommandForDevice(d)
-
-	// Run the command and capture output.
 	var output bytes.Buffer
 	session.Stdout = &output
 	if err := session.Run(command); err != nil {
@@ -99,7 +84,6 @@ func (a *SSHAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
 	return nil
 }
 
-// APIAdapter applies configurations to devices via an HTTP API.
 type APIAdapter struct{}
 
 func (a *APIAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
@@ -111,24 +95,18 @@ func (a *APIAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
 	if !ok {
 		return fmt.Errorf("API adapter: missing api_token for device %s", d.Name)
 	}
-
-	// Generate a JSON payload from the device configuration.
 	payloadBytes, err := generateAPIPayloadForDevice(d)
 	if err != nil {
 		return fmt.Errorf("API payload generation failed for device %s: %v", d.Name, err)
 	}
-
-	// Use provided port (default 443) for API calls.
 	port := getPort(d.Extra, 443)
 	url := fmt.Sprintf("https://%s:%d/api/config", ip, port)
-
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("API new request failed for device %s: %v", d.Name, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 	}
@@ -137,7 +115,6 @@ func (a *APIAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
 		return fmt.Errorf("API request failed for device %s: %v", d.Name, err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("API config failed for device %s: status %d, body: %s", d.Name, resp.StatusCode, string(body))
@@ -146,42 +123,6 @@ func (a *APIAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
 	return nil
 }
 
-// NETCONFAdapter applies configurations via NETCONF.
-type NETCONFAdapter struct{}
-
-func (a *NETCONFAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
-	ip, ok := d.Extra["ip"]
-	if !ok {
-		return fmt.Errorf("NETCONF adapter: missing ip for device %s", d.Name)
-	}
-	username, ok := d.Extra["username"].(string)
-	if !ok {
-		return fmt.Errorf("NETCONF adapter: missing username for device %s", d.Name)
-	}
-	password, ok := d.Extra["password"].(string)
-	if !ok {
-		return fmt.Errorf("NETCONF adapter: missing password for device %s", d.Name)
-	}
-	// Use port (default NETCONF port 830)
-	port := getPort(d.Extra, 830)
-	target := fmt.Sprintf("%s:%d", ip, port)
-	// Dial the NETCONF server via SSH
-	sess, err := netconf.DialSSH(target, netconf.SSHConfigPassword(username, password))
-	if err != nil {
-		return fmt.Errorf("NETCONF dial failed for device %s: %v", d.Name, err)
-	}
-	defer sess.Close()
-	// Send configuration as an XML RPC – for real usage the XML payload must match device schema.
-	xmlConfig := fmt.Sprintf(`<config><hostname>%s</hostname></config>`, d.Name)
-	reply, err := sess.Exec(netconf.RawMethod(xmlConfig))
-	if err != nil {
-		return fmt.Errorf("NETCONF exec failed for device %s: %v", d.Name, err)
-	}
-	log.Printf("NETCONF config applied on device %s, reply: %s", d.Name, reply.Data)
-	return nil
-}
-
-// SNMPAdapter applies configurations via SNMP.
 type SNMPAdapter struct{}
 
 func (a *SNMPAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
@@ -195,7 +136,6 @@ func (a *SNMPAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
 		return fmt.Errorf("SNMP adapter: missing community for device %s", d.Name)
 	}
 	port := getPort(d.Extra, 161)
-	// Configure gosnmp
 	snmp := &gosnmp.GoSNMP{
 		Target:    ip,
 		Port:      uint16(port),
@@ -208,8 +148,6 @@ func (a *SNMPAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
 		return fmt.Errorf("SNMP connect failed for device %s: %v", d.Name, err)
 	}
 	defer snmp.Conn.Close()
-	// Prepare SNMP SET payload.
-	// Assume extra contains "snmp_oid" and "snmp_value" for the configuration.
 	oidRaw, ok := d.Extra["snmp_oid"]
 	if !ok {
 		return fmt.Errorf("SNMP adapter: missing snmp_oid for device %s", d.Name)
@@ -219,7 +157,6 @@ func (a *SNMPAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
 	if !ok {
 		return fmt.Errorf("SNMP adapter: missing snmp_value for device %s", d.Name)
 	}
-	// Perform SNMP SET (using type OctetString as an example).
 	pdus := []gosnmp.SnmpPDU{
 		{
 			Name:  oid,
@@ -235,11 +172,9 @@ func (a *SNMPAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
 	return nil
 }
 
-// RESTCONFAdapter applies configurations via RESTCONF.
 type RESTCONFAdapter struct{}
 
 func (a *RESTCONFAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
-	// Extract RESTCONF parameters.
 	ip, ok := d.Extra["ip"]
 	if !ok {
 		return fmt.Errorf("RESTCONF adapter: missing ip for device %s", d.Name)
@@ -252,22 +187,18 @@ func (a *RESTCONFAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error 
 	if !ok {
 		return fmt.Errorf("RESTCONF adapter: missing password for device %s", d.Name)
 	}
-	// Assume endpoint and port provided in extra.
 	port := getPort(d.Extra, 443)
 	endpoint := fmt.Sprintf("https://%s:%d/restconf/data/config", ip, port)
-	// Generate JSON payload from device config.
 	payload, err := generateAPIPayloadForDevice(d)
 	if err != nil {
 		return fmt.Errorf("RESTCONF payload generation failed for device %s: %v", d.Name, err)
 	}
-	// Create HTTP request with basic auth.
 	req, err := http.NewRequestWithContext(ctx, "PUT", endpoint, bytes.NewBuffer(payload))
 	if err != nil {
 		return fmt.Errorf("RESTCONF request creation failed for device %s: %v", d.Name, err)
 	}
 	req.SetBasicAuth(username, password)
 	req.Header.Set("Content-Type", "application/yang-data+json")
-	// Configure TLS (in production verify certificates).
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
@@ -288,33 +219,84 @@ func (a *RESTCONFAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error 
 	return nil
 }
 
-// getDeviceAdapter returns an adapter based on the device's connection method.
-// You can expand this as needed (for example, adding NETCONF, SNMP, etc.).
+type NETCONFAdapter struct{}
+
+func (a *NETCONFAdapter) ApplyConfig(ctx context.Context, d *dsl.Device) error {
+	ip, ok := d.Extra["ip"]
+	if !ok {
+		return fmt.Errorf("NETCONF adapter: missing ip for device %s", d.Name)
+	}
+	username, ok := d.Extra["username"].(string)
+	if !ok {
+		return fmt.Errorf("NETCONF adapter: missing username for device %s", d.Name)
+	}
+	password, ok := d.Extra["password"].(string)
+	if !ok {
+		return fmt.Errorf("NETCONF adapter: missing password for device %s", d.Name)
+	}
+
+	port := getPort(d.Extra, 830)
+	target := fmt.Sprintf("%s:%d", ip, port)
+
+	sshConfig := &ssh.ClientConfig{
+		User:            username,
+		Auth:            []ssh.AuthMethod{ssh.Password(password)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         5 * time.Second,
+	}
+
+	session, err := netconf.DialSSH(target, sshConfig)
+	if err != nil {
+		return fmt.Errorf("NETCONF dial failed for device %s: %v", d.Name, err)
+	}
+	defer session.Close()
+
+	configData, err := generateNETCONFPayloadForDevice(d)
+	if err != nil {
+		return fmt.Errorf("NETCONF payload generation failed for device %s: %v", d.Name, err)
+	}
+
+	rpcPayload := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<rpc message-id="101" xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+  <edit-config>
+    <target>
+      <running/>
+    </target>
+    <config>
+      %s
+    </config>
+  </edit-config>
+</rpc>`, configData)
+
+	reply, err := session.Exec(netconf.RawMethod(rpcPayload))
+	if err != nil {
+		return fmt.Errorf("NETCONF edit-config failed for device %s: %v", d.Name, err)
+	}
+	log.Printf("NETCONF config applied on device %s, reply: %v", d.Name, reply)
+	return nil
+}
+
 func getDeviceAdapter(d *dsl.Device) DeviceAdapter {
 	method, ok := d.Extra["connection_method"]
 	if !ok {
-		method = "ssh" // default to SSH if not specified.
+		method = "ssh"
 	}
 	switch method {
 	case "ssh":
 		return &SSHAdapter{}
 	case "api":
 		return &APIAdapter{}
-	case "netconf":
-		return &NETCONFAdapter{}
 	case "snmp":
 		return &SNMPAdapter{}
 	case "restconf":
 		return &RESTCONFAdapter{}
+	case "netconf":
+		return &NETCONFAdapter{}
 	default:
 		return &SSHAdapter{}
 	}
 }
 
-// ----- Command and Payload Generation Helpers ----- //
-
-// generateCommandForDevice creates a device-specific configuration command string.
-// In production, this would likely be generated using a templating system.
 func generateCommandForDevice(d *dsl.Device) string {
 	cmd := fmt.Sprintf("configure terminal\nhostname %s\n", d.Name)
 	for ifaceName, iface := range d.Interfaces {
@@ -322,37 +304,52 @@ func generateCommandForDevice(d *dsl.Device) string {
 		if iface.IP != "" {
 			cmd += fmt.Sprintf("ip address %s\n", iface.IP)
 		}
-		// Additional commands based on protocol and extra parameters can be added here.
-		cmd += fmt.Sprintf("no shutdown\nexit\n")
+		cmd += "no shutdown\nexit\n"
 	}
 	cmd += "end\nwrite memory\n"
 	return cmd
 }
 
-// generateAPIPayloadForDevice creates a JSON payload from the device configuration.
 func generateAPIPayloadForDevice(d *dsl.Device) ([]byte, error) {
-	// In production, use a well-defined struct that represents the device config.
 	payload := map[string]interface{}{
 		"device": d.Name,
 		"type":   d.Type,
-		"config": d.Interfaces, // This is a simplified example.
+		"config": d.Interfaces,
 	}
 	return json.Marshal(payload)
 }
 
-// ----- Configuration Application Function ----- //
+func generateNETCONFPayloadForDevice(d *dsl.Device) (string, error) {
+	xmlPayload := `<config>
+  <device xmlns="http://example.com/device">
+    <name>` + d.Name + `</name>
+    <interfaces>`
+	for ifaceName, iface := range d.Interfaces {
+		xmlPayload += `
+      <interface>
+        <name>` + ifaceName + `</name>`
+		if iface.IP != "" {
+			xmlPayload += `
+        <ipAddress>` + iface.IP + `</ipAddress>`
+		}
+		xmlPayload += `
+      </interface>`
+	}
+	xmlPayload += `
+    </interfaces>
+  </device>
+</config>`
+	return xmlPayload, nil
+}
 
-// applyConfigurations applies the configuration concurrently to all devices.
 func applyConfigurations(net *dsl.Network) {
 	var wg sync.WaitGroup
-	// Iterate using index to safely take a pointer to each device.
 	for i := range net.Devices {
 		wg.Add(1)
 		d := &net.Devices[i]
 		go func(dev *dsl.Device) {
 			defer wg.Done()
 			adapter := getDeviceAdapter(dev)
-			// Create a context with a timeout for each device configuration.
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			if err := adapter.ApplyConfig(ctx, dev); err != nil {
@@ -364,8 +361,6 @@ func applyConfigurations(net *dsl.Network) {
 	}
 	wg.Wait()
 }
-
-// ----- Main Function ----- //
 
 func main() {
 	input, err := os.ReadFile("network.bcl")
@@ -381,11 +376,7 @@ func main() {
 	fmt.Printf("%+v\n\n", config)
 	for _, netConfig := range config.Networks {
 		log.Printf("Starting configuration application for network: %s", netConfig.Name)
-
-		// Apply the configuration to all devices concurrently.
 		applyConfigurations(&netConfig)
-
 		log.Println("Configuration application complete.")
 	}
-
 }
