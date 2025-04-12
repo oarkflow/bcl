@@ -5,7 +5,11 @@ Migration "1744452752_create_users_table" {
   Up {
     CreateTable "users" {
       Column "id" {
-        type = "integer", primary_key, auto_increment, index, unique
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+        index = true
+        unique = true
       }
       Column "is_active" {
         type = "boolean"

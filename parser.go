@@ -465,12 +465,12 @@ func (p *Parser) parseAssignment(varName string) (Node, error) {
 			lhs = append(lhs, p.curr.value)
 			p.nextToken()
 		}
-		if p.curr.typ != ASSIGN {
-			if p.curr.typ == OPERATOR && p.curr.value == ":" {
-				p.nextToken()
-			} else {
-				return nil, p.parseError(fmt.Sprintf("expected '=' after variables, got %v", p.curr.value))
+		if p.curr.typ != ASSIGN && !(p.curr.typ == OPERATOR && p.curr.value == ":") {
+			var assignments []*AssignmentNode
+			for _, variable := range lhs {
+				assignments = append(assignments, &AssignmentNode{VarName: variable, Value: &PrimitiveNode{Value: true}})
 			}
+			return &MultiAssignNode{Assignments: assignments}, nil
 		} else {
 			p.nextToken()
 		}
@@ -499,10 +499,7 @@ func (p *Parser) parseAssignment(varName string) (Node, error) {
 	}
 
 	if p.curr.typ != ASSIGN && !(p.curr.typ == OPERATOR && p.curr.value == ":") {
-		if p.curr.typ == LBRACE || p.curr.typ == LBRACKET {
-		} else {
-			return nil, p.parseError(fmt.Sprintf("expected '=' after attribute name, got %v", p.curr.value))
-		}
+		return &AssignmentNode{VarName: varName, Value: &PrimitiveNode{Value: true}}, nil
 	} else {
 		p.nextToken()
 	}
@@ -520,7 +517,8 @@ func (p *Parser) parseAssignment(varName string) (Node, error) {
 		nextVar := p.curr.value
 		p.nextToken()
 		if p.curr.typ != ASSIGN && !(p.curr.typ == OPERATOR && p.curr.value == ":") {
-			break
+			assignments = append(assignments, &AssignmentNode{VarName: nextVar, Value: &PrimitiveNode{Value: true}})
+			continue
 		}
 		p.nextToken()
 		nextExpr, err := p.parseExpression()
