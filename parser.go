@@ -556,8 +556,7 @@ func (p *Parser) parseBlock(typ, label string) (Node, error) {
 		propName := p.curr.value
 		p.nextToken()
 		var node Node
-		var err error
-		if p.curr.typ == ASSIGN {
+		if p.curr.typ == ASSIGN || (p.curr.typ == OPERATOR && p.curr.value == ":") {
 			node, err = p.parseAssignment(propName)
 			if err != nil {
 				return nil, err
@@ -570,13 +569,16 @@ func (p *Parser) parseBlock(typ, label string) (Node, error) {
 		} else if p.curr.typ == IDENT || p.curr.typ == STRING {
 			lbl := p.curr.value
 			p.nextToken()
-			if p.curr.typ != LBRACE {
-				return nil, p.parseError(fmt.Sprintf("expected '{' after label %s, got %v", lbl, p.curr.value))
+			if p.curr.typ == LBRACE {
+				node, err = p.parseBlock(propName, lbl)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				node = &AssignmentNode{VarName: propName, Value: &PrimitiveNode{Value: true}}
 			}
-			node, err = p.parseBlock(propName, lbl)
-			if err != nil {
-				return nil, err
-			}
+		} else if p.curr.typ == COMMA || p.curr.typ == RBRACE {
+			node = &AssignmentNode{VarName: propName, Value: &PrimitiveNode{Value: true}}
 		} else {
 			return nil, p.parseError(fmt.Sprintf("unexpected token %v after property key %s", p.curr.value, propName))
 		}
