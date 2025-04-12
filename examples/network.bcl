@@ -1,0 +1,119 @@
+# Real World Enterprise Network Example (Simulator Version)
+network "RealWorldEnterprise" {
+
+    # Devices Setup with extra configuration details
+    device Edge_Router {
+        type = "Router"
+        interfaces = {
+            eth0 = { ip = "203.0.113.1", protocol = "BGP", extra = { connection = "WAN", bandwidth = "1Gbps" } }
+            eth1 = { ip = "10.0.0.1", protocol = "OSPF", extra = { area = "0" } }
+        }
+        access = {
+            method = "ssh"
+            ssh = {
+                ip = "127.0.0.1"         # Updated to point to simulator (SSH server on port 2222)
+                port = 2222              # Simulator SSH port
+                username = "ciscoAdmin"
+                password = "secret"
+            }
+        }
+        extra = {
+            management_ip = "198.51.100.10",
+            location = "DataCenter1",
+            vendor = "Cisco",
+            ip = "127.0.0.1",         # Use simulator IP
+            username = "ciscoAdmin",
+            password = "secret",
+            connection_method = "ssh"  # SSH will use the simulator endpoint on port 2222
+        }
+    }
+
+    device DataCenter_Switch {
+        type = "Switch"
+        interfaces = {
+            port1 = { protocol = "VLAN", vlan = 10, extra = { speed = "1Gbps" } }
+            port2 = { protocol = "VLAN", vlan = 20, extra = { speed = "1Gbps" } }
+            port3 = { protocol = "VLAN", vlan = 30, extra = { speed = "10Gbps" } }
+        }
+        extra = {
+            management_ip = "198.51.100.11",
+            location = "DataCenter1",
+            vendor = "Juniper",
+            ip = "127.0.0.1",          # Use simulator IP
+            connection_method = "api", # API adapter will target HTTP simulator on port 8080
+            api_token = "juniperToken"
+        }
+    }
+
+    device Branch_Router {
+        type = "Router"
+        interfaces = {
+            eth0 = { ip = "192.0.2.1", protocol = "BGP", extra = { connection = "MPLS", bandwidth = "500Mbps" } }
+            eth1 = { ip = "10.0.1.1", protocol = "OSPF", extra = { area = "1" } }
+        }
+        extra = {
+            management_ip = "198.51.100.12",
+            location = "BranchOffice",
+            vendor = "Arista",
+            ip = "127.0.0.1",         # Use simulator IP
+            username = "aristaAdmin",
+            password = "secret",
+            connection_method = "ssh"  # SSH simulator on port 2222 will be used
+        }
+    }
+
+    device Wireless_AP {
+        type = "AccessPoint"
+        interfaces = {
+            radio0 = { protocol = "WIFI", extra = { ssid = "EnterpriseWiFi", band = "5GHz" } }
+            radio1 = { protocol = "WIFI", extra = { ssid = "EnterpriseWiFi", band = "2.4GHz" } }
+        }
+        extra = {
+            management_ip = "198.51.100.13",
+            location = "BranchOffice",
+            vendor = "Ubiquiti",
+            ip = "127.0.0.1",         # Use simulator IP
+            username = "ubiquitiAdmin",
+            password = "secret",
+            connection_method = "ssh"  # SSH simulator on port 2222
+        }
+    }
+
+    # Network Connections between devices (remain unchanged; they describe logical connectivity)
+    connection Edge_to_Switch {
+        from = device.Edge_Router.interfaces.eth1
+        to = device.DataCenter_Switch.interfaces.port1
+        parameters = { bandwidth = "1Gbps", latency = "2ms" }
+    }
+
+    connection Switch_to_Branch {
+        from = device.DataCenter_Switch.interfaces.port3
+        to = device.Branch_Router.interfaces.eth1
+        parameters = { bandwidth = "500Mbps", vlan = 30 }
+    }
+
+    connection Branch_to_AP {
+        from = device.Branch_Router.interfaces.eth0
+        to = device.Wireless_AP.interfaces.radio0
+        parameters = { bandwidth = "100Mbps", encryption = "WPA2" }
+    }
+
+    connection AP_Backhaul {
+        from = device.Wireless_AP.interfaces.radio1
+        to = device.Edge_Router.interfaces.eth0
+        parameters = { bandwidth = "100Mbps", encryption = "WPA2" }
+    }
+
+    # Network-wide automations
+    automation Device_Failure {
+        trigger = "deviceFailure"
+        condition = "if (device.status == 'down')"
+        action = "notify AdminTeam"
+    }
+
+    automation High_Latency {
+        trigger = "latencyThresholdExceeded"
+        condition = "latency > 100ms"
+        action = "rerouteTraffic"
+    }
+}
