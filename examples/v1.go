@@ -8,6 +8,31 @@ import (
 	"github.com/oarkflow/bcl"
 )
 
+func builtinIsDefined(params ...any) (any, error) {
+	if len(params) == 0 {
+		return nil, errors.New("At least one param required")
+	}
+	return params[0] != nil, nil
+}
+
+func builtinIsNull(params ...any) (any, error) {
+	if len(params) == 0 {
+		return nil, errors.New("At least one param required")
+	}
+	return params[0] == nil, nil
+}
+
+func builtinIsEmpty(params ...any) (any, error) {
+	if len(params) == 0 {
+		return nil, errors.New("At least one param required")
+	}
+	str, ok := params[0].(string)
+	if !ok {
+		str = fmt.Sprint(params[0])
+	}
+	return str == "", nil
+}
+
 func main() {
 	bcl.RegisterFunction("upper", func(params ...any) (any, error) {
 		if len(params) == 0 {
@@ -19,10 +44,13 @@ func main() {
 		}
 		return strings.ToUpper(str), nil
 	})
+	// NEW: Register functions to check variable existence and emptiness.
+	bcl.RegisterFunction("isDefined", builtinIsDefined)
+	bcl.RegisterFunction("isNull", builtinIsNull)
+	bcl.RegisterFunction("isEmpty", builtinIsEmpty)
+
 	var input = `
-appName = "Boilerplate"
-version = 1.2
-minVersion = (version <= 1.2 || version > 5) ? "dev":"prod"
+appName = "Boilerplate", version = 1.2, minVersion = (version <= 1.2 || version > 5) ? "dev":"prod"
 credentials = @include "credentials.bcl"
 @include "https://raw.githubusercontent.com/github-linguist/linguist/refs/heads/main/samples/HCL/example.hcl"
 server main {
@@ -58,6 +86,7 @@ permissions = [
 ]
 ten = 10
 calc = ten + 5
+test = isDefined(eleven) ? eleven : ["alice", "bob", "charlie"]
 defaultUser = credentials.username
 defaultHost = server."main".host
 defaultServer = server."main1 server"

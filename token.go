@@ -22,6 +22,7 @@ const (
 	LANGLE
 	RANGLE
 	DOT
+	COALESCE // NEW: Support for the null coalescing operator (??)
 	COMMENT
 )
 
@@ -52,7 +53,6 @@ func (env *Environment) Lookup(name string) (any, bool) {
 	return nil, false
 }
 
-// Update operatorPrecedence to add precedence for "<"
 var operatorPrecedence = map[string]int{
 	".":        4,
 	"*":        3,
@@ -64,12 +64,12 @@ var operatorPrecedence = map[string]int{
 	"-":        2,
 	"add":      2,
 	"subtract": 2,
-	"<":        2, // changed from 1 to 2
-	"<=":       2, // changed from 1 to 2
-	">":        2, // changed from 1 to 2
-	">=":       2, // changed from 1 to 2
-	"==":       2, // changed from 1 to 2
-	"!=":       2, // changed from 1 to 2
+	"<":        2,
+	"<=":       2,
+	">":        2,
+	">=":       2,
+	"==":       2,
+	"!=":       2,
 	"<<":       2,
 	">>":       2,
 	"&":        1,
@@ -77,6 +77,7 @@ var operatorPrecedence = map[string]int{
 	"|":        1,
 	"||":       1,
 	"&&":       1,
+	"??":       2, // NEW: Null coalescing operator
 }
 
 func getPrecedence(op string) int {

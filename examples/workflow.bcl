@@ -1,0 +1,22 @@
+
+appName = "${upper(${env.APP_NAME})}"
+name = "Test Workflow"
+nodes "Get Data" {
+    key = "get-data"
+    node = "get:data"
+    data = {
+        additional_data = {
+            selected_fields = ["facility_id", "user_id", "modifier"]
+            debug = true
+        }
+        mapping = {
+            facility_id = "facility_id"
+        }
+        providers "db1" {
+            source = "clear"
+        }
+        providers "db2" {
+            source = "clear"
+        }
+    }
+}

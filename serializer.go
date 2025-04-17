@@ -373,7 +373,10 @@ func assignValue(src, dest reflect.Value) error {
 	if !dest.IsValid() {
 		return errors.New("invalid destination")
 	}
-	if dest.Kind() == reflect.Ptr {
+	if !src.IsValid() || (src.Kind() == reflect.Interface && src.IsNil()) {
+		dest.Set(reflect.Zero(dest.Type()))
+		return nil
+	} else if dest.Kind() == reflect.Ptr {
 		if dest.IsNil() {
 			dest.Set(reflect.New(dest.Type().Elem()))
 		}

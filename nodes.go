@@ -448,6 +448,14 @@ type IdentifierNode struct {
 
 type EnvMap struct{}
 
+// Represents an undefined variable.
+type Undefined struct{}
+
+func (u Undefined) String() string {
+	return "undefined"
+}
+
+// Modify IdentifierNode.Eval to return Undefined instead of an error.
 func (i *IdentifierNode) Eval(env *Environment) (any, error) {
 	if i.Name == "env" {
 		return EnvMap{}, nil
@@ -455,7 +463,49 @@ func (i *IdentifierNode) Eval(env *Environment) (any, error) {
 	if val, ok := env.Lookup(i.Name); ok {
 		return val, nil
 	}
-	return nil, fmt.Errorf("undefined variable %s", i.Name)
+	// Instead of erroring, return Undefined marker.
+	return Undefined{}, nil
+}
+
+// Builtin function to check if a value is defined.
+func builtinIsDefined(args ...any) (any, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("isDefined expects one argument")
+	}
+	// A value is defined if it is not of type Undefined.
+	_, isUndef := args[0].(Undefined)
+	return !isUndef, nil
+}
+
+// Builtin function to check if a value is null.
+func builtinIsNull(args ...any) (any, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("isNull expects one argument")
+	}
+	// Treat nil or Undefined as null.
+	if args[0] == nil {
+		return true, nil
+	}
+	_, isUndef := args[0].(Undefined)
+	return isUndef, nil
+}
+
+// Builtin function to check if a value is empty.
+// For strings, slices, or maps, returns true if length is zero.
+func builtinIsEmpty(args ...any) (any, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("isEmpty expects one argument")
+	}
+	val := args[0]
+	switch v := val.(type) {
+	case string:
+		return v == "", nil
+	case []any:
+		return len(v) == 0, nil
+	case map[string]any:
+		return len(v) == 0, nil
+	}
+	return false, nil
 }
 
 func (i *IdentifierNode) ToBCL(indent string) string {
@@ -492,12 +542,12 @@ func (d *DotAccessNode) Eval(env *Environment) (any, error) {
 	if v, exists := m[d.Right]; exists {
 		return v, nil
 	}
-	if v, exists := m["props"].(map[string]any); exists {
-		if v, exists := v[d.Right]; exists {
+	if props, exists := m["props"].(map[string]any); exists {
+		if v, exists := props[d.Right]; exists {
 			return v, nil
 		}
 	}
-	return nil, fmt.Errorf("key %s not found", d.Right)
+	return nil, nil
 }
 
 func (d *DotAccessNode) ToBCL(indent string) string {
@@ -843,6 +893,15 @@ func (a *ArithmeticNode) Eval(env *Environment) (any, error) {
 			return nil, err
 		}
 		return int(lf) << int(rf), nil
+	case "??":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		if leftVal != nil {
+			return leftVal, nil
+		}
+		return a.Right.Eval(env)
 	default:
 		return nil, fmt.Errorf("unknown operator %s", a.Op)
 	}

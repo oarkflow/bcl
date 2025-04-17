@@ -59,10 +59,41 @@ func NewParserWithConfig(input string, cfg ParserConfig) *Parser {
 }
 
 func (p *Parser) nextToken() {
-	r := p.scanner.Scan()
+	r := p.scanner.Scan() // <--- call Scan() at start
 	text := p.scanner.TokenText()
 	pos := p.scanner.Pos()
 	p.offset = int(pos.Offset)
+
+	// Handle "??" operator.
+	if text == "?" && p.scanner.Peek() == '?' {
+		p.scanner.Next() // consume second '?'
+		pos = p.scanner.Pos()
+		p.curr = tokenInfo{typ: OPERATOR, value: "??"}
+		p.offset = int(pos.Offset)
+		p.lastLine = pos.Line
+		return
+	}
+	// Handle "!=" operator.
+	if text == "!" && p.scanner.Peek() == '=' {
+		p.scanner.Next() // consume '='
+		pos = p.scanner.Pos()
+		p.curr = tokenInfo{typ: OPERATOR, value: "!="}
+		p.offset = int(pos.Offset)
+		p.lastLine = pos.Line
+		return
+	}
+
+	text = p.scanner.TokenText()
+	pos = p.scanner.Pos()
+	p.offset = int(pos.Offset)
+	if text == "?" && p.scanner.Peek() == '?' {
+		p.scanner.Next()
+		pos = p.scanner.Pos()
+		p.curr = tokenInfo{typ: OPERATOR, value: "??"}
+		p.offset = int(pos.Offset)
+		p.lastLine = pos.Line
+		return
+	}
 	if (text == "|" || text == "&") && p.scanner.Peek() == rune(text[0]) {
 		p.scanner.Next()
 		if text == "|" {
@@ -728,6 +759,10 @@ func (p *Parser) parsePrimary() (Node, error) {
 		p.nextToken()
 		return &PrimitiveNode{Value: b}, nil
 	case IDENT:
+		if p.curr.value == "null" {
+			p.nextToken()
+			return &PrimitiveNode{Value: nil}, nil
+		}
 		if p.curr.value == "env" {
 			return p.parseEnvLookup()
 		}

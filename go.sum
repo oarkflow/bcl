@@ -6,3 +6,5 @@ github.com/oarkflow/expr v0.0.11 h1:H6h+dIUlU+xDlijMXKQCh7TdE6MGVoFPpZU7q/dziRI=
 github.com/oarkflow/expr v0.0.11/go.mod h1:WgMZqP44h7SBwKyuGZwC15vj46lHtI0/QpKdEZpRVE4=
 github.com/oarkflow/json v0.0.23 h1:tiJSQHhAAT0o55XVRqJDvC2QpDxaVA3OlLFt0rICHjw=
 github.com/oarkflow/json v0.0.23/go.mod h1:NRHX4AQ87CEjtfLypsC+WA5a0uSkhmm9IhirKC49EvY=
+github.com/oarkflow/json v0.0.24 h1:0Mv4O+sf2qrK2XStpwPGC1UW8bu3+bPSbEljsXN5owA=
+github.com/oarkflow/json v0.0.24/go.mod h1:NRHX4AQ87CEjtfLypsC+WA5a0uSkhmm9IhirKC49EvY=

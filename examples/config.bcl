@@ -1,0 +1,76 @@
+credential  {
+    username = "myuser"
+    password = "mypassword"
+}
+
+domain = credential.username+"@acme.com"
+appName = "${env.APP_NAME:'dev'}"
+default_port = 8400
+local_port_base = default_port + 1000
+
+tunnel "myservice-prod1" {
+    host = appName + "." + domain
+    local_port = local_port_base + 1
+    remote_port = default_port
+    enabled = true
+    statuses = [0, 1]
+    database "db1" {
+        host = "lcdocalhost"
+        port = 3306
+        username = "root"
+        password = "root"
+        database = "mydb"
+        driver = "mysql"
+    }
+    extras {
+        max_latency = 8.5
+    }
+}
+tunnel "myservice" {
+    host = appName + "." + domain
+    local_port = local_port_base + 2
+    remote_port = default_port
+    enabled = true
+    database = @include "database.bcl"
+    extras {
+        max_latency = 8.5
+    }
+}
+tunnel "myservice-prod2" {
+    host = "service.domain"
+    local_port = local_port_base + 3
+    remote_port = default_port
+    enabled = true
+    database = @include "db1.bcl"
+    extras {
+        max_latency = 8.5
+    }
+}
+
+defaultTunnel = tunnel."myservice-prod2"
+defaultHost = tunnel.myservice-prod2.host
+name = "Test Workflow"
+nodes {
+    "Get Data" {
+        key = "get-data"
+        node = "get:data"
+        data = {
+            additional_data = {
+                selected_fields = ["facility_id", "user_id", "modifier"]
+                debug = true
+            }
+            mapping = {
+                facility_id = "facility_id"
+            }
+            storages {
+                "storage1" {
+                    source = "store1"
+                }
+                "storage2" {
+                    source = "store2"
+                }
+
+            }
+        }
+    }
+}
