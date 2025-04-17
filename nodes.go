@@ -888,6 +888,12 @@ func toFloat(val any) (float64, error) {
 	switch t := val.(type) {
 	case int:
 		return float64(t), nil
+	case int32:
+		return float64(t), nil
+	case int64:
+		return float64(t), nil
+	case float32:
+		return float64(t), nil
 	case float64:
 		return t, nil
 	case string:
