@@ -727,6 +727,16 @@ func (p *Parser) parsePrimary() (Node, error) {
 	switch p.curr.typ {
 	case STRING:
 		value := p.curr.value
+		if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
+			inner := value[2 : len(value)-1]
+			parts := strings.SplitN(inner, ":", 2)
+			if len(parts) == 2 {
+				envVar := strings.TrimSpace(parts[0])
+				defaultValue := strings.ReplaceAll(strings.TrimSpace(parts[1]), "'", "")
+				p.nextToken()
+				return &EnvInterpolationNode{EnvVar: envVar, DefaultValue: defaultValue}, nil
+			}
+		}
 		if len(value) > 0 && (value[0] == '"' || value[0] == '`') {
 			unquoted, err := strconv.Unquote(value)
 			if err != nil {

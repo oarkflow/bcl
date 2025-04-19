@@ -1170,3 +1170,22 @@ func (f *FunctionNode) ToBCL(indent string) string {
 	}
 	return fmt.Sprintf("%s%s(%s)", indent, f.FuncName, strings.Join(argsStr, ", "))
 }
+
+type EnvInterpolationNode struct {
+	EnvVar       string
+	DefaultValue string
+}
+
+func (e *EnvInterpolationNode) Eval(env *Environment) (any, error) {
+	value := os.Getenv(e.EnvVar)
+	if value == "" {
+		return e.DefaultValue, nil
+	}
+	return value, nil
+}
+
+func (e *EnvInterpolationNode) ToBCL(indent string) string {
+	return fmt.Sprintf("${%s:%s}", e.EnvVar, e.DefaultValue)
+}
+
+func (e *EnvInterpolationNode) NodeType() string { return "EnvInterpolation" }
