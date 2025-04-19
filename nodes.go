@@ -614,7 +614,37 @@ func (a *ArithmeticNode) Eval(env *Environment) (any, error) {
 		return lf <= rf, nil
 	}
 	switch a.Op {
-	case "+", "add":
+	case "+":
+		leftVal, err := a.Left.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := a.Right.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		if ls, ok := leftVal.(string); ok {
+			if rs, ok := rightVal.(string); ok {
+				return ls + rs, nil
+			}
+			return nil, fmt.Errorf("type error: cannot concatenate string and %T", rightVal)
+		}
+		if rs, ok := rightVal.(string); ok {
+			if lf, err := toFloat(leftVal); err == nil {
+				return fmt.Sprint(lf) + rs, nil
+			}
+			return nil, fmt.Errorf("type error: cannot concatenate %T and string", leftVal)
+		}
+		lf, err := toFloat(leftVal)
+		if err != nil {
+			return nil, err
+		}
+		rf, err := toFloat(rightVal)
+		if err != nil {
+			return nil, err
+		}
+		return lf + rf, nil
+	case "add":
 		leftVal, err := a.Left.Eval(env)
 		if err != nil {
 			return nil, err
