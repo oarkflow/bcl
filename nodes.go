@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1264,11 +1266,118 @@ func (t *TupleExtractNode) ToBCL(indent string) string {
 
 func (t *TupleExtractNode) NodeType() string { return "TupleExtract" }
 
+// commonCommandMapping maps common commands to their platform‑specific equivalents.
+// For Windows, built‑in commands (such as "echo", "dir", etc.) are run via "cmd" with "/C".
+var commonCommandMapping = map[string]map[string]string{
+	"echo": {
+		"windows": "cmd",
+		"linux":   "echo",
+		"darwin":  "echo",
+	},
+	"dir": {
+		"windows": "cmd",
+		"linux":   "ls",
+		"darwin":  "ls",
+	},
+	"copy": {
+		"windows": "cmd",
+		"linux":   "cp",
+		"darwin":  "cp",
+	},
+	"move": {
+		"windows": "cmd",
+		"linux":   "mv",
+		"darwin":  "mv",
+	},
+	"rm": {
+		"windows": "cmd",
+		"linux":   "rm",
+		"darwin":  "rm",
+	},
+	"mkdir": {
+		"windows": "cmd",
+		"linux":   "mkdir",
+		"darwin":  "mkdir",
+	},
+	// additional mappings
+	"cat": {
+		"windows": "cmd",
+		"linux":   "cat",
+		"darwin":  "cat",
+	},
+	"find": {
+		"windows": "cmd",
+		"linux":   "find",
+		"darwin":  "find",
+	},
+	"pwd": {
+		"windows": "cmd",
+		"linux":   "pwd",
+		"darwin":  "pwd",
+	},
+	"del": {
+		"windows": "cmd",
+		"linux":   "rm",
+		"darwin":  "rm",
+	},
+	"grep": {
+		"windows": "cmd",
+		"linux":   "grep",
+		"darwin":  "grep",
+	},
+	"awk": {
+		"windows": "gawk",
+		"linux":   "awk",
+		"darwin":  "awk",
+	},
+	"sed": {
+		"windows": "sed",
+		"linux":   "sed",
+		"darwin":  "sed",
+	},
+	"clear": {
+		"windows": "cls",
+		"linux":   "clear",
+		"darwin":  "clear",
+	},
+	"ping": {
+		"windows": "ping",
+		"linux":   "ping",
+		"darwin":  "ping",
+	},
+	"chmod": {
+		"windows": "icacls",
+		"linux":   "chmod",
+		"darwin":  "chmod",
+	},
+}
+
+// commandArgsRequired defines the minimum number of required arguments for each command.
+var commandArgsRequired = map[string]int{
+	"echo":  0,
+	"dir":   0,
+	"copy":  2,
+	"move":  2,
+	"rm":    1,
+	"mkdir": 1,
+	"cat":   1,
+	"find":  1,
+	"pwd":   0,
+	"del":   1,
+	"grep":  1,
+	"awk":   1,
+	"sed":   1,
+	"clear": 0,
+	"ping":  1,
+	"chmod": 2,
+}
+
 type ExecNode struct {
 	Config map[string]Node
 }
 
 func (e *ExecNode) Eval(env *Environment) (any, error) {
+	// Evaluate configuration parameters.
 	config := make(map[string]any)
 	for key, node := range e.Config {
 		val, err := node.Eval(env)
@@ -1277,6 +1386,7 @@ func (e *ExecNode) Eval(env *Environment) (any, error) {
 		}
 		config[key] = val
 	}
+	// "cmd" is required.
 	cmdVal, ok := config["cmd"]
 	if !ok {
 		return nil, fmt.Errorf("exec: missing 'cmd' parameter")
@@ -1285,6 +1395,8 @@ func (e *ExecNode) Eval(env *Environment) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("exec parameter 'cmd' must be a string")
 	}
+
+	// Process "args": allow string or slice (either []any or []string).
 	var args []string
 	if a, exists := config["args"]; exists {
 		switch argVal := a.(type) {
@@ -1300,6 +1412,39 @@ func (e *ExecNode) Eval(env *Environment) (any, error) {
 			return nil, fmt.Errorf("exec parameter 'args' must be a string or a slice of strings, got %T", a)
 		}
 	}
+
+	// Determine the current operating system.
+	osName := runtime.GOOS
+	originalCmd := cmdName
+	lowerCmd := strings.ToLower(cmdName)
+	if mapping, found := commonCommandMapping[lowerCmd]; found {
+		if osName == "windows" {
+			// For Windows, use "cmd" with "/C" then the original command and its arguments.
+			cmdName = mapping["windows"]
+			newArgs := []string{"/C", originalCmd}
+			newArgs = append(newArgs, args...)
+			args = newArgs
+		} else {
+			// For Linux or macOS, use the mapped command.
+			cmdName = mapping[osName]
+		}
+	}
+
+	// Validate required arguments for the command.
+	if req, exists := commandArgsRequired[lowerCmd]; exists {
+		if len(args) < req {
+			return nil, fmt.Errorf("exec: command %s requires at least %d arguments, got %d", originalCmd, req, len(args))
+		}
+	}
+
+	// Clean the "dir" parameter if provided.
+	if dirVal, ok := config["dir"]; ok {
+		if dirStr, ok := dirVal.(string); ok {
+			config["dir"] = filepath.Clean(dirStr)
+		}
+	}
+
+	// Build and execute the command.
 	command := exec.Command(cmdName, args...)
 	if dir, ok := config["dir"].(string); ok {
 		command.Dir = dir
@@ -1312,7 +1457,7 @@ func (e *ExecNode) Eval(env *Environment) (any, error) {
 }
 
 func (e *ExecNode) ToBCL(indent string) string {
-	sb := getBuilder(len(indent) + 64)
+	sb := getBuilder(64)
 	sb.WriteString(indent)
 	sb.WriteString("@exec(")
 	var parts []string
