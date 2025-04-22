@@ -53,6 +53,17 @@ func (a *AssignmentNode) Eval(env *Environment) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// If the function call returns a tuple [result, error] for single assignment,
+	// then if the error is non-nil, propagate the error; otherwise use the primary value.
+	if tuple, ok := val.([]any); ok && len(tuple) == 2 {
+		if tuple[1] != nil {
+			if e, ok := tuple[1].(error); ok {
+				return nil, e
+			}
+			return nil, fmt.Errorf("function returned an unexpected non-error value in error position")
+		}
+		val = tuple[0]
+	}
 	env.vars[a.VarName] = val
 	return map[string]any{a.VarName: val}, nil
 }
@@ -463,7 +474,6 @@ func (i *IdentifierNode) Eval(env *Environment) (any, error) {
 	if val, ok := env.Lookup(i.Name); ok {
 		return val, nil
 	}
-	// Instead of erroring, return Undefined marker.
 	return Undefined{}, nil
 }
 
@@ -1147,7 +1157,9 @@ func (f *FunctionNode) NodeType() string {
 	return "FunctionNode"
 }
 
+// Modified FunctionNode.Eval to always return a two-element tuple.
 func (f *FunctionNode) Eval(env *Environment) (any, error) {
+	// ...existing code for evaluating arguments...
 	var args []any
 	for _, arg := range f.Args {
 		val, err := arg.Eval(env)
@@ -1160,7 +1172,8 @@ func (f *FunctionNode) Eval(env *Environment) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown function %s", f.FuncName)
 	}
-	return fn(args...)
+	res, fnErr := fn(args...)
+	return []any{res, fnErr}, nil
 }
 
 func (f *FunctionNode) ToBCL(indent string) string {
@@ -1189,3 +1202,30 @@ func (e *EnvInterpolationNode) ToBCL(indent string) string {
 }
 
 func (e *EnvInterpolationNode) NodeType() string { return "EnvInterpolation" }
+
+// Added new TupleExtractNode for tuple extraction in multiple assignments.
+type TupleExtractNode struct {
+	Base  Node
+	Index int
+}
+
+func (t *TupleExtractNode) Eval(env *Environment) (any, error) {
+	val, err := t.Base.Eval(env)
+	if err != nil {
+		return nil, err
+	}
+	arr, ok := val.([]any)
+	if !ok {
+		return nil, fmt.Errorf("tuple extraction: value is not a tuple")
+	}
+	if t.Index < 0 || t.Index >= len(arr) {
+		return nil, fmt.Errorf("tuple extraction: index %d out of bounds", t.Index)
+	}
+	return arr[t.Index], nil
+}
+
+func (t *TupleExtractNode) ToBCL(indent string) string {
+	return fmt.Sprintf("%s(%s)[%d]", indent, t.Base.ToBCL(""), t.Index)
+}
+
+func (t *TupleExtractNode) NodeType() string { return "TupleExtract" }

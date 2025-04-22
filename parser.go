@@ -519,12 +519,22 @@ func (p *Parser) parseAssignment(varName string) (Node, error) {
 			}
 			rhs = append(rhs, expr)
 		}
-		if len(lhs) != len(rhs) {
-			return nil, p.parseError("number of variables and values do not match in multiple assignment")
-		}
 		var assignments []*AssignmentNode
-		for i, variable := range lhs {
-			assignments = append(assignments, &AssignmentNode{VarName: variable, Value: rhs[i]})
+		// Allow single RHS value returning a tuple when there are multiple LHS.
+		if len(rhs) == 1 && len(lhs) > 1 {
+			for i, variable := range lhs {
+				// Wrap the single RHS node with TupleExtractNode for index i.
+				assignments = append(assignments, &AssignmentNode{
+					VarName: variable,
+					Value:   &TupleExtractNode{Base: rhs[0], Index: i},
+				})
+			}
+		} else if len(lhs) != len(rhs) {
+			return nil, p.parseError("number of variables and values do not match in multiple assignment")
+		} else {
+			for i, variable := range lhs {
+				assignments = append(assignments, &AssignmentNode{VarName: variable, Value: rhs[i]})
+			}
 		}
 		return &MultiAssignNode{Assignments: assignments}, nil
 	}
