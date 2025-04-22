@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -1204,7 +1205,6 @@ func (f *FunctionNode) NodeType() string {
 
 // Eval to always return a two-element tuple.
 func (f *FunctionNode) Eval(env *Environment) (any, error) {
-	// ...existing code for evaluating arguments...
 	var args []any
 	for _, arg := range f.Args {
 		val, err := arg.Eval(env)
@@ -1275,3 +1275,218 @@ func (t *TupleExtractNode) ToBCL(indent string) string {
 }
 
 func (t *TupleExtractNode) NodeType() string { return "TupleExtract" }
+
+type ExecNode struct {
+	// Config holds the command configuration entries as a mapping from string keys
+	// (e.g. "cmd", "args", "dir") to an expression Node.
+	Config map[string]Node
+}
+
+func (e *ExecNode) Eval(env *Environment) (any, error) {
+	// Evaluate each configuration entry.
+	config := make(map[string]string)
+	for key, node := range e.Config {
+		val, err := node.Eval(env)
+		if err != nil {
+			return nil, err
+		}
+		s, ok := val.(string)
+		if !ok {
+			return nil, fmt.Errorf("exec parameter '%s' must be a string", key)
+		}
+		config[key] = s
+	}
+	cmdName, ok := config["cmd"]
+	if !ok {
+		return nil, fmt.Errorf("exec: missing 'cmd' parameter")
+	}
+	var args []string
+	if a, ok := config["args"]; ok {
+		// For simplicity, we treat args as a single argument.
+		args = append(args, a)
+	}
+	// Create the command.
+	command := exec.Command(cmdName, args...)
+	if dir, ok := config["dir"]; ok {
+		command.Dir = dir
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("exec command error: %v, output: %s", err, string(output))
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func (e *ExecNode) ToBCL(indent string) string {
+	sb := getBuilder(len(indent) + 64)
+	sb.WriteString(indent)
+	sb.WriteString("@exec(")
+	var parts []string
+	for key, node := range e.Config {
+		parts = append(parts, fmt.Sprintf(`%s=%s`, key, node.ToBCL("")))
+	}
+	sb.WriteString(strings.Join(parts, ", "))
+	sb.WriteByte(')')
+	result := sb.String()
+	putBuilder(sb)
+	return result
+}
+
+func (e *ExecNode) NodeType() string { return "Exec" }
+
+// parseExec parses a command invocation of the form:
+//
+//	@exec(cmd="echo", args="Pipeline executed", dir=".")
+func (p *Parser) parseExec() (Node, error) {
+	// Expect a left parenthesis.
+	_, err := p.expect(LPAREN)
+	if err != nil {
+		return nil, err
+	}
+	config := make(map[string]Node)
+	// Parse comma separated key=value pairs.
+	for p.curr.typ != RPAREN && p.curr.typ != EOF {
+		if p.curr.typ != IDENT {
+			return nil, p.parseError(fmt.Sprintf("expected identifier in @exec, got %v", p.curr.value))
+		}
+		key := p.curr.value
+		p.nextToken()
+		// Accept either ASSIGN '=' or OPERATOR ':' as assignment.
+		if p.curr.typ != ASSIGN && !(p.curr.typ == OPERATOR && p.curr.value == ":") {
+			return nil, p.parseError(fmt.Sprintf("expected assignment operator after %s, got %v", key, p.curr.value))
+		}
+		p.nextToken()
+		value, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		config[key] = value
+		// If comma, consume and continue.
+		if p.curr.typ == COMMA {
+			p.nextToken()
+		}
+	}
+	_, err = p.expect(RPAREN)
+	if err != nil {
+		return nil, err
+	}
+	return &ExecNode{Config: config}, nil
+}
+
+type PipelineNode struct {
+	Nodes []Node
+}
+
+func (p *PipelineNode) Eval(env *Environment) (any, error) {
+	pipeEnv := NewEnv(env)
+	assignments := make(map[string]Node)
+	var sequentialOrder []string
+	var arrows []struct{ Source, Target string }
+	for _, node := range p.Nodes {
+		switch n := node.(type) {
+		case *AssignmentNode:
+			assignments[n.VarName] = n.Value
+			sequentialOrder = append(sequentialOrder, n.VarName)
+		case *ArrowNode:
+			arrows = append(arrows, struct{ Source, Target string }{Source: n.Source, Target: n.Target})
+		default:
+			if _, err := node.Eval(pipeEnv); err != nil {
+				return nil, err
+			}
+		}
+	}
+	var orderedSteps []string
+	if len(arrows) > 0 {
+		targets := make(map[string]struct{})
+		for _, edge := range arrows {
+			targets[edge.Target] = struct{}{}
+		}
+		var start string
+		for _, edge := range arrows {
+			if _, found := targets[edge.Source]; !found {
+				start = edge.Source
+				break
+			}
+		}
+		if start == "" && len(arrows) > 0 {
+			start = arrows[0].Source
+		}
+		orderedSteps = append(orderedSteps, start)
+		current := start
+		for {
+			found := false
+			for _, edge := range arrows {
+				if edge.Source == current {
+					orderedSteps = append(orderedSteps, edge.Target)
+					current = edge.Target
+					found = true
+					break
+				}
+			}
+			if !found {
+				break
+			}
+		}
+	} else {
+		orderedSteps = sequentialOrder
+	}
+	var lastOutput any
+	for _, step := range orderedSteps {
+		node, ok := assignments[step]
+		if !ok {
+			return nil, fmt.Errorf("pipeline: step %s not found", step)
+		}
+		val, err := node.Eval(pipeEnv)
+		if err != nil {
+			return nil, err
+		}
+		pipeEnv.vars[step] = val
+		lastOutput = val
+	}
+	return lastOutput, nil
+}
+
+func (p *PipelineNode) ToBCL(indent string) string {
+	sb := getBuilder(32)
+	sb.WriteString(indent)
+	sb.WriteString("@pipeline {\n")
+	for _, node := range p.Nodes {
+		sb.WriteString("    ")
+		sb.WriteString(node.ToBCL(indent + "    "))
+		sb.WriteByte('\n')
+	}
+	sb.WriteString(indent)
+	sb.WriteString("}")
+	result := sb.String()
+	putBuilder(sb)
+	return result
+}
+
+func (p *PipelineNode) NodeType() string { return "Pipeline" }
+
+// parsePipeline expects a block (LBRACE … RBRACE) following @pipeline.
+func (p *Parser) parsePipeline() (Node, error) {
+	if p.curr.typ != LBRACE {
+		return nil, p.parseError(fmt.Sprintf("expected '{' after @pipeline, got %v", p.curr.value))
+	}
+	_, err := p.expect(LBRACE)
+	if err != nil {
+		return nil, err
+	}
+	var nodes []Node
+	for p.curr.typ != RBRACE && p.curr.typ != EOF {
+		node, err := p.parseStatement()
+		if err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, node)
+		if p.curr.typ == COMMA {
+			p.nextToken()
+		}
+	}
+	_, err = p.expect(RBRACE)
+	if err != nil {
+		return nil, err
+	}
+	return &PipelineNode{Nodes: nodes}, nil
+}
