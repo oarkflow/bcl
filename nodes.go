@@ -102,7 +102,7 @@ func (m *MultiAssignNode) Eval(env *Environment) (any, error) {
 	return result, nil
 }
 
-// Modified MultiAssignNode.ToBCL to print the original expression for tuple assignments.
+// ToBCL to print the original expression for tuple assignments.
 func (m *MultiAssignNode) ToBCL(indent string) string {
 	allTuple := true
 	var baseNode Node
@@ -114,12 +114,9 @@ func (m *MultiAssignNode) ToBCL(indent string) string {
 		}
 		if i == 0 {
 			baseNode = te.Base
-		} else {
-			// Compare using the ToBCL rendering
-			if baseNode.ToBCL("") != te.Base.ToBCL("") {
-				allTuple = false
-				break
-			}
+		} else if baseNode != nil && baseNode.ToBCL("") != te.Base.ToBCL("") {
+			allTuple = false
+			break
 		}
 	}
 	if allTuple && baseNode != nil {
@@ -485,14 +482,14 @@ type IdentifierNode struct {
 
 type EnvMap struct{}
 
-// Represents an undefined variable.
+// Undefined Represents an undefined variable.
 type Undefined struct{}
 
 func (u Undefined) String() string {
 	return "undefined"
 }
 
-// Modify IdentifierNode.Eval to return Undefined instead of an error.
+// Eval to return Undefined instead of an error.
 func (i *IdentifierNode) Eval(env *Environment) (any, error) {
 	if i.Name == "env" {
 		return EnvMap{}, nil
@@ -1135,10 +1132,19 @@ func (t *TernaryNode) Eval(env *Environment) (any, error) {
 			return t.TrueExpr.Eval(env)
 		}
 		return t.FalseExpr.Eval(env)
-	default:
-		fmt.Println(reflect.TypeOf(condVal))
-		return nil, fmt.Errorf("ternary condition did not evaluate to bool")
+	case []any:
+		if len(condVal) == 2 {
+			switch b := condVal[0].(type) {
+			case bool:
+				if b {
+					return t.TrueExpr.Eval(env)
+				}
+				return t.FalseExpr.Eval(env)
+			}
+		}
 	}
+	fmt.Println(reflect.TypeOf(condVal))
+	return nil, fmt.Errorf("ternary condition did not evaluate to bool")
 }
 
 func (t *TernaryNode) ToBCL(indent string) string {
@@ -1185,7 +1191,7 @@ func (f *FunctionNode) NodeType() string {
 	return "FunctionNode"
 }
 
-// Modified FunctionNode.Eval to always return a two-element tuple.
+// Eval to always return a two-element tuple.
 func (f *FunctionNode) Eval(env *Environment) (any, error) {
 	// ...existing code for evaluating arguments...
 	var args []any
@@ -1231,7 +1237,7 @@ func (e *EnvInterpolationNode) ToBCL(indent string) string {
 
 func (e *EnvInterpolationNode) NodeType() string { return "EnvInterpolation" }
 
-// Added new TupleExtractNode for tuple extraction in multiple assignments.
+// TupleExtractNode for tuple extraction in multiple assignments.
 type TupleExtractNode struct {
 	Base  Node
 	Index int
@@ -1252,7 +1258,7 @@ func (t *TupleExtractNode) Eval(env *Environment) (any, error) {
 	return arr[t.Index], nil
 }
 
-// Modified TupleExtractNode.ToBCL to preserve original expression.
+// ToBCL to preserve original expression.
 func (t *TupleExtractNode) ToBCL(indent string) string {
 	return t.Base.ToBCL(indent)
 }

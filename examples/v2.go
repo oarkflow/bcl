@@ -13,8 +13,8 @@ func main() {
 	})
 	var input = `
 data, err = test("test")
-if (err == undefined) {
-	run = true
+if (err != undefined) {
+	data = true
 }
 	`
 
