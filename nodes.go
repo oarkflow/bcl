@@ -62,7 +62,9 @@ func (a *AssignmentNode) Eval(env *Environment) (any, error) {
 	}
 	if tuple, ok := val.([]any); ok && len(tuple) == 2 {
 		if _, ok := a.Value.(*TupleExtractNode); !ok {
-			val = tuple[0]
+			if reflect.TypeOf(tuple[0]) != reflect.TypeOf(tuple[1]) {
+				val = tuple[0]
+			}
 		}
 	}
 	env.vars[a.VarName] = val
