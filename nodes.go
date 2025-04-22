@@ -53,14 +53,11 @@ func (a *AssignmentNode) Eval(env *Environment) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	// If the function call returns a tuple [result, error] for single assignment,
-	// then if the error is non-nil, propagate the error; otherwise use the primary value.
 	if tuple, ok := val.([]any); ok && len(tuple) == 2 {
 		if tuple[1] != nil {
-			if e, ok := tuple[1].(error); ok {
-				return nil, e
-			}
-			return nil, fmt.Errorf("function returned an unexpected non-error value in error position")
+			original := a.Value.ToBCL("")
+			env.vars[a.VarName] = original
+			return map[string]any{a.VarName: original}, nil
 		}
 		val = tuple[0]
 	}
@@ -103,7 +100,34 @@ func (m *MultiAssignNode) Eval(env *Environment) (any, error) {
 	return result, nil
 }
 
+// Modified MultiAssignNode.ToBCL to print the original expression for tuple assignments.
 func (m *MultiAssignNode) ToBCL(indent string) string {
+	allTuple := true
+	var baseNode Node
+	for i, assign := range m.Assignments {
+		te, ok := assign.Value.(*TupleExtractNode)
+		if !ok {
+			allTuple = false
+			break
+		}
+		if i == 0 {
+			baseNode = te.Base
+		} else {
+			// Compare using the ToBCL rendering
+			if baseNode.ToBCL("") != te.Base.ToBCL("") {
+				allTuple = false
+				break
+			}
+		}
+	}
+	if allTuple && baseNode != nil {
+		var lhs []string
+		for _, assign := range m.Assignments {
+			lhs = append(lhs, assign.VarName)
+		}
+		return indent + strings.Join(lhs, ", ") + " = " + baseNode.ToBCL("")
+	}
+	// Fallback: use individual assignments.
 	var parts []string
 	for _, assign := range m.Assignments {
 		parts = append(parts, assign.ToBCL(""))
@@ -1224,8 +1248,9 @@ func (t *TupleExtractNode) Eval(env *Environment) (any, error) {
 	return arr[t.Index], nil
 }
 
+// Modified TupleExtractNode.ToBCL to preserve original expression.
 func (t *TupleExtractNode) ToBCL(indent string) string {
-	return fmt.Sprintf("%s(%s)[%d]", indent, t.Base.ToBCL(""), t.Index)
+	return t.Base.ToBCL(indent)
 }
 
 func (t *TupleExtractNode) NodeType() string { return "TupleExtract" }
