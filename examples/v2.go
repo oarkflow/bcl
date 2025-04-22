@@ -13,8 +13,8 @@ func main() {
 	var input = `
 cmdOutput = @pipeline {
     step1 = test("pipeline step")
-    step2 = add(10, 20)
-    step3 = @exec(cmd="echo", args="Pipeline executed", dir=".")
+    step2 = add(10, step1)
+    step3 = @exec(cmd="echo", args=["Pipeline executed"], dir=".")
 	step1 -> step2 #ArrowNode
 	step2 -> step3 #ArrowNode
 }

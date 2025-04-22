@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -1082,4 +1081,62 @@ func (p *Parser) parseCommand() (Node, error) {
 	default:
 		return nil, p.parseError(fmt.Sprintf("unknown command @%s", cmd))
 	}
+}
+
+func (p *Parser) parseExec() (Node, error) {
+	_, err := p.expect(LPAREN)
+	if err != nil {
+		return nil, err
+	}
+	config := make(map[string]Node)
+	for p.curr.typ != RPAREN && p.curr.typ != EOF {
+		if p.curr.typ != IDENT {
+			return nil, p.parseError(fmt.Sprintf("expected identifier in @exec, got %v", p.curr.value))
+		}
+		key := p.curr.value
+		p.nextToken()
+		if p.curr.typ != ASSIGN && !(p.curr.typ == OPERATOR && p.curr.value == ":") {
+			return nil, p.parseError(fmt.Sprintf("expected assignment operator after %s, got %v", key, p.curr.value))
+		}
+		p.nextToken()
+		value, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		config[key] = value
+		if p.curr.typ == COMMA {
+			p.nextToken()
+		}
+	}
+	_, err = p.expect(RPAREN)
+	if err != nil {
+		return nil, err
+	}
+	return &ExecNode{Config: config}, nil
+}
+
+func (p *Parser) parsePipeline() (Node, error) {
+	if p.curr.typ != LBRACE {
+		return nil, p.parseError(fmt.Sprintf("expected '{' after @pipeline, got %v", p.curr.value))
+	}
+	_, err := p.expect(LBRACE)
+	if err != nil {
+		return nil, err
+	}
+	var nodes []Node
+	for p.curr.typ != RBRACE && p.curr.typ != EOF {
+		node, err := p.parseStatement()
+		if err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, node)
+		if p.curr.typ == COMMA {
+			p.nextToken()
+		}
+	}
+	_, err = p.expect(RBRACE)
+	if err != nil {
+		return nil, err
+	}
+	return &PipelineNode{Nodes: nodes}, nil
 }

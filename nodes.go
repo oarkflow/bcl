@@ -58,7 +58,6 @@ func (a *AssignmentNode) Eval(env *Environment) (any, error) {
 			return nil, err
 		}
 	}
-	// For non-tuple extraction nodes that return a tuple, always pick the first element.
 	if tuple, ok := val.([]any); ok && len(tuple) == 2 {
 		if _, ok := a.Value.(*TupleExtractNode); !ok {
 			val = tuple[0]
@@ -210,7 +209,6 @@ func (a *ArrowNode) Eval(env *Environment) (any, error) {
 			return nil, err
 		}
 	}
-	// Default type to "Edge" if empty.
 	if a.Type == "" {
 		a.Type = "Edge"
 	}
@@ -231,28 +229,19 @@ func (a *ArrowNode) Eval(env *Environment) (any, error) {
 }
 
 func (a *ArrowNode) ToBCL(indent string) string {
-	// Use the provided arrow type or default to "Edge" if not set.
 	typ := a.Type
 	if typ == "" {
 		typ = "Edge"
 	}
-
 	sb := getBuilder(64)
 	sb.WriteString(indent)
-
-	// Optionally print the arrow type if it is not the default "Edge".
-	// Adjust this logic if you wish the type always to be printed.
 	if typ != "Edge" {
 		sb.WriteString(typ)
 		sb.WriteString(" ")
 	}
-
-	// Print the source and the arrow operator.
 	sb.WriteString(a.Source)
 	sb.WriteString(" -> ")
 	sb.WriteString(a.Target)
-
-	// Only add the block if there are properties.
 	if len(a.Props) > 0 {
 		sb.WriteString(" {\n")
 		for _, p := range a.Props {
@@ -262,7 +251,6 @@ func (a *ArrowNode) ToBCL(indent string) string {
 		sb.WriteString(indent)
 		sb.WriteByte('}')
 	}
-
 	result := sb.String()
 	putBuilder(sb)
 	return result
@@ -1277,37 +1265,43 @@ func (t *TupleExtractNode) ToBCL(indent string) string {
 func (t *TupleExtractNode) NodeType() string { return "TupleExtract" }
 
 type ExecNode struct {
-	// Config holds the command configuration entries as a mapping from string keys
-	// (e.g. "cmd", "args", "dir") to an expression Node.
 	Config map[string]Node
 }
 
 func (e *ExecNode) Eval(env *Environment) (any, error) {
-	// Evaluate each configuration entry.
-	config := make(map[string]string)
+	config := make(map[string]any)
 	for key, node := range e.Config {
 		val, err := node.Eval(env)
 		if err != nil {
 			return nil, err
 		}
-		s, ok := val.(string)
-		if !ok {
-			return nil, fmt.Errorf("exec parameter '%s' must be a string", key)
-		}
-		config[key] = s
+		config[key] = val
 	}
-	cmdName, ok := config["cmd"]
+	cmdVal, ok := config["cmd"]
 	if !ok {
 		return nil, fmt.Errorf("exec: missing 'cmd' parameter")
 	}
-	var args []string
-	if a, ok := config["args"]; ok {
-		// For simplicity, we treat args as a single argument.
-		args = append(args, a)
+	cmdName, ok := cmdVal.(string)
+	if !ok {
+		return nil, fmt.Errorf("exec parameter 'cmd' must be a string")
 	}
-	// Create the command.
+	var args []string
+	if a, exists := config["args"]; exists {
+		switch argVal := a.(type) {
+		case string:
+			args = append(args, argVal)
+		case []any:
+			for _, v := range argVal {
+				args = append(args, fmt.Sprint(v))
+			}
+		case []string:
+			args = append(args, argVal...)
+		default:
+			return nil, fmt.Errorf("exec parameter 'args' must be a string or a slice of strings, got %T", a)
+		}
+	}
 	command := exec.Command(cmdName, args...)
-	if dir, ok := config["dir"]; ok {
+	if dir, ok := config["dir"].(string); ok {
 		command.Dir = dir
 	}
 	output, err := command.CombinedOutput()
@@ -1333,45 +1327,6 @@ func (e *ExecNode) ToBCL(indent string) string {
 }
 
 func (e *ExecNode) NodeType() string { return "Exec" }
-
-// parseExec parses a command invocation of the form:
-//
-//	@exec(cmd="echo", args="Pipeline executed", dir=".")
-func (p *Parser) parseExec() (Node, error) {
-	// Expect a left parenthesis.
-	_, err := p.expect(LPAREN)
-	if err != nil {
-		return nil, err
-	}
-	config := make(map[string]Node)
-	// Parse comma separated key=value pairs.
-	for p.curr.typ != RPAREN && p.curr.typ != EOF {
-		if p.curr.typ != IDENT {
-			return nil, p.parseError(fmt.Sprintf("expected identifier in @exec, got %v", p.curr.value))
-		}
-		key := p.curr.value
-		p.nextToken()
-		// Accept either ASSIGN '=' or OPERATOR ':' as assignment.
-		if p.curr.typ != ASSIGN && !(p.curr.typ == OPERATOR && p.curr.value == ":") {
-			return nil, p.parseError(fmt.Sprintf("expected assignment operator after %s, got %v", key, p.curr.value))
-		}
-		p.nextToken()
-		value, err := p.parseExpression()
-		if err != nil {
-			return nil, err
-		}
-		config[key] = value
-		// If comma, consume and continue.
-		if p.curr.typ == COMMA {
-			p.nextToken()
-		}
-	}
-	_, err = p.expect(RPAREN)
-	if err != nil {
-		return nil, err
-	}
-	return &ExecNode{Config: config}, nil
-}
 
 type PipelineNode struct {
 	Nodes []Node
@@ -1440,8 +1395,19 @@ func (p *PipelineNode) Eval(env *Environment) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		pipeEnv.vars[step] = val
-		lastOutput = val
+		switch val := val.(type) {
+		case []any:
+			if len(val) == 2 {
+				if err, ok := val[1].(error); ok && err != nil {
+					return nil, err
+				}
+				pipeEnv.vars[step] = val[0]
+				lastOutput = val[0]
+			}
+		default:
+			pipeEnv.vars[step] = val
+			lastOutput = val
+		}
 	}
 	return lastOutput, nil
 }
@@ -1463,30 +1429,3 @@ func (p *PipelineNode) ToBCL(indent string) string {
 }
 
 func (p *PipelineNode) NodeType() string { return "Pipeline" }
-
-// parsePipeline expects a block (LBRACE … RBRACE) following @pipeline.
-func (p *Parser) parsePipeline() (Node, error) {
-	if p.curr.typ != LBRACE {
-		return nil, p.parseError(fmt.Sprintf("expected '{' after @pipeline, got %v", p.curr.value))
-	}
-	_, err := p.expect(LBRACE)
-	if err != nil {
-		return nil, err
-	}
-	var nodes []Node
-	for p.curr.typ != RBRACE && p.curr.typ != EOF {
-		node, err := p.parseStatement()
-		if err != nil {
-			return nil, err
-		}
-		nodes = append(nodes, node)
-		if p.curr.typ == COMMA {
-			p.nextToken()
-		}
-	}
-	_, err = p.expect(RBRACE)
-	if err != nil {
-		return nil, err
-	}
-	return &PipelineNode{Nodes: nodes}, nil
-}
