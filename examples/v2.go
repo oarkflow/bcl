@@ -8,14 +8,9 @@ import (
 
 func main() {
 	bcl.RegisterFunction("test", func(args ...any) (any, error) {
-		return false, nil
+		return 10, nil
 	})
 	var input = `
-@include "credentials.bcl"
-data, err = test("test")
-if (err != undefined) {
-	data = true
-}
 cmdOutput = @pipeline {
     step1 = test("pipeline step")
     step2 = add(10, 20)

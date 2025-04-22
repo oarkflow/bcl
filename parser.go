@@ -1188,11 +1188,13 @@ type PipelineNode struct {
 func (p *PipelineNode) Eval(env *Environment) (any, error) {
 	pipeEnv := NewEnv(env)
 	assignments := make(map[string]Node)
+	var sequentialOrder []string
 	var arrows []struct{ Source, Target string }
 	for _, node := range p.Nodes {
 		switch n := node.(type) {
 		case *AssignmentNode:
 			assignments[n.VarName] = n.Value
+			sequentialOrder = append(sequentialOrder, n.VarName)
 		case *ArrowNode:
 			arrows = append(arrows, struct{ Source, Target string }{Source: n.Source, Target: n.Target})
 		default:
@@ -1201,22 +1203,22 @@ func (p *PipelineNode) Eval(env *Environment) (any, error) {
 			}
 		}
 	}
-	targets := make(map[string]struct{})
-	for _, edge := range arrows {
-		targets[edge.Target] = struct{}{}
-	}
-	var start string
-	for _, edge := range arrows {
-		if _, found := targets[edge.Source]; !found {
-			start = edge.Source
-			break
-		}
-	}
-	if start == "" && len(arrows) > 0 {
-		start = arrows[0].Source
-	}
 	var orderedSteps []string
-	if start != "" {
+	if len(arrows) > 0 {
+		targets := make(map[string]struct{})
+		for _, edge := range arrows {
+			targets[edge.Target] = struct{}{}
+		}
+		var start string
+		for _, edge := range arrows {
+			if _, found := targets[edge.Source]; !found {
+				start = edge.Source
+				break
+			}
+		}
+		if start == "" && len(arrows) > 0 {
+			start = arrows[0].Source
+		}
 		orderedSteps = append(orderedSteps, start)
 		current := start
 		for {
@@ -1233,6 +1235,8 @@ func (p *PipelineNode) Eval(env *Environment) (any, error) {
 				break
 			}
 		}
+	} else {
+		orderedSteps = sequentialOrder
 	}
 	var lastOutput any
 	for _, step := range orderedSteps {
