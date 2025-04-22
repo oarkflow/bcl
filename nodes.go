@@ -51,15 +51,17 @@ func (a *AssignmentNode) Eval(env *Environment) (any, error) {
 	}
 	val, err := a.Value.Eval(env)
 	if err != nil {
-		return nil, err
-	}
-	if tuple, ok := val.([]any); ok && len(tuple) == 2 {
-		if tuple[1] != nil {
-			original := a.Value.ToBCL("")
-			env.vars[a.VarName] = original
-			return map[string]any{a.VarName: original}, nil
+		if _, ok := a.Value.(*TupleExtractNode); ok {
+			val = nil
+		} else {
+			return nil, err
 		}
-		val = tuple[0]
+	}
+	// For non-tuple extraction nodes that return a tuple, always pick the first element.
+	if tuple, ok := val.([]any); ok && len(tuple) == 2 {
+		if _, ok := a.Value.(*TupleExtractNode); !ok {
+			val = tuple[0]
+		}
 	}
 	env.vars[a.VarName] = val
 	return map[string]any{a.VarName: val}, nil
@@ -1127,14 +1129,16 @@ func (t *TernaryNode) Eval(env *Environment) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	b, ok := condVal.(bool)
-	if !ok {
+	switch condVal := condVal.(type) {
+	case bool:
+		if condVal {
+			return t.TrueExpr.Eval(env)
+		}
+		return t.FalseExpr.Eval(env)
+	default:
+		fmt.Println(reflect.TypeOf(condVal))
 		return nil, fmt.Errorf("ternary condition did not evaluate to bool")
 	}
-	if b {
-		return t.TrueExpr.Eval(env)
-	}
-	return t.FalseExpr.Eval(env)
 }
 
 func (t *TernaryNode) ToBCL(indent string) string {
