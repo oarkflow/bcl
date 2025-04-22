@@ -230,27 +230,38 @@ func (a *ArrowNode) Eval(env *Environment) (any, error) {
 }
 
 func (a *ArrowNode) ToBCL(indent string) string {
-	// Default type if not set.
+	// Use the provided arrow type or default to "Edge" if not set.
 	typ := a.Type
 	if typ == "" {
 		typ = "Edge"
 	}
-	capacity := len(indent) + len(typ) + len(a.Source) + len(a.Target) + len(a.Props)*32 + 16
-	sb := getBuilder(capacity)
-	// Always print the type
+
+	sb := getBuilder(64)
 	sb.WriteString(indent)
-	sb.WriteString(typ)
-	sb.WriteString(" ")
+
+	// Optionally print the arrow type if it is not the default "Edge".
+	// Adjust this logic if you wish the type always to be printed.
+	if typ != "Edge" {
+		sb.WriteString(typ)
+		sb.WriteString(" ")
+	}
+
+	// Print the source and the arrow operator.
 	sb.WriteString(a.Source)
 	sb.WriteString(" -> ")
 	sb.WriteString(a.Target)
-	sb.WriteString(" {\n")
-	for _, p := range a.Props {
-		sb.WriteString(p.ToBCL(indent + "    "))
-		sb.WriteByte('\n')
+
+	// Only add the block if there are properties.
+	if len(a.Props) > 0 {
+		sb.WriteString(" {\n")
+		for _, p := range a.Props {
+			sb.WriteString(p.ToBCL(indent + "    "))
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(indent)
+		sb.WriteByte('}')
 	}
-	sb.WriteString(indent)
-	sb.WriteByte('}')
+
 	result := sb.String()
 	putBuilder(sb)
 	return result

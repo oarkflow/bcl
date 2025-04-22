@@ -23,10 +23,7 @@ func main() {
 	// Source and target are optionally quoted, and are followed by a block.
 	// In this case: "nodeA" -> "nodeB" { label = "Edge from A to B" weight = 100 }
 	input := `
-"nodeA" -> "nodeB" {
-    label  = "Edge from A to B"
-    weight = 100
-}
+"nodeA" -> "nodeB"
 `
 	var data EdgeConfig
 	// Parse input into AST nodes.

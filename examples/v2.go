@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/oarkflow/bcl"
@@ -9,12 +8,20 @@ import (
 
 func main() {
 	bcl.RegisterFunction("test", func(args ...any) (any, error) {
-		return nil, errors.New("test error")
+		return false, nil
 	})
 	var input = `
+@include "credentials.bcl"
 data, err = test("test")
 if (err != undefined) {
 	data = true
+}
+cmdOutput = @pipeline {
+    step1 = test("pipeline step")
+    step2 = add(10, 20)
+    step3 = @exec(cmd="echo", args="Pipeline executed", dir=".")
+	step1 -> step2 #ArrowNode
+	step2 -> step3 #ArrowNode
 }
 	`
 
