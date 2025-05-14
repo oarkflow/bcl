@@ -738,7 +738,10 @@ func (p *Parser) parseEnvLookup() (Node, error) {
 
 func (p *Parser) parsePrimary() (Node, error) {
 	if p.curr.typ == AT {
-		return p.parseCommand()
+		tok := p.peekToken()
+		if tok.typ == IDENT && (tok.value == "exec" || tok.value == "pipeline") {
+			return p.parseCommand()
+		}
 	}
 	if p.curr.typ == OPERATOR && p.curr.value == "<<" {
 		return p.parseHeredoc()
@@ -1139,4 +1142,12 @@ func (p *Parser) parsePipeline() (Node, error) {
 		return nil, err
 	}
 	return &PipelineNode{Nodes: nodes}, nil
+}
+
+// Add new peekToken() method to Parser.
+func (p *Parser) peekToken() tokenInfo {
+	temp := NewParser(p.input[p.offset:])
+	// Preserve the original filename if needed.
+	temp.scanner.Filename = p.scanner.Filename
+	return temp.curr
 }
