@@ -58,7 +58,7 @@ notTrue = !true
 doubleNeg = -(-5)
 negCalc = -calc
 // ---- New examples for env lookup ----
-envHome = "${env.HOME}"
+envHome = "${appName}_HOME"
 defaultShell = "${env.SHELL:/bin/bash}"
 IF (settings.debug) {
     logLevel = "verbose"
