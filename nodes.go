@@ -303,7 +303,7 @@ type MapNode struct {
 }
 
 func (m *MapNode) Eval(env *Environment) (any, error) {
-	local := NewEnv(nil)
+	local := NewEnv(env)
 	for _, entry := range m.Entries {
 		_, err := entry.Eval(local)
 		if err != nil {
@@ -331,7 +331,7 @@ type CombinedMapNode struct {
 }
 
 func (m *CombinedMapNode) Eval(env *Environment) (any, error) {
-	local := NewEnv(nil)
+	local := NewEnv(env)
 	for _, entry := range m.Entries {
 		_, err := entry.Eval(local)
 		if err != nil {
