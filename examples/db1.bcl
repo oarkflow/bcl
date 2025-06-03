@@ -1,0 +1,7 @@
+name = "db1"
+host = "localhost"
+port = 3306
+username = "root"
+password = "root"
+database = "oark"
+driver = "mysql"

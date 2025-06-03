@@ -1,28 +1,42 @@
-Up {
-    create table "test" (
-        id integer primary key autoincrement,
-        name text
-    );
-    create table "test2" (
-        id integer primary key autoincrement,
-        name text
-    );
-    insert into "test" (name) values ('test');
-    insert into "test2" (name) values ('test2');
-    alter table "test" rename to "test3";
-    alter table "test" (
-        add column id integer primary key autoincrement,
-        drop column name text,
-        change column id boolean
-    );
-}
-
-Down {
-    alter table "test" (
-        drop column id,
-        drop column name
-    )
-    alter table "test3" rename to "test";
-    drop table "test3";
-    drop table "test2";
+Migration "1748976351_create_seo_metadatas_table" {
+  Version = "1.0.0"
+  Description = "Create table seo_metadatas."
+  Connection = "default"
+  Up {
+    CreateTable "seo_metadatas" {
+      Column "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+        index = true
+        unique = true
+      }
+      Column "is_active" {
+        type = "boolean"
+        default = false
+      }
+      Column "status" {
+        type = "string"
+        size = 20
+        default = "active"
+      }
+      Column "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+      Column "updated_at" {
+        type = "datetime"
+        default = "now()"
+      }
+      Column "deleted_at" {
+        type = "datetime"
+        is_nullable = true
+      }
+    }
+  }
+  Down {
+    DropTable "seo_metadatas" {
+      Cascade = true
+    }
+  }
 }

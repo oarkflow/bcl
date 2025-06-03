@@ -48,7 +48,7 @@ tunnel "myservice-prod2" {
 }
 
 defaultTunnel = tunnel."myservice-prod2"
-defaultHost = tunnel.myservice-prod2.host
+defaultHost = tunnel."myservice-prod2".host
 name = "Test Workflow"
 nodes {
     "Get Data" {

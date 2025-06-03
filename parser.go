@@ -595,7 +595,7 @@ func (p *Parser) parseBlock(typ, label string) (Node, error) {
 			nodes = append(nodes, comment)
 			continue
 		}
-		if p.curr.typ != IDENT {
+		if p.curr.typ != IDENT && p.curr.typ != STRING {
 			return nil, p.parseError(fmt.Sprintf("expected property name, got %v", p.curr.value))
 		}
 		propName := p.curr.value
