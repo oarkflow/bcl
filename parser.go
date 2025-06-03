@@ -699,15 +699,25 @@ func (p *Parser) parseBinaryExpression(minPrec int) (Node, error) {
 		if op == "." {
 			switch r := right.(type) {
 			case *IdentifierNode:
-				left = &DotAccessNode{Left: left, Right: r.Name}
+				propName := r.Name
+				// Combine adjacent '-' and identifier tokens into a single property name
+				for p.curr.typ == OPERATOR && p.curr.value == "-" {
+					p.nextToken() // consume the hyphen
+					if p.curr.typ != IDENT {
+						return nil, p.parseError("expected identifier after '-' in property name")
+					}
+					propName = propName + "-" + p.curr.value
+					p.nextToken()
+				}
+				left = &DotAccessNode{Left: left, Right: propName}
 			case *PrimitiveNode:
 				if s, ok := r.Value.(string); ok {
 					left = &DotAccessNode{Left: left, Right: s}
 				} else {
-					return nil, p.parseError(fmt.Sprintf("dot operator right operand must be string or identifier"))
+					return nil, p.parseError("dot operator right operand must be string or identifier")
 				}
 			default:
-				return nil, p.parseError(fmt.Sprintf("invalid right operand for dot operator"))
+				return nil, p.parseError("invalid right operand for dot operator")
 			}
 		} else {
 			left = &ArithmeticNode{Op: op, Left: left, Right: right}
