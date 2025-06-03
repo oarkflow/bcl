@@ -165,7 +165,6 @@ func (b *BlockNode) Eval(env *Environment) (any, error) {
 		"props":   local.vars,
 	}
 
-	env.vars[b.Label] = block
 	if existing, ok := env.vars[b.Type]; ok {
 		if m, ok2 := existing.(map[string]any); ok2 {
 			m[b.Label] = block
@@ -173,6 +172,12 @@ func (b *BlockNode) Eval(env *Environment) (any, error) {
 	} else {
 		env.vars[b.Type] = map[string]any{b.Label: block}
 	}
+	// NEW: Create a shallow copy to store block by its label for dot notation access.
+	shallow := make(map[string]any)
+	for k, v := range block {
+		shallow[k] = v
+	}
+	env.vars[b.Label] = shallow
 	return block, nil
 }
 
@@ -544,6 +549,18 @@ func (d *DotAccessNode) Eval(env *Environment) (any, error) {
 	if props, exists := m["props"].(map[string]any); exists {
 		if v, exists := props[d.Right]; exists {
 			return v, nil
+		}
+	}
+	// NEW: If container has exactly one entry, try looking up the key inside its block's props.
+	if len(m) == 1 {
+		for _, v := range m {
+			if block, ok := v.(map[string]any); ok {
+				if props, exists := block["props"].(map[string]any); exists {
+					if val, exists := props[d.Right]; exists {
+						return val, nil
+					}
+				}
+			}
 		}
 	}
 	return nil, nil
