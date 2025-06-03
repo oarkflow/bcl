@@ -60,6 +60,15 @@ func (a *AssignmentNode) Eval(env *Environment) (any, error) {
 			return nil, err
 		}
 	}
+	// NEW: If the evaluated value is a block (i.e. a map containing "__type"),
+	// wrap it in a new map with key equal to the assignment variable.
+	if m, ok := val.(map[string]any); ok {
+		if _, isBlock := m["__type"]; isBlock {
+			wrapped := map[string]any{a.VarName: m}
+			env.vars[a.VarName] = wrapped
+			return wrapped, nil
+		}
+	}
 	if tuple, ok := val.([]any); ok && len(tuple) == 2 {
 		if _, ok := a.Value.(*TupleExtractNode); !ok {
 			if reflect.TypeOf(tuple[0]) != reflect.TypeOf(tuple[1]) {
@@ -539,31 +548,61 @@ func (d *DotAccessNode) Eval(env *Environment) (any, error) {
 		}
 		return os.Getenv(d.Right), nil
 	}
-	m, ok := leftVal.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("dot access on non-map type")
-	}
-	if v, exists := m[d.Right]; exists {
-		return v, nil
-	}
-	if props, exists := m["props"].(map[string]any); exists {
-		if v, exists := props[d.Right]; exists {
+	// Handling for map container.
+	if m, ok := leftVal.(map[string]any); ok {
+		// If key exists directly, try to get full block from env.vars.
+		if v, exists := m[d.Right]; exists {
+			if full, found := env.Lookup(d.Right); found {
+				return full, nil
+			}
 			return v, nil
 		}
-	}
-	// NEW: If container has exactly one entry, try looking up the key inside its block's props.
-	if len(m) == 1 {
-		for _, v := range m {
-			if block, ok := v.(map[string]any); ok {
-				if props, exists := block["props"].(map[string]any); exists {
-					if val, exists := props[d.Right]; exists {
-						return val, nil
+		// If this map is a block, extract from props.
+		if _, isBlock := m["__type"]; isBlock {
+			if props, exists := m["props"].(map[string]any); exists {
+				if v, exists := props[d.Right]; exists {
+					return v, nil
+				}
+			}
+			return nil, nil
+		}
+		// Legacy case: try nested lookup in a single-entry container.
+		if len(m) == 1 {
+			for _, v := range m {
+				if block, ok := v.(map[string]any); ok {
+					if props, exists := block["props"].(map[string]any); exists {
+						if v, exists := props[d.Right]; exists {
+							return v, nil
+						}
 					}
 				}
 			}
 		}
+		return nil, nil
 	}
-	return nil, nil
+	// NEW: Allow dot access when leftVal is a slice (e.g. a block container).
+	if slice, ok := leftVal.([]any); ok {
+		for _, item := range slice {
+			if block, ok := item.(map[string]any); ok {
+				if label, ok := block["__label"].(string); ok && label == d.Right {
+					if full, found := env.Lookup(d.Right); found {
+						return full, nil
+					}
+					return block, nil
+				}
+				// Also look into nested props for block property.
+				if _, isBlock := block["__type"]; isBlock {
+					if props, exists := block["props"].(map[string]any); exists {
+						if v, exists := props[d.Right]; exists {
+							return v, nil
+						}
+					}
+				}
+			}
+		}
+		return nil, nil
+	}
+	return nil, fmt.Errorf("dot access on non-map type")
 }
 
 func (d *DotAccessNode) ToBCL(indent string) string {
