@@ -147,6 +147,9 @@ type BlockNode struct {
 }
 
 func (b *BlockNode) Eval(env *Environment) (any, error) {
+	if b.Label == "" {
+		b.Label = b.Type
+	}
 	local := NewEnv(env)
 	for _, n := range b.Props {
 		_, err := n.Eval(local)
