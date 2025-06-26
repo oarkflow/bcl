@@ -334,7 +334,20 @@ func (p *Parser) parseStatement() (Node, error) {
 		return p.parseComment()
 	}
 	if p.curr.typ == AT {
-		return p.parseInclude()
+		tok := p.peekToken()
+		// Only call parseInclude for @include or @ "file"
+		if (tok.typ == IDENT && tok.value == "include") || tok.typ == STRING {
+			return p.parseInclude()
+		}
+		// For all other supported commands, call parseCommand
+		if tok.typ == IDENT && (tok.value == "exec" || tok.value == "pipeline") {
+			return p.parseCommand()
+		}
+		// Print error with code block and hint
+		return nil, p.parseError(fmt.Sprintf(
+			"expected supported command after '@', got %v\n\nCode block:\n%s\nHint: Use @include, @exec, or @pipeline after '@'.",
+			tok.value, getErrorBlock(p.input, p.scanner.Pos().Line),
+		))
 	}
 	if p.curr.typ == KEYWORD {
 		return p.parseControl()
@@ -419,10 +432,13 @@ func (p *Parser) parseArrow(arrowType string) (Node, error) {
 
 func (p *Parser) parseInclude() (Node, error) {
 	p.nextToken()
-	if p.curr.typ != IDENT || p.curr.value != "include" {
+	// Accept IDENT or STRING for include
+	if (p.curr.typ != IDENT || p.curr.value != "include") && p.curr.typ != STRING {
 		return nil, p.parseError(fmt.Sprintf("expected 'include' after '@', got %v", p.curr.value))
 	}
-	p.nextToken()
+	if p.curr.typ == IDENT && p.curr.value == "include" {
+		p.nextToken()
+	}
 	fileName, err := p.parseFileName()
 	if err != nil {
 		return nil, err
@@ -749,9 +765,19 @@ func (p *Parser) parseEnvLookup() (Node, error) {
 func (p *Parser) parsePrimary() (Node, error) {
 	if p.curr.typ == AT {
 		tok := p.peekToken()
+		// Only call parseInclude for @include or @ "file"
+		if (tok.typ == IDENT && tok.value == "include") || tok.typ == STRING {
+			return p.parseInclude()
+		}
+		// For all other supported commands, call parseCommand
 		if tok.typ == IDENT && (tok.value == "exec" || tok.value == "pipeline") {
 			return p.parseCommand()
 		}
+		// Print error with code block and hint
+		return nil, p.parseError(fmt.Sprintf(
+			"expected supported command after '@', got %v\n\nCode block:\n%s\nHint: Use @include, @exec, or @pipeline after '@'.",
+			tok.value, getErrorBlock(p.input, p.scanner.Pos().Line),
+		))
 	}
 	if p.curr.typ == OPERATOR && p.curr.value == "<<" {
 		return p.parseHeredoc()
@@ -1079,6 +1105,11 @@ func (p *Parser) parseControl() (Node, error) {
 func (p *Parser) parseCommand() (Node, error) {
 	// Consume the '@' token.
 	p.nextToken()
+	// Accept IDENT or STRING for command
+	if p.curr.typ == STRING {
+		// Assume @include "file.bcl" style
+		return p.parseInclude()
+	}
 	if p.curr.typ != IDENT {
 		return nil, p.parseError("expected command name after '@'")
 	}
@@ -1160,4 +1191,28 @@ func (p *Parser) peekToken() tokenInfo {
 	// Preserve the original filename if needed.
 	temp.scanner.Filename = p.scanner.Filename
 	return temp.curr
+}
+
+// Helper to print a code block with the error line and a few lines of context.
+func getErrorBlock(input string, errLine int) string {
+	lines := strings.Split(input, "\n")
+	start := errLine - 2
+	if start < 0 {
+		start = 0
+	}
+	end := errLine + 1
+	if end > len(lines) {
+		end = len(lines)
+	}
+	var b strings.Builder
+	for i := start; i < end; i++ {
+		if i == errLine-1 {
+			b.WriteString(">> ")
+		} else {
+			b.WriteString("   ")
+		}
+		b.WriteString(lines[i])
+		b.WriteByte('\n')
+	}
+	return b.String()
 }

@@ -15,10 +15,6 @@ func main() {
 		return nil, errors.New("test error")
 	})
 	var input = `
-dir, err = test_error()
-if (!isNull(err)) {
-	dir = "."
-}
 cmdOutput = @pipeline {
     step1 = test("pipeline step")
     step2 = add(10, 20)
