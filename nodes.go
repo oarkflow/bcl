@@ -1149,6 +1149,15 @@ func (u *UnaryNode) Eval(env *Environment) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if reflect.TypeOf(val).Kind() == reflect.Slice {
+		v := reflect.ValueOf(val)
+		if v.Len() == 0 {
+			return nil, fmt.Errorf("cannot apply unary operator to empty slice")
+		}
+		val = v.Index(0).Interface()
+	}
+
 	switch u.Op {
 	case "-":
 		f, err := toFloat(val)

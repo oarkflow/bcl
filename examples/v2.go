@@ -16,17 +16,13 @@ func main() {
 	})
 	var input = `
 dir, err = test_error()
-if (err != undefined) {
+if (!isNull(err)) {
 	dir = "."
-}
-"nodeA" -> "nodeB" {
-	label = "Edge from A to B"
-	weight = 100
 }
 cmdOutput = @pipeline {
     step1 = test("pipeline step")
     step2 = add(10, 20)
-    step3 = @exec(cmd="echo", args=["Pipeline executed", step1, step2], dir=".")
+    step3 = @exec(cmd="echo", args=["Pipeline executed", step1, step2], dir=dir)
 	step1 -> step2 #ArrowNode
 	step2 -> step3 #ArrowNode
 }

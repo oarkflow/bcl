@@ -45,10 +45,21 @@ tunnel "myservice-prod2" {
     extras {
         max_latency = 8.5
     }
+    mapping = {
+		user_id = "user_uid"
+		email = "user_email_address"
+		first_name = "user_first_name"
+		last_name = "user_last_name"
+		user_type = "user_type"
+		created_at = "added_utc"
+		created_by = "added_by"
+	}
+    defaultUserID = tunnel.myservice-prod2.mapping.user_id
 }
 
 defaultTunnel = tunnel."myservice-prod2"
 defaultHost = tunnel.myservice-prod2.host
+defaultUserID = tunnel.myservice-prod2.mapping.user_id
 name = "Test Workflow"
 nodes {
     "Get Data" {

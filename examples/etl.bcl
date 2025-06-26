@@ -1,0 +1,57 @@
+sources "prod-db" {
+	type: "mysql"
+    key: "prod-db"
+    host: "localhost"
+    port: 3306
+    driver: "mysql"
+    username: "root"
+    password: "root"
+    database: "cleardb"
+    disablelogger: true
+}
+
+destinations "users-csv" {
+	type: "csv"
+	key: "users-csv"
+	file: "users.csv"
+}
+
+destinations "credentials-csv" {
+	type: "csv"
+	key: "credentials-csv"
+	file: "credentials.csv"
+}
+
+destinations "user-settings-csv" {
+	type: "csv"
+	key: "user-settings-csv"
+	file: "user-settings.csv"
+}
+
+deduplication = {
+	enabled = true
+	field = "user_uid"
+}
+
+checkpoint = {
+	file = "checkpoint.txt"
+	field = "user_uid"
+}
+
+tables "users" {
+	old_name: "tbl_user"
+	migrate: true
+	clone_source: false
+	batch_size: 1000
+	truncate_destination: true
+	destination_key: "users-csv"
+	mapping = {
+		user_id = "user_uid"
+		email = "user_email_address"
+		first_name = "user_first_name"
+		last_name = "user_last_name"
+		user_type = "user_type"
+		created_at = "added_utc"
+		created_by = "added_by"
+	}
+}
