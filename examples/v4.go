@@ -6,47 +6,53 @@ import (
 	"github.com/oarkflow/bcl"
 )
 
+type Release struct {
+	PreviousTag string `json:"previous_tag"`
+	Name        string `json:"name"`
+}
+
+// Build filter usage in struct tags
+type Build struct {
+	GoOS   string `json:"goos"`
+	GoArch string `json:"goarch"`
+	Output string `json:"output"`
+	Name   string `json:"name"`
+}
+
+type BuildConfig struct {
+	ProjectName string    `json:"project_name"`
+	DistDir     string    `json:"dist_dir"`
+	Release     []Release `json:"release:all"`            // get all releases
+	Build       Build     `json:"build:last"`             // get last build block
+	BuildLast   Build     `json:"build:0"`                // get last build block
+	BuildFirst  Build     `json:"build:first"`            // get first build block
+	BuildArm    Build     `json:"build:name,linux-arm64"` // get build block by name
+	Builds      []Build   `json:"build:0-2"`              // get builds from index 1 to 2 (exclusive)
+}
+
 func main() {
 	var input = `
 project_name = "myapp"
 dist_dir     = "dist"
 
-release = {
+release "v1.3.0" {
   previous_tag = "v1.2.0"
-  tag          = "v1.3.0"
 }
 
-builds = [
-  {
-    goos   = "linux"
+build "linux-amd64" {
+	goos   = "linux"
     goarch = "amd64"
     output = "dist/bin/${project_name}-linux-amd64"
-  },
-  {
-    goos   = "linux"
+}
+
+build "linux-arm64" {
+	goos   = "linux"
     goarch = "arm64"
     output = "dist/bin/${project_name}-linux-arm64"
-  },
-  {
-    goos   = "darwin"
-    goarch = "amd64"
-    output = "dist/bin/${project_name}-darwin-amd64"
-  },
-  {
-    goos   = "darwin"
-    goarch = "arm64"
-    output = "dist/bin/${project_name}-darwin-arm64"
-  },
-  {
-    goos   = "windows"
-    goarch = "amd64"
-    output = "dist/bin/${project_name}-windows-amd64.exe"
-  },
-]
-
+}
 	`
 
-	var cfg map[string]any
+	var cfg BuildConfig
 	nodes, err := bcl.Unmarshal([]byte(input), &cfg)
 	if err != nil {
 		panic(err)

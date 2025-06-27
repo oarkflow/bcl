@@ -396,9 +396,17 @@ func assignValue(src, dest reflect.Value) error {
 	}
 	switch dest.Kind() {
 	case reflect.Struct:
-		srcMap, ok := src.Interface().(map[string]any)
+		srcVal := src
+		// Smartly handle if src is a slice and dest is a struct: pick last element
+		if src.Kind() == reflect.Slice {
+			if src.Len() == 0 {
+				return nil
+			}
+			srcVal = src.Index(src.Len() - 1)
+		}
+		srcMap, ok := srcVal.Interface().(map[string]any)
 		if !ok {
-			return fmt.Errorf("expected map for struct assignment but got %T", src.Interface())
+			return fmt.Errorf("expected map for struct assignment but got %T", srcVal.Interface())
 		}
 		destType := dest.Type()
 		for i := 0; i < dest.NumField(); i++ {
@@ -406,12 +414,25 @@ func assignValue(src, dest reflect.Value) error {
 			if field.PkgPath != "" {
 				continue
 			}
+			// Support json, bcl, hcl tags and filter parsing
 			tag := field.Tag.Get("json")
+			if tag == "" {
+				tag = field.Tag.Get("bcl")
+			}
+			if tag == "" {
+				tag = field.Tag.Get("hcl")
+			}
 			fieldName := field.Name
+			filter := ""
 			if tag != "" {
 				parts := strings.Split(tag, ",")
 				if parts[0] != "" {
 					fieldName = parts[0]
+				}
+				// Parse filter if present (e.g. "build:first", "release:all", etc.)
+				if idx := strings.Index(fieldName, ":"); idx != -1 {
+					filter = fieldName[idx+1:]
+					fieldName = fieldName[:idx]
 				}
 			}
 			// Skip metadata keys.
@@ -419,8 +440,45 @@ func assignValue(src, dest reflect.Value) error {
 				continue
 			}
 			if value, exists := srcMap[fieldName]; exists {
-				if err := assignValue(reflect.ValueOf(value), dest.Field(i)); err != nil {
-					return fmt.Errorf("field %s: %v", field.Name, err)
+				fieldVal := dest.Field(i)
+				val := reflect.ValueOf(value)
+				// If filter is present and value is a slice, apply filter
+				if filter != "" && val.Kind() == reflect.Slice {
+					val = applyFilter(val, filter)
+					// --- FIX: If filter is name:... and dest is struct, extract the first element ---
+					if strings.HasPrefix(filter, "name:") && fieldVal.Kind() == reflect.Struct {
+						if val.Len() == 0 {
+							fieldVal.Set(reflect.Zero(fieldVal.Type()))
+							continue
+						}
+						val = val.Index(0)
+					}
+				}
+				// if field is slice, but value is not a slice, wrap it
+				if fieldVal.Kind() == reflect.Slice {
+					if val.Kind() != reflect.Slice {
+						slice := reflect.MakeSlice(fieldVal.Type(), 1, 1)
+						if err := assignValue(val, slice.Index(0)); err != nil {
+							return fmt.Errorf("field %s: %v", field.Name, err)
+						}
+						fieldVal.Set(slice)
+					} else {
+						if err := assignValue(val, fieldVal); err != nil {
+							return fmt.Errorf("field %s: %v", field.Name, err)
+						}
+					}
+				} else if fieldVal.Kind() == reflect.Struct {
+					// If value is a slice, use last element unless filter changed it
+					if val.Kind() == reflect.Slice && val.Len() > 0 {
+						val = val.Index(val.Len() - 1)
+					}
+					if err := assignValue(val, fieldVal); err != nil {
+						return fmt.Errorf("field %s: %v", field.Name, err)
+					}
+				} else {
+					if err := assignValue(val, fieldVal); err != nil {
+						return fmt.Errorf("field %s: %v", field.Name, err)
+					}
 				}
 			}
 		}
@@ -447,6 +505,15 @@ func assignValue(src, dest reflect.Value) error {
 		}
 		dest.Set(newMap)
 	case reflect.Slice:
+		// If src is not a slice, wrap it as a slice
+		if src.Kind() != reflect.Slice {
+			slice := reflect.MakeSlice(dest.Type(), 1, 1)
+			if err := assignValue(src, slice.Index(0)); err != nil {
+				return err
+			}
+			dest.Set(slice)
+			return nil
+		}
 		srcSlice, ok := src.Interface().([]any)
 		if !ok {
 			return fmt.Errorf("expected slice for assignment but got %T", src.Interface())
@@ -501,6 +568,90 @@ func assignValue(src, dest reflect.Value) error {
 		}
 	}
 	return nil
+}
+
+// Filter helpers for struct tags
+func applyFilter(val reflect.Value, filter string) reflect.Value {
+	if val.Kind() != reflect.Slice || val.Len() == 0 {
+		return val
+	}
+	switch {
+	case filter == "first":
+		return val.Slice(0, 1)
+	case filter == "last":
+		return val.Slice(val.Len()-1, val.Len())
+	case filter == "all":
+		return val
+	case strings.HasPrefix(filter, "name:"):
+		name := filter[5:]
+		for i := 0; i < val.Len(); i++ {
+			item := val.Index(i)
+			if item.Kind() == reflect.Map {
+				// Try direct "name"
+				if n := item.MapIndex(reflect.ValueOf("name")); n.IsValid() && n.Interface() == name {
+					return reflect.Append(reflect.MakeSlice(val.Type(), 0, 1), item)
+				}
+				// Try "props" sub-map
+				if props := item.MapIndex(reflect.ValueOf("props")); props.IsValid() {
+					propsVal := props
+					if propsVal.Kind() == reflect.Interface {
+						propsVal = propsVal.Elem()
+					}
+					if propsVal.Kind() == reflect.Map {
+						if n := propsVal.MapIndex(reflect.ValueOf("name")); n.IsValid() && n.Interface() == name {
+							return reflect.Append(reflect.MakeSlice(val.Type(), 0, 1), item)
+						}
+					}
+				}
+			} else if item.Kind() == reflect.Struct {
+				f := item.FieldByName("Name")
+				if f.IsValid() && f.Kind() == reflect.String && f.String() == name {
+					return reflect.Append(reflect.MakeSlice(val.Type(), 0, 1), item)
+				}
+			}
+		}
+		return reflect.MakeSlice(val.Type(), 0, 0)
+	case strings.Contains(filter, "-"):
+		parts := strings.Split(filter, "-")
+		if len(parts) == 2 {
+			from, to := parseIndex(parts[0]), parseIndex(parts[1])
+			if from < 0 {
+				from = 0
+			}
+			if to > val.Len() {
+				to = val.Len()
+			}
+			if from < to {
+				return val.Slice(from, to)
+			}
+		}
+	case isNumber(filter):
+		idx := parseIndex(filter)
+		if idx >= 0 && idx < val.Len() {
+			return val.Slice(idx, idx+1)
+		}
+	}
+	return val
+}
+
+func isNumber(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+func parseIndex(s string) int {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return -1
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
 }
 
 func writeAssignments(indent string, assignments []*AssignmentNode) string {
