@@ -397,7 +397,6 @@ func assignValue(src, dest reflect.Value) error {
 	switch dest.Kind() {
 	case reflect.Struct:
 		srcVal := src
-		// Smartly handle if src is a slice and dest is a struct: pick last element
 		if src.Kind() == reflect.Slice {
 			if src.Len() == 0 {
 				return nil
@@ -426,26 +425,26 @@ func assignValue(src, dest reflect.Value) error {
 			filter := ""
 			if tag != "" {
 				parts := strings.Split(tag, ",")
-				if parts[0] != "" {
+				if len(parts) > 0 && parts[0] != "" {
 					fieldName = parts[0]
 				}
-				// Parse filter if present (e.g. "build:first", "release:all", etc.)
-				if idx := strings.Index(fieldName, ":"); idx != -1 {
-					filter = fieldName[idx+1:]
-					fieldName = fieldName[:idx]
+				// Accept filter as either : or , separator
+				filterIdx := strings.Index(fieldName, ":")
+				if filterIdx == -1 && len(parts) > 1 {
+					filter = parts[1]
+				} else if filterIdx != -1 {
+					filter = fieldName[filterIdx+1:]
+					fieldName = fieldName[:filterIdx]
 				}
 			}
-			// Skip metadata keys.
 			if strings.HasPrefix(fieldName, "__") {
 				continue
 			}
 			if value, exists := srcMap[fieldName]; exists {
 				fieldVal := dest.Field(i)
 				val := reflect.ValueOf(value)
-				// If filter is present and value is a slice, apply filter
 				if filter != "" && val.Kind() == reflect.Slice {
 					val = applyFilter(val, filter)
-					// --- FIX: If filter is name:... and dest is struct, extract the first element ---
 					if strings.HasPrefix(filter, "name:") && fieldVal.Kind() == reflect.Struct {
 						if val.Len() == 0 {
 							fieldVal.Set(reflect.Zero(fieldVal.Type()))
@@ -454,7 +453,6 @@ func assignValue(src, dest reflect.Value) error {
 						val = val.Index(0)
 					}
 				}
-				// if field is slice, but value is not a slice, wrap it
 				if fieldVal.Kind() == reflect.Slice {
 					if val.Kind() != reflect.Slice {
 						slice := reflect.MakeSlice(fieldVal.Type(), 1, 1)
@@ -468,7 +466,6 @@ func assignValue(src, dest reflect.Value) error {
 						}
 					}
 				} else if fieldVal.Kind() == reflect.Struct {
-					// If value is a slice, use last element unless filter changed it
 					if val.Kind() == reflect.Slice && val.Len() > 0 {
 						val = val.Index(val.Len() - 1)
 					}
@@ -584,12 +581,13 @@ func applyFilter(val reflect.Value, filter string) reflect.Value {
 		return val
 	case strings.HasPrefix(filter, "name:"):
 		name := filter[5:]
+		zero := reflect.MakeSlice(val.Type(), 0, 0)
 		for i := 0; i < val.Len(); i++ {
 			item := val.Index(i)
 			if item.Kind() == reflect.Map {
 				// Try direct "name"
 				if n := item.MapIndex(reflect.ValueOf("name")); n.IsValid() && n.Interface() == name {
-					return reflect.Append(reflect.MakeSlice(val.Type(), 0, 1), item)
+					return reflect.Append(zero, item)
 				}
 				// Try "props" sub-map
 				if props := item.MapIndex(reflect.ValueOf("props")); props.IsValid() {
@@ -599,18 +597,18 @@ func applyFilter(val reflect.Value, filter string) reflect.Value {
 					}
 					if propsVal.Kind() == reflect.Map {
 						if n := propsVal.MapIndex(reflect.ValueOf("name")); n.IsValid() && n.Interface() == name {
-							return reflect.Append(reflect.MakeSlice(val.Type(), 0, 1), item)
+							return reflect.Append(zero, item)
 						}
 					}
 				}
 			} else if item.Kind() == reflect.Struct {
 				f := item.FieldByName("Name")
 				if f.IsValid() && f.Kind() == reflect.String && f.String() == name {
-					return reflect.Append(reflect.MakeSlice(val.Type(), 0, 1), item)
+					return reflect.Append(zero, item)
 				}
 			}
 		}
-		return reflect.MakeSlice(val.Type(), 0, 0)
+		return zero
 	case strings.Contains(filter, "-"):
 		parts := strings.Split(filter, "-")
 		if len(parts) == 2 {

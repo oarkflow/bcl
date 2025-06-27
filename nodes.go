@@ -456,6 +456,7 @@ func (p *PrimitiveNode) NodeType() string { return "Primitive" }
 
 func interpolateDynamic(s string, env *Environment) (string, error) {
 	sb := getBuilder(len(s))
+	defer putBuilder(sb)
 	i := 0
 	for i < len(s) {
 		if i+1 < len(s) && s[i] == '$' && s[i+1] == '{' {
@@ -470,19 +471,16 @@ func interpolateDynamic(s string, env *Environment) (string, error) {
 				j++
 			}
 			if braceCount != 0 {
-				putBuilder(sb)
 				return "", fmt.Errorf("unmatched braces in dynamic expression")
 			}
 			exprStr := s[i+2 : j-1]
 			parser := NewParser(exprStr)
 			expr, err := parser.parseExpression()
 			if err != nil {
-				putBuilder(sb)
 				return "", err
 			}
 			val, err := expr.Eval(env)
 			if err != nil {
-				putBuilder(sb)
 				return "", err
 			}
 			sb.WriteString(fmt.Sprintf("%v", val))
@@ -492,9 +490,7 @@ func interpolateDynamic(s string, env *Environment) (string, error) {
 			i++
 		}
 	}
-	result := sb.String()
-	putBuilder(sb)
-	return result, nil
+	return sb.String(), nil
 }
 
 type IdentifierNode struct {

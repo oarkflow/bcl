@@ -22,12 +22,12 @@ type Build struct {
 type BuildConfig struct {
 	ProjectName string    `json:"project_name"`
 	DistDir     string    `json:"dist_dir"`
-	Release     []Release `json:"release:all"`            // get all releases
-	Build       Build     `json:"build:last"`             // get last build block
-	BuildLast   Build     `json:"build:0"`                // get last build block
-	BuildFirst  Build     `json:"build:first"`            // get first build block
-	BuildArm    Build     `json:"build:name,linux-arm64"` // get build block by name
-	Builds      []Build   `json:"build:0-2"`              // get builds from index 1 to 2 (exclusive)
+	Release     []Release `json:"release:all"`
+	Build       Build     `json:"build:last"`
+	BuildLast   Build     `json:"build:0"`
+	BuildFirst  Build     `json:"build:first"`
+	BuildArm    Build     `json:"build:name,linux-arm64"`
+	Builds      []Build   `json:"build:0-2"`
 }
 
 func main() {
