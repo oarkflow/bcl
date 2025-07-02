@@ -341,7 +341,9 @@ func flattenBlocksRecursively(vars any) {
 					for _, m := range blockSlice {
 						if bm, ok := m.(map[string]any); ok {
 							if label, exists := bm["__label"].(string); exists {
-								delete(t, label)
+								if label != "name" {
+									delete(t, label)
+								}
 							}
 						}
 					}
