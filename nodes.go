@@ -17,18 +17,23 @@ import (
 // Reuse builders to reduce allocations
 var builderPool = sync.Pool{
 	New: func() interface{} {
-		return &strings.Builder{}
+		return new(strings.Builder)
 	},
 }
 
 func getBuilder(capacity int) *strings.Builder {
 	b := builderPool.Get().(*strings.Builder)
 	b.Reset()
-	b.Grow(capacity)
+	if capacity > 0 {
+		b.Grow(capacity)
+	}
 	return b
 }
 
 func putBuilder(b *strings.Builder) {
+	if b.Cap() > 1024*1024 { // Don't pool builders larger than 1MB
+		return
+	}
 	builderPool.Put(b)
 }
 
@@ -83,13 +88,13 @@ func (a *AssignmentNode) Eval(env *Environment) (any, error) {
 func (a *AssignmentNode) ToBCL(indent string) string {
 	capacity := len(indent) + len(a.VarName) + 16
 	sb := getBuilder(capacity)
+	defer putBuilder(sb)
+
 	sb.WriteString(indent)
 	sb.WriteString(a.VarName)
 	sb.WriteString(" = ")
 	sb.WriteString(a.Value.ToBCL(""))
-	result := sb.String()
-	putBuilder(sb)
-	return result
+	return sb.String()
 }
 
 func (a *AssignmentNode) NodeType() string { return "Assignment" }
@@ -197,6 +202,8 @@ func (b *BlockNode) ToBCL(indent string) string {
 	}
 	capacity := len(indent) + len(b.Type) + len(lbl) + len(b.Props)*32 + 16
 	sb := getBuilder(capacity)
+	defer putBuilder(sb)
+
 	sb.WriteString(indent)
 	sb.WriteString(b.Type)
 	sb.WriteString(" ")
@@ -208,9 +215,7 @@ func (b *BlockNode) ToBCL(indent string) string {
 	}
 	sb.WriteString(indent)
 	sb.WriteByte('}')
-	result := sb.String()
-	putBuilder(sb)
-	return result
+	return sb.String()
 }
 
 func (b *BlockNode) NodeType() string { return "Block" }
@@ -255,6 +260,8 @@ func (a *ArrowNode) ToBCL(indent string) string {
 		typ = "Edge"
 	}
 	sb := getBuilder(64)
+	defer putBuilder(sb)
+
 	sb.WriteString(indent)
 	if typ != "Edge" {
 		sb.WriteString(typ)
@@ -272,9 +279,7 @@ func (a *ArrowNode) ToBCL(indent string) string {
 		sb.WriteString(indent)
 		sb.WriteByte('}')
 	}
-	result := sb.String()
-	putBuilder(sb)
-	return result
+	return sb.String()
 }
 
 func (a *ArrowNode) NodeType() string { return "Arrow" }
@@ -303,14 +308,19 @@ func (b *BlockContainerNode) Eval(env *Environment) (any, error) {
 
 func (b *BlockContainerNode) ToBCL(indent string) string {
 	sb := getBuilder(32)
-	sb.WriteString(fmt.Sprintf("%s%s {\n", indent, b.Type))
+	defer putBuilder(sb)
+
+	sb.WriteString(indent)
+	sb.WriteString(b.Type)
+	sb.WriteString(" {\n")
 	for _, blockNode := range b.Blocks {
-		sb.WriteString("    " + blockNode.ToBCL(indent+"    ") + "\n")
+		sb.WriteString("    ")
+		sb.WriteString(blockNode.ToBCL(indent + "    "))
+		sb.WriteByte('\n')
 	}
-	sb.WriteString(fmt.Sprintf("%s}", indent))
-	result := sb.String()
-	putBuilder(sb)
-	return result
+	sb.WriteString(indent)
+	sb.WriteByte('}')
+	return sb.String()
 }
 
 func (b *BlockContainerNode) NodeType() string { return "BlockContainer" }
@@ -332,12 +342,13 @@ func (m *MapNode) Eval(env *Environment) (any, error) {
 
 func (m *MapNode) ToBCL(indent string) string {
 	sb := getBuilder(32)
+	defer putBuilder(sb)
+
 	sb.WriteString("{\n")
 	sb.WriteString(writeAssignments(indent, m.Entries))
-	sb.WriteString(indent + "}")
-	result := sb.String()
-	putBuilder(sb)
-	return result
+	sb.WriteString(indent)
+	sb.WriteByte('}')
+	return sb.String()
 }
 
 func (m *MapNode) NodeType() string { return "Map" }
@@ -366,15 +377,19 @@ func (m *CombinedMapNode) Eval(env *Environment) (any, error) {
 
 func (m *CombinedMapNode) ToBCL(indent string) string {
 	sb := getBuilder(32)
+	defer putBuilder(sb)
+
 	sb.WriteString("{\n")
 	sb.WriteString(writeAssignments(indent, m.Entries))
 	for _, block := range m.Blocks {
-		sb.WriteString(indent + "    " + block.ToBCL(indent+"    ") + "\n")
+		sb.WriteString(indent)
+		sb.WriteString("    ")
+		sb.WriteString(block.ToBCL(indent + "    "))
+		sb.WriteByte('\n')
 	}
-	sb.WriteString(indent + "}")
-	result := sb.String()
-	putBuilder(sb)
-	return result
+	sb.WriteString(indent)
+	sb.WriteByte('}')
+	return sb.String()
 }
 
 func (m *CombinedMapNode) NodeType() string { return "CombinedMap" }
@@ -396,29 +411,48 @@ func (s *SliceNode) Eval(env *Environment) (any, error) {
 }
 
 func (s *SliceNode) ToBCL(indent string) string {
-	if len(s.Elements) > 0 {
-		switch s.Elements[0].(type) {
-		case *PrimitiveNode:
-			var parts []string
-			for _, el := range s.Elements {
-				parts = append(parts, el.ToBCL(""))
-			}
-			return fmt.Sprintf("[%s]", strings.Join(parts, ", "))
-		default:
-			sb := getBuilder(32)
-			sb.WriteString("[\n")
-			var parts []string
-			for _, el := range s.Elements {
-				parts = append(parts, el.ToBCL(indent+"    "))
-			}
-			sb.WriteString(strings.Join(parts, "\n"))
-			sb.WriteString("\n" + indent + "]")
-			result := sb.String()
-			putBuilder(sb)
-			return result
+	if len(s.Elements) == 0 {
+		return "[]"
+	}
+
+	// Check if all elements are primitives
+	allPrimitive := true
+	for _, el := range s.Elements {
+		if _, ok := el.(*PrimitiveNode); !ok {
+			allPrimitive = false
+			break
 		}
 	}
-	return "[]"
+
+	if allPrimitive {
+		sb := getBuilder(32)
+		defer putBuilder(sb)
+
+		sb.WriteByte('[')
+		for i, el := range s.Elements {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(el.ToBCL(""))
+		}
+		sb.WriteByte(']')
+		return sb.String()
+	}
+
+	// Multi-line format for complex elements
+	sb := getBuilder(32)
+	defer putBuilder(sb)
+
+	sb.WriteString("[\n")
+	for _, el := range s.Elements {
+		sb.WriteString(indent)
+		sb.WriteString("    ")
+		sb.WriteString(el.ToBCL(indent + "    "))
+		sb.WriteByte('\n')
+	}
+	sb.WriteString(indent)
+	sb.WriteByte(']')
+	return sb.String()
 }
 
 func (s *SliceNode) NodeType() string { return "Slice" }
@@ -455,8 +489,14 @@ func (p *PrimitiveNode) ToBCL(indent string) string {
 func (p *PrimitiveNode) NodeType() string { return "Primitive" }
 
 func interpolateDynamic(s string, env *Environment) (string, error) {
+	// Quick check if interpolation is needed
+	if !strings.Contains(s, "${") {
+		return s, nil
+	}
+
 	sb := getBuilder(len(s))
 	defer putBuilder(sb)
+
 	i := 0
 	for i < len(s) {
 		if i+1 < len(s) && s[i] == '$' && s[i+1] == '{' {
@@ -471,19 +511,26 @@ func interpolateDynamic(s string, env *Environment) (string, error) {
 				j++
 			}
 			if braceCount != 0 {
-				return "", fmt.Errorf("unmatched braces in dynamic expression")
+				return "", &ParseError{
+					Message: "unmatched braces in dynamic expression",
+					Context: s,
+				}
 			}
 			exprStr := s[i+2 : j-1]
 			parser := NewParser(exprStr)
 			expr, err := parser.parseExpression()
 			if err != nil {
-				return "", err
+				return "", fmt.Errorf("failed to parse expression '%s': %w", exprStr, err)
 			}
 			val, err := expr.Eval(env)
 			if err != nil {
-				return "", err
+				return "", fmt.Errorf("failed to evaluate expression '%s': %w", exprStr, err)
 			}
-			sb.WriteString(fmt.Sprintf("%v", val))
+			// Check if the result is undefined
+			if _, isUndefined := val.(Undefined); isUndefined {
+				return "", fmt.Errorf("undefined variable in expression '%s'", exprStr)
+			}
+			fmt.Fprintf(sb, "%v", val)
 			i = j
 		} else {
 			sb.WriteByte(s[i])
@@ -605,6 +652,8 @@ func (d *DotAccessNode) ToBCL(indent string) string {
 	leftStr := d.Left.ToBCL("")
 	capacity := len(indent) + len(leftStr) + len(d.Right) + 10
 	sb := getBuilder(capacity)
+	defer putBuilder(sb)
+
 	sb.WriteString(indent)
 	sb.WriteString(leftStr)
 	sb.WriteByte('.')
@@ -615,9 +664,7 @@ func (d *DotAccessNode) ToBCL(indent string) string {
 	} else {
 		sb.WriteString(d.Right)
 	}
-	result := sb.String()
-	putBuilder(sb)
-	return result
+	return sb.String()
 }
 
 func (d *DotAccessNode) NodeType() string { return "DotAccess" }
@@ -993,15 +1040,15 @@ func (a *ArithmeticNode) ToBCL(indent string) string {
 	rightStr := a.Right.ToBCL("")
 	capacity := len(indent) + len(leftStr) + len(a.Op) + len(rightStr) + 4
 	sb := getBuilder(capacity)
+	defer putBuilder(sb)
+
 	sb.WriteString(indent)
 	sb.WriteString(leftStr)
 	sb.WriteByte(' ')
 	sb.WriteString(a.Op)
 	sb.WriteByte(' ')
 	sb.WriteString(rightStr)
-	result := sb.String()
-	putBuilder(sb)
-	return result
+	return sb.String()
 }
 
 func (a *ArithmeticNode) NodeType() string { return "Arithmetic" }
@@ -1062,27 +1109,36 @@ func (c *ControlNode) Eval(env *Environment) (any, error) {
 
 func (c *ControlNode) ToBCL(indent string) string {
 	sb := getBuilder(64)
+	defer putBuilder(sb)
+
+	sb.WriteString(indent)
 	if c.Condition != nil {
-		sb.WriteString(fmt.Sprintf("%sIF (%s) {\n", indent, c.Condition.ToBCL("")))
+		sb.WriteString("IF (")
+		sb.WriteString(c.Condition.ToBCL(""))
+		sb.WriteString(") {\n")
 	} else {
-		sb.WriteString(fmt.Sprintf("%sELSE {\n", indent))
+		sb.WriteString("ELSE {\n")
 	}
+
 	for _, stmt := range c.Body {
 		sb.WriteString(stmt.ToBCL(indent + "    "))
-		sb.WriteString("\n")
+		sb.WriteByte('\n')
 	}
-	sb.WriteString(fmt.Sprintf("%s}", indent))
+
+	sb.WriteString(indent)
+	sb.WriteByte('}')
+
 	if c.Else != nil {
-		sb.WriteString(" " + c.Else.ToBCL(indent))
+		sb.WriteByte(' ')
+		sb.WriteString(c.Else.ToBCL(indent))
 	}
-	result := sb.String()
-	putBuilder(sb)
-	return result
+
+	return sb.String()
 }
 
 func (c *ControlNode) NodeType() string { return "Control" }
 
-var includeCache = make(map[string][]Node)
+// includeCache is now managed by globalIncludeCache in registry.go
 
 type IncludeNode struct {
 	FileName string
@@ -1090,7 +1146,7 @@ type IncludeNode struct {
 }
 
 func (i *IncludeNode) Eval(env *Environment) (any, error) {
-	if cached, ok := includeCache[i.FileName]; ok {
+	if cached, ok := globalIncludeCache.Get(i.FileName); ok {
 		for _, node := range cached {
 			_, err := node.Eval(env)
 			if err != nil {
@@ -1110,7 +1166,7 @@ func (i *IncludeNode) Eval(env *Environment) (any, error) {
 		env.vars[key] = val
 	}
 
-	includeCache[i.FileName] = i.Nodes
+	globalIncludeCache.Set(i.FileName, i.Nodes)
 	return local.vars, nil
 }
 
@@ -1221,15 +1277,15 @@ func (t *TernaryNode) ToBCL(indent string) string {
 	tFalse := t.FalseExpr.ToBCL("")
 	capacity := len(indent) + len(tCond) + len(tTrue) + len(tFalse) + 8
 	sb := getBuilder(capacity)
+	defer putBuilder(sb)
+
 	sb.WriteString(indent)
 	sb.WriteString(tCond)
 	sb.WriteString(" ? ")
 	sb.WriteString(tTrue)
 	sb.WriteString(" : ")
 	sb.WriteString(tFalse)
-	result := sb.String()
-	putBuilder(sb)
-	return result
+	return sb.String()
 }
 
 func (t *TernaryNode) NodeType() string { return "Ternary" }
@@ -1524,17 +1580,28 @@ func (e *ExecNode) Eval(env *Environment) (any, error) {
 
 func (e *ExecNode) ToBCL(indent string) string {
 	sb := getBuilder(64)
+	defer putBuilder(sb)
+
 	sb.WriteString(indent)
 	sb.WriteString("@exec(")
-	var parts []string
-	for key, node := range e.Config {
-		parts = append(parts, fmt.Sprintf(`%s=%s`, key, node.ToBCL("")))
+
+	// Sort keys for consistent output
+	keys := make([]string, 0, len(e.Config))
+	for k := range e.Config {
+		keys = append(keys, k)
 	}
-	sb.WriteString(strings.Join(parts, ", "))
+
+	for i, key := range keys {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(key)
+		sb.WriteByte('=')
+		sb.WriteString(e.Config[key].ToBCL(""))
+	}
+
 	sb.WriteByte(')')
-	result := sb.String()
-	putBuilder(sb)
-	return result
+	return sb.String()
 }
 
 func (e *ExecNode) NodeType() string { return "Exec" }
@@ -1625,18 +1692,19 @@ func (p *PipelineNode) Eval(env *Environment) (any, error) {
 
 func (p *PipelineNode) ToBCL(indent string) string {
 	sb := getBuilder(32)
+	defer putBuilder(sb)
+
 	sb.WriteString(indent)
 	sb.WriteString("@pipeline {\n")
 	for _, node := range p.Nodes {
+		sb.WriteString(indent)
 		sb.WriteString("    ")
 		sb.WriteString(node.ToBCL(indent + "    "))
 		sb.WriteByte('\n')
 	}
 	sb.WriteString(indent)
-	sb.WriteString("}")
-	result := sb.String()
-	putBuilder(sb)
-	return result
+	sb.WriteByte('}')
+	return sb.String()
 }
 
 func (p *PipelineNode) NodeType() string { return "Pipeline" }

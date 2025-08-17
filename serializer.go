@@ -655,28 +655,22 @@ func parseIndex(s string) int {
 }
 
 func writeAssignments(indent string, assignments []*AssignmentNode) string {
-	sb := getBuilder(32)
+	if len(assignments) == 0 {
+		return ""
+	}
+
+	sb := getBuilder(len(assignments) * 32)
+	defer putBuilder(sb)
+
 	for _, a := range assignments {
 		sb.WriteString(indent)
+		sb.WriteString("    ")
 		sb.WriteString(a.VarName)
 		sb.WriteString(" = ")
-		sb.WriteString(a.Value.ToBCL(indent))
+		sb.WriteString(a.Value.ToBCL(""))
 		sb.WriteByte('\n')
 	}
-	result := sb.String()
-	putBuilder(sb)
-	return result
+	return sb.String()
 }
 
 type Function func(args ...any) (any, error)
-
-var funcRegistry = map[string]Function{}
-
-func RegisterFunction(name string, fn Function) {
-	funcRegistry[strings.ToLower(name)] = fn
-}
-
-func LookupFunction(name string) (Function, bool) {
-	fn, ok := funcRegistry[strings.ToLower(name)]
-	return fn, ok
-}
