@@ -45,7 +45,7 @@ func (e *EvalError) Unwrap() error {
 // ValidationError represents a validation error
 type ValidationError struct {
 	Field   string
-	Value   interface{}
+	Value   any
 	Message string
 }
 

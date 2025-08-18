@@ -9,7 +9,7 @@ import (
 
 // Validator defines the interface for value validation
 type Validator interface {
-	Validate(value interface{}) error
+	Validate(value any) error
 }
 
 // ValidationRule represents a validation rule
@@ -36,7 +36,7 @@ func (s *Schema) AddRule(field string, validators ...Validator) {
 }
 
 // Validate validates data against the schema
-func (s *Schema) Validate(data interface{}) error {
+func (s *Schema) Validate(data any) error {
 	var errors MultiError
 	s.validateValue("", data, &errors)
 
@@ -46,7 +46,7 @@ func (s *Schema) Validate(data interface{}) error {
 	return nil
 }
 
-func (s *Schema) validateValue(path string, value interface{}, errors *MultiError) {
+func (s *Schema) validateValue(path string, value any, errors *MultiError) {
 	// First check if the current path has validators
 	if path != "" {
 		if validators, ok := s.Rules[path]; ok {
@@ -63,7 +63,7 @@ func (s *Schema) validateValue(path string, value interface{}, errors *MultiErro
 	}
 
 	switch v := value.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		// Check for missing required fields at this level
 		for fieldPath, validators := range s.Rules {
 			// Only check direct children of current path
@@ -127,7 +127,7 @@ func (s *Schema) validateValue(path string, value interface{}, errors *MultiErro
 			s.validateValue(fieldPath, val, errors)
 		}
 
-	case []interface{}:
+	case []any:
 		for i, item := range v {
 			itemPath := fmt.Sprintf("%s[%d]", path, i)
 			s.validateValue(itemPath, item, errors)
@@ -140,7 +140,7 @@ func (s *Schema) validateValue(path string, value interface{}, errors *MultiErro
 // RequiredValidator ensures a value is not nil or empty
 type RequiredValidator struct{}
 
-func (v RequiredValidator) Validate(value interface{}) error {
+func (v RequiredValidator) Validate(value any) error {
 	if value == nil {
 		return fmt.Errorf("value is required")
 	}
@@ -151,11 +151,11 @@ func (v RequiredValidator) Validate(value interface{}) error {
 		if val == "" {
 			return fmt.Errorf("value cannot be empty")
 		}
-	case []interface{}:
+	case []any:
 		if len(val) == 0 {
 			return fmt.Errorf("array cannot be empty")
 		}
-	case map[string]interface{}:
+	case map[string]any:
 		if len(val) == 0 {
 			return fmt.Errorf("object cannot be empty")
 		}
@@ -169,7 +169,7 @@ type TypeValidator struct {
 	Type string
 }
 
-func (v TypeValidator) Validate(value interface{}) error {
+func (v TypeValidator) Validate(value any) error {
 	if value == nil {
 		return nil // nil is valid for any type
 	}
@@ -198,11 +198,11 @@ func (v TypeValidator) Validate(value interface{}) error {
 			return fmt.Errorf("expected boolean, got %T", value)
 		}
 	case "array", "slice":
-		if _, ok := value.([]interface{}); !ok {
+		if _, ok := value.([]any); !ok {
 			return fmt.Errorf("expected array, got %T", value)
 		}
 	case "object", "map":
-		if _, ok := value.(map[string]interface{}); !ok {
+		if _, ok := value.(map[string]any); !ok {
 			return fmt.Errorf("expected object, got %T", value)
 		}
 	default:
@@ -218,7 +218,7 @@ type RangeValidator struct {
 	Max *float64
 }
 
-func (v RangeValidator) Validate(value interface{}) error {
+func (v RangeValidator) Validate(value any) error {
 	if value == nil {
 		return nil
 	}
@@ -260,7 +260,7 @@ type LengthValidator struct {
 	Max *int
 }
 
-func (v LengthValidator) Validate(value interface{}) error {
+func (v LengthValidator) Validate(value any) error {
 	if value == nil {
 		return nil
 	}
@@ -269,7 +269,7 @@ func (v LengthValidator) Validate(value interface{}) error {
 	switch val := value.(type) {
 	case string:
 		length = len(val)
-	case []interface{}:
+	case []any:
 		length = len(val)
 	default:
 		return fmt.Errorf("length validation only applies to strings and arrays")
@@ -299,7 +299,7 @@ func NewPatternValidator(pattern string) (*PatternValidator, error) {
 	return &PatternValidator{Pattern: re}, nil
 }
 
-func (v PatternValidator) Validate(value interface{}) error {
+func (v PatternValidator) Validate(value any) error {
 	if value == nil {
 		return nil
 	}
@@ -318,10 +318,10 @@ func (v PatternValidator) Validate(value interface{}) error {
 
 // EnumValidator ensures a value is one of allowed values
 type EnumValidator struct {
-	Values []interface{}
+	Values []any
 }
 
-func (v EnumValidator) Validate(value interface{}) error {
+func (v EnumValidator) Validate(value any) error {
 	if value == nil {
 		return nil
 	}
@@ -337,10 +337,10 @@ func (v EnumValidator) Validate(value interface{}) error {
 
 // CustomValidator allows custom validation logic
 type CustomValidator struct {
-	ValidateFunc func(value interface{}) error
+	ValidateFunc func(value any) error
 }
 
-func (v CustomValidator) Validate(value interface{}) error {
+func (v CustomValidator) Validate(value any) error {
 	return v.ValidateFunc(value)
 }
 
@@ -392,17 +392,17 @@ func Pattern(pattern string) (Validator, error) {
 }
 
 // Enum creates an enum validator
-func Enum(values ...interface{}) Validator {
+func Enum(values ...any) Validator {
 	return EnumValidator{Values: values}
 }
 
 // Custom creates a custom validator
-func Custom(fn func(value interface{}) error) Validator {
+func Custom(fn func(value any) error) Validator {
 	return CustomValidator{ValidateFunc: fn}
 }
 
 // ValidateStruct validates a struct against BCL data using struct tags
-func ValidateStruct(v interface{}, data map[string]interface{}) error {
+func ValidateStruct(v any, data map[string]any) error {
 	val := reflect.ValueOf(v)
 	if val.Kind() == reflect.Ptr {
 		val = val.Elem()
@@ -478,7 +478,7 @@ func ValidateStruct(v interface{}, data map[string]interface{}) error {
 }
 
 // isTypeCompatible checks if a value is compatible with a reflect.Type
-func isTypeCompatible(value interface{}, typ reflect.Type) bool {
+func isTypeCompatible(value any, typ reflect.Type) bool {
 	if value == nil {
 		return true // nil is compatible with any pointer type
 	}

@@ -74,7 +74,7 @@ func TestFunctionRegistry(t *testing.T) {
 	ClearFunctions()
 
 	// Test registration
-	err := RegisterFunction("testFunc", func(args ...interface{}) (interface{}, error) {
+	err := RegisterFunction("testFunc", func(args ...any) (any, error) {
 		return "test", nil
 	})
 	if err != nil {
@@ -105,7 +105,7 @@ func TestFunctionRegistry(t *testing.T) {
 	}
 
 	// Test duplicate registration
-	err = RegisterFunction("testFunc", func(args ...interface{}) (interface{}, error) {
+	err = RegisterFunction("testFunc", func(args ...any) (any, error) {
 		return "duplicate", nil
 	})
 	if err == nil {
@@ -153,7 +153,7 @@ users = [
 `
 
 	// Parse BCL
-	var config map[string]interface{}
+	var config map[string]any
 	_, err := Unmarshal([]byte(bclData), &config)
 	if err != nil {
 		t.Fatalf("Failed to unmarshal BCL: %v", err)
@@ -166,7 +166,7 @@ users = [
 	}
 
 	// Verify JSON is valid
-	var jsonConfig map[string]interface{}
+	var jsonConfig map[string]any
 	err = json.Unmarshal(jsonData, &jsonConfig)
 	if err != nil {
 		t.Fatalf("Invalid JSON output: %v", err)
@@ -188,7 +188,7 @@ users = [
 	}
 
 	// Test JSON to BCL conversion
-	var bclFromJSON map[string]interface{}
+	var bclFromJSON map[string]any
 	err = UnmarshalJSON(jsonData, &bclFromJSON)
 	if err != nil {
 		t.Fatalf("Failed to unmarshal JSON to BCL: %v", err)
@@ -286,12 +286,12 @@ func TestValidation(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		data    map[string]interface{}
+		data    map[string]any
 		wantErr bool
 	}{
 		{
 			name: "Valid data",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"name":  "TestApp",
 				"port":  8080,
 				"debug": true,
@@ -301,7 +301,7 @@ func TestValidation(t *testing.T) {
 		},
 		{
 			name: "Missing required field",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"port":  8080,
 				"debug": true,
 				"email": "test@example.com",
@@ -310,7 +310,7 @@ func TestValidation(t *testing.T) {
 		},
 		{
 			name: "Invalid type",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"name":  "TestApp",
 				"port":  "8080", // Should be int
 				"debug": true,
@@ -320,7 +320,7 @@ func TestValidation(t *testing.T) {
 		},
 		{
 			name: "Out of range",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"name":  "TestApp",
 				"port":  70000, // Out of range
 				"debug": true,
@@ -330,7 +330,7 @@ func TestValidation(t *testing.T) {
 		},
 		{
 			name: "Invalid email",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"name":  "TestApp",
 				"port":  8080,
 				"debug": true,
@@ -353,7 +353,7 @@ func TestValidation(t *testing.T) {
 // Test custom validators
 func TestCustomValidator(t *testing.T) {
 	// Create a custom validator
-	evenNumberValidator := Custom(func(value interface{}) error {
+	evenNumberValidator := Custom(func(value any) error {
 		num, ok := value.(int)
 		if !ok {
 			if f, ok := value.(float64); ok {
@@ -372,7 +372,7 @@ func TestCustomValidator(t *testing.T) {
 	schema.AddRule("even_number", evenNumberValidator)
 
 	// Test valid even number
-	err := schema.Validate(map[string]interface{}{
+	err := schema.Validate(map[string]any{
 		"even_number": 4,
 	})
 	if err != nil {
@@ -380,7 +380,7 @@ func TestCustomValidator(t *testing.T) {
 	}
 
 	// Test invalid odd number
-	err = schema.Validate(map[string]interface{}{
+	err = schema.Validate(map[string]any{
 		"even_number": 5,
 	})
 	if err == nil {
@@ -406,7 +406,7 @@ func TestEnumValidator(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.env, func(t *testing.T) {
-			err := schema.Validate(map[string]interface{}{
+			err := schema.Validate(map[string]any{
 				"environment": tt.env,
 			})
 			if (err != nil) != tt.wantErr {
@@ -624,7 +624,7 @@ func TestBatchEvaluation(t *testing.T) {
 		t.Fatalf("Batch evaluation failed: %v", err)
 	}
 
-	expected := []interface{}{
+	expected := []any{
 		30.0,    // a + b
 		600.0,   // b * c
 		20.0,    // c - a
@@ -634,7 +634,7 @@ func TestBatchEvaluation(t *testing.T) {
 
 	for i, result := range results {
 		// Handle function results that return tuples
-		if tuple, ok := result.([]interface{}); ok && len(tuple) == 2 {
+		if tuple, ok := result.([]any); ok && len(tuple) == 2 {
 			if tuple[1] == nil {
 				result = tuple[0]
 			}
@@ -650,25 +650,25 @@ func TestBatchEvaluation(t *testing.T) {
 func TestJSONCompatibility(t *testing.T) {
 	tests := []struct {
 		name    string
-		data    interface{}
+		data    any
 		wantErr bool
 	}{
 		{
 			name: "Compatible types",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"string": "value",
 				"int":    42,
 				"float":  3.14,
 				"bool":   true,
 				"null":   nil,
-				"array":  []interface{}{1, 2, 3},
-				"object": map[string]interface{}{"key": "value"},
+				"array":  []any{1, 2, 3},
+				"object": map[string]any{"key": "value"},
 			},
 			wantErr: false,
 		},
 		{
 			name: "Incompatible type",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"time": time.Now(), // time.Time is not JSON compatible
 			},
 			wantErr: true,
@@ -748,7 +748,7 @@ IF (environment == "production") {
 `
 
 	// Parse configuration
-	var result map[string]interface{}
+	var result map[string]any
 	_, err := Unmarshal([]byte(config), &result)
 	if err != nil {
 		t.Fatalf("Failed to parse configuration: %v", err)
@@ -775,27 +775,27 @@ IF (environment == "production") {
 	serverData := result["server"]
 	t.Logf("Server data type: %T, value: %+v", serverData, serverData)
 
-	var api map[string]interface{}
+	var api map[string]any
 
 	switch v := serverData.(type) {
-	case []interface{}:
+	case []any:
 		t.Logf("Server data is a slice with %d items", len(v))
 		// If it's a slice, find the "api" server
 		for i, item := range v {
 			t.Logf("Item %d: %T = %+v", i, item, item)
-			if m, ok := item.(map[string]interface{}); ok {
+			if m, ok := item.(map[string]any); ok {
 				if m["name"] == "api" {
 					api = m
 				}
 			}
 		}
-	case map[string]interface{}:
+	case map[string]any:
 		t.Logf("Server data is a map with keys: %v", getKeys(v))
 		// If it's a map, get the "api" entry
 		if apiData, ok := v["api"]; ok {
 			t.Logf("Found api data: %T = %+v", apiData, apiData)
-			if m, ok := apiData.(map[string]interface{}); ok {
-				if props, ok := m["props"].(map[string]interface{}); ok {
+			if m, ok := apiData.(map[string]any); ok {
+				if props, ok := m["props"].(map[string]any); ok {
 					api = props
 				} else {
 					api = m
@@ -836,7 +836,7 @@ IF (environment == "production") {
 		t.Fatalf("Failed to convert to JSON: %v", err)
 	}
 
-	var jsonResult map[string]interface{}
+	var jsonResult map[string]any
 	err = json.Unmarshal(jsonData, &jsonResult)
 	if err != nil {
 		t.Fatalf("Invalid JSON output: %v", err)
@@ -856,7 +856,7 @@ IF (environment == "production") {
 }
 
 // Helper function to get map keys
-func getKeys(m map[string]interface{}) []string {
+func getKeys(m map[string]any) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -881,7 +881,7 @@ func TestPerformanceImprovements(t *testing.T) {
 
 	// Parse large configuration
 	start := time.Now()
-	var result map[string]interface{}
+	var result map[string]any
 	_, err := Unmarshal([]byte(largeBCL.String()), &result)
 	if err != nil {
 		t.Fatalf("Failed to parse large configuration: %v", err)
@@ -894,7 +894,7 @@ func TestPerformanceImprovements(t *testing.T) {
 	}
 
 	// Verify data integrity
-	config, ok := result["config"].(map[string]interface{})
+	config, ok := result["config"].(map[string]any)
 	if !ok {
 		t.Fatal("Config not found")
 	}

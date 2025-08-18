@@ -171,12 +171,12 @@ func NewBatchEvaluator(workers int) *BatchEvaluator {
 // EvalResult represents the result of evaluating an expression
 type EvalResult struct {
 	Index int
-	Value interface{}
+	Value any
 	Error error
 }
 
 // EvaluateExpressions evaluates multiple expressions concurrently
-func (be *BatchEvaluator) EvaluateExpressions(ctx context.Context, expressions []string, env *Environment) ([]interface{}, error) {
+func (be *BatchEvaluator) EvaluateExpressions(ctx context.Context, expressions []string, env *Environment) ([]any, error) {
 	if len(expressions) == 0 {
 		return nil, nil
 	}
@@ -216,7 +216,7 @@ func (be *BatchEvaluator) EvaluateExpressions(ctx context.Context, expressions [
 	}()
 
 	// Collect results
-	results := make([]interface{}, len(expressions))
+	results := make([]any, len(expressions))
 	var errors MultiError
 
 	for result := range resultChan {

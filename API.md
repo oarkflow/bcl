@@ -42,7 +42,7 @@ func main() {
     }
     `
 
-    var result map[string]interface{}
+    var result map[string]any
     _, err := bcl.Unmarshal([]byte(config), &result)
     if err != nil {
         log.Fatal(err)
@@ -61,7 +61,7 @@ BCL can seamlessly convert to and from JSON:
 jsonData, err := bcl.MarshalJSON(result)
 
 // Convert JSON to BCL
-var config map[string]interface{}
+var config map[string]any
 err = bcl.UnmarshalJSON(jsonData, &config)
 ```
 
@@ -69,16 +69,16 @@ err = bcl.UnmarshalJSON(jsonData, &config)
 
 ### Parsing Functions
 
-#### `Unmarshal(data []byte, v interface{}) ([]Node, error)`
+#### `Unmarshal(data []byte, v any) ([]Node, error)`
 
 Parses BCL data and unmarshals it into the provided interface.
 
 ```go
-var config map[string]interface{}
+var config map[string]any
 nodes, err := bcl.Unmarshal([]byte(bclData), &config)
 ```
 
-#### `Marshal(v interface{}) (string, error)`
+#### `Marshal(v any) (string, error)`
 
 Converts a Go value to BCL format.
 
@@ -97,7 +97,7 @@ nodes, err := parser.Parse()
 
 ### JSON Functions
 
-#### `MarshalJSON(v interface{}) ([]byte, error)`
+#### `MarshalJSON(v any) ([]byte, error)`
 
 Converts BCL data to JSON format, removing BCL-specific metadata.
 
@@ -105,7 +105,7 @@ Converts BCL data to JSON format, removing BCL-specific metadata.
 jsonData, err := bcl.MarshalJSON(config)
 ```
 
-#### `MarshalJSONIndent(v interface{}, prefix, indent string) ([]byte, error)`
+#### `MarshalJSONIndent(v any, prefix, indent string) ([]byte, error)`
 
 Converts BCL data to indented JSON format.
 
@@ -113,12 +113,12 @@ Converts BCL data to indented JSON format.
 jsonData, err := bcl.MarshalJSONIndent(config, "", "  ")
 ```
 
-#### `UnmarshalJSON(data []byte, v interface{}) error`
+#### `UnmarshalJSON(data []byte, v any) error`
 
 Parses JSON data into BCL structures.
 
 ```go
-var config map[string]interface{}
+var config map[string]any
 err := bcl.UnmarshalJSON(jsonData, &config)
 ```
 
@@ -140,7 +140,7 @@ env.vars["myVar"] = "value"
 Registers a custom function for use in BCL expressions.
 
 ```go
-err := bcl.RegisterFunction("double", func(args ...interface{}) (interface{}, error) {
+err := bcl.RegisterFunction("double", func(args ...any) (any, error) {
     if len(args) != 1 {
         return nil, errors.New("double requires exactly one argument")
     }
@@ -209,7 +209,7 @@ if err != nil {
 - `MinLength(int)` - Minimum string/array length
 - `MaxLength(int)` - Maximum string/array length
 - `Pattern(string)` - Regex pattern matching
-- `Enum(...interface{})` - Value must be one of specified values
+- `Enum(...any)` - Value must be one of specified values
 - `Custom(func)` - Custom validation function
 
 ### Error Handling
@@ -484,7 +484,7 @@ server {
 
 3. **Use Functions for Reusability**: Register custom functions
    ```go
-   bcl.RegisterFunction("env_or_default", func(args ...interface{}) (interface{}, error) {
+   bcl.RegisterFunction("env_or_default", func(args ...any) (any, error) {
        // Implementation
    })
    ```
@@ -587,7 +587,7 @@ type Config struct {
 
 func main() {
     // Register custom functions
-    bcl.RegisterFunction("is_prod", func(args ...interface{}) (interface{}, error) {
+    bcl.RegisterFunction("is_prod", func(args ...any) (any, error) {
         if len(args) != 1 {
             return false, nil
         }

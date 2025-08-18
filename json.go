@@ -8,20 +8,20 @@ import (
 )
 
 // MarshalJSON converts BCL data to JSON format
-func MarshalJSON(v interface{}) ([]byte, error) {
+func MarshalJSON(v any) ([]byte, error) {
 	// Clean up BCL-specific metadata before JSON marshaling
 	cleaned := cleanForJSON(v)
 	return json.Marshal(cleaned)
 }
 
 // MarshalJSONIndent converts BCL data to indented JSON format
-func MarshalJSONIndent(v interface{}, prefix, indent string) ([]byte, error) {
+func MarshalJSONIndent(v any, prefix, indent string) ([]byte, error) {
 	cleaned := cleanForJSON(v)
 	return json.MarshalIndent(cleaned, prefix, indent)
 }
 
 // WriteJSON writes BCL data as JSON to a writer
-func WriteJSON(w io.Writer, v interface{}) error {
+func WriteJSON(w io.Writer, v any) error {
 	cleaned := cleanForJSON(v)
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
@@ -29,10 +29,10 @@ func WriteJSON(w io.Writer, v interface{}) error {
 }
 
 // cleanForJSON removes BCL-specific metadata from data structures
-func cleanForJSON(v interface{}) interface{} {
+func cleanForJSON(v any) any {
 	switch val := v.(type) {
-	case map[string]interface{}:
-		cleaned := make(map[string]interface{})
+	case map[string]any:
+		cleaned := make(map[string]any)
 		for k, v := range val {
 			// Skip BCL metadata fields
 			if strings.HasPrefix(k, "__") {
@@ -40,7 +40,7 @@ func cleanForJSON(v interface{}) interface{} {
 			}
 			// Special handling for props field
 			if k == "props" {
-				if props, ok := v.(map[string]interface{}); ok {
+				if props, ok := v.(map[string]any); ok {
 					// Flatten props into the parent object
 					for pk, pv := range props {
 						if !strings.HasPrefix(pk, "__") {
@@ -54,8 +54,8 @@ func cleanForJSON(v interface{}) interface{} {
 		}
 		return cleaned
 
-	case []interface{}:
-		cleaned := make([]interface{}, 0, len(val))
+	case []any:
+		cleaned := make([]any, 0, len(val))
 		for _, item := range val {
 			cleaned = append(cleaned, cleanForJSON(item))
 		}
@@ -70,9 +70,9 @@ func cleanForJSON(v interface{}) interface{} {
 }
 
 // UnmarshalJSON parses JSON data into BCL structures
-func UnmarshalJSON(data []byte, v interface{}) error {
+func UnmarshalJSON(data []byte, v any) error {
 	// First unmarshal to intermediate structure
-	var intermediate interface{}
+	var intermediate any
 	if err := json.Unmarshal(data, &intermediate); err != nil {
 		return err
 	}
@@ -81,21 +81,21 @@ func UnmarshalJSON(data []byte, v interface{}) error {
 	bclData := jsonToBCL(intermediate)
 
 	// Use reflection to assign to target
-	return convertMap(bclData.(map[string]interface{}), v)
+	return convertMap(bclData.(map[string]any), v)
 }
 
 // jsonToBCL converts JSON structures to BCL format
-func jsonToBCL(v interface{}) interface{} {
+func jsonToBCL(v any) any {
 	switch val := v.(type) {
-	case map[string]interface{}:
-		result := make(map[string]interface{})
+	case map[string]any:
+		result := make(map[string]any)
 		for k, v := range val {
 			result[k] = jsonToBCL(v)
 		}
 		return result
 
-	case []interface{}:
-		result := make([]interface{}, len(val))
+	case []any:
+		result := make([]any, len(val))
 		for i, item := range val {
 			result[i] = jsonToBCL(item)
 		}
@@ -114,22 +114,22 @@ func jsonToBCL(v interface{}) interface{} {
 }
 
 // JSONCompatible checks if a BCL structure can be safely converted to JSON
-func JSONCompatible(v interface{}) error {
+func JSONCompatible(v any) error {
 	// For now, we'll do a simple type check without circular reference detection
 	// as maps and slices cannot be used as map keys in Go
 	return checkJSONCompatible(v)
 }
 
-func checkJSONCompatible(v interface{}) error {
+func checkJSONCompatible(v any) error {
 	switch val := v.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		for k, v := range val {
 			if err := checkJSONCompatible(v); err != nil {
 				return fmt.Errorf("key %s: %w", k, err)
 			}
 		}
 
-	case []interface{}:
+	case []any:
 		for i, item := range val {
 			if err := checkJSONCompatible(item); err != nil {
 				return fmt.Errorf("index %d: %w", i, err)

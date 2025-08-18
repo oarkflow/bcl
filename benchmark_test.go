@@ -194,7 +194,7 @@ func BenchmarkConcurrentParsing(b *testing.B) {
 
 // Benchmark JSON conversion
 func BenchmarkJSONConversion(b *testing.B) {
-	var config map[string]interface{}
+	var config map[string]any
 	_, err := Unmarshal([]byte(mediumBCL), &config)
 	if err != nil {
 		b.Fatal(err)
@@ -226,7 +226,7 @@ func BenchmarkFunctionRegistry(b *testing.B) {
 	// Register some test functions
 	for i := 0; i < 100; i++ {
 		name := fmt.Sprintf("testFunc%d", i)
-		RegisterFunction(name, func(args ...interface{}) (interface{}, error) {
+		RegisterFunction(name, func(args ...any) (any, error) {
 			return nil, nil
 		})
 	}
@@ -242,7 +242,7 @@ func BenchmarkFunctionRegistry(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			name := fmt.Sprintf("benchFunc%d", i)
-			RegisterFunction(name, func(args ...interface{}) (interface{}, error) {
+			RegisterFunction(name, func(args ...any) (any, error) {
 				return nil, nil
 			})
 		}
@@ -375,7 +375,7 @@ func BenchmarkBCLvsJSON(b *testing.B) {
 	b.Run("BCL/Unmarshal", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			var result map[string]interface{}
+			var result map[string]any
 			_, err := Unmarshal(bclData, &result)
 			if err != nil {
 				b.Fatal(err)
@@ -386,7 +386,7 @@ func BenchmarkBCLvsJSON(b *testing.B) {
 	b.Run("JSON/Unmarshal", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			var result map[string]interface{}
+			var result map[string]any
 			err := json.Unmarshal(jsonData, &result)
 			if err != nil {
 				b.Fatal(err)
@@ -597,7 +597,7 @@ services = [
 	b.Run("FullParse", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			var config map[string]interface{}
+			var config map[string]any
 			_, err := Unmarshal([]byte(realWorldBCL), &config)
 			if err != nil {
 				b.Fatal(err)
@@ -606,7 +606,7 @@ services = [
 	})
 
 	b.Run("ToJSON", func(b *testing.B) {
-		var config map[string]interface{}
+		var config map[string]any
 		_, err := Unmarshal([]byte(realWorldBCL), &config)
 		if err != nil {
 			b.Fatal(err)
