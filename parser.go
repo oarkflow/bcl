@@ -780,6 +780,11 @@ func (p *Parser) parsePrimary() (Node, error) {
 		))
 	}
 	if p.curr.typ == OPERATOR && p.curr.value == "<<" {
+		// Check if this is a SQL block
+		peekTok := p.peekToken()
+		if peekTok.typ == IDENT && strings.ToUpper(peekTok.value) == "SQL" {
+			return p.parseSQL()
+		}
 		return p.parseHeredoc()
 	}
 	switch p.curr.typ {
@@ -940,6 +945,53 @@ func (p *Parser) parseHeredoc() (Node, error) {
 	p.scanner = s
 	p.nextToken()
 	return &PrimitiveNode{Value: content}, nil
+}
+
+func (p *Parser) parseSQL() (Node, error) {
+	sqlStartOffset := p.offset
+	p.nextToken()
+	delimTok, err := p.expect(IDENT)
+	if err != nil {
+		return nil, err
+	}
+	delimiter := delimTok.value
+	newlineIdx := strings.IndexByte(p.input[sqlStartOffset:], '\n')
+	if newlineIdx == -1 {
+		return nil, p.parseError(fmt.Sprintf("expected newline after SQL marker, got marker: %q", p.input[sqlStartOffset:]))
+	}
+	contentStart := sqlStartOffset + newlineIdx + 1
+	pos := contentStart
+	var delimPos int = -1
+	for {
+		nextNewline := strings.IndexByte(p.input[pos:], '\n')
+		if nextNewline == -1 {
+			break
+		}
+		line := p.input[pos : pos+nextNewline]
+		if strings.TrimSpace(line) == delimiter {
+			delimPos = pos
+			break
+		}
+		pos += nextNewline + 1
+	}
+	if delimPos == -1 {
+		return nil, p.parseError(fmt.Sprintf("SQL delimiter %s not found", delimiter))
+	}
+	content := p.input[contentStart:delimPos]
+	newOffset := delimPos + len(delimiter)
+	if newOffset < len(p.input) && p.input[newOffset] == '\n' {
+		newOffset++
+	}
+	p.input = p.input[newOffset:]
+	p.offset = 0
+	var s scanner.Scanner
+	s.Init(strings.NewReader(p.input))
+	s.Filename = p.scanner.Filename
+	s.Whitespace = 1<<' ' | 1<<'\t' | 1<<'\r' | 1<<'\n'
+	s.Mode |= scanner.ScanComments
+	p.scanner = s
+	p.nextToken()
+	return &SQLNode{SQL: content}, nil
 }
 
 func (p *Parser) parseMap() (Node, error) {

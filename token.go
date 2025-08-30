@@ -24,6 +24,7 @@ const (
 	DOT
 	COALESCE // NEW: Support for the null coalescing operator (??)
 	COMMENT
+	SQL // NEW: Support for SQL blocks
 )
 
 type tokenInfo struct {

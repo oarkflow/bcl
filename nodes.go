@@ -1708,3 +1708,21 @@ func (p *PipelineNode) ToBCL(indent string) string {
 }
 
 func (p *PipelineNode) NodeType() string { return "Pipeline" }
+
+// SQLNode represents a SQL block
+type SQLNode struct {
+	SQL string
+}
+
+func (s *SQLNode) Eval(env *Environment) (any, error) {
+	// For now, just return the SQL string
+	// In a real implementation, this might execute the SQL or return it for later execution
+	return s.SQL, nil
+}
+
+func (s *SQLNode) ToBCL(indent string) string {
+	// Format SQL block similar to heredoc but with SQL marker
+	return fmt.Sprintf("%s<<SQL\n%s\nSQL", indent, s.SQL)
+}
+
+func (s *SQLNode) NodeType() string { return "SQL" }

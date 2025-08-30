@@ -122,3 +122,64 @@ func BenchmarkJSONMarshalUnmarshal(b *testing.B) {
 		}
 	}
 }
+
+// TestSQLBlocks tests SQL block parsing functionality
+func TestSQLBlocks(t *testing.T) {
+	sqlBCL := `Migration "test_sql" {
+  Up {
+    create_table = <<SQL
+CREATE TABLE users (
+  id INTEGER PRIMARY KEY,
+  name VARCHAR(255) NOT NULL
+);
+SQL
+
+    insert_data = <<SQL
+INSERT INTO users (name) VALUES ('John'), ('Jane');
+SQL
+  }
+}`
+
+	var result map[string]any
+	_, err := Unmarshal([]byte(sqlBCL), &result)
+	if err != nil {
+		t.Fatalf("Failed to parse SQL blocks: %v", err)
+	}
+
+	// Verify the structure
+	migration, ok := result["Migration"].([]any)
+	if !ok || len(migration) == 0 {
+		t.Fatal("Migration not found in result")
+	}
+
+	migrationMap, ok := migration[0].(map[string]any)
+	if !ok {
+		t.Fatal("Migration structure incorrect")
+	}
+
+	up, ok := migrationMap["Up"].(map[string]any)
+	if !ok {
+		t.Fatal("Up block not found")
+	}
+
+	// Check SQL content
+	createTable, ok := up["create_table"].(string)
+	if !ok {
+		t.Fatal("create_table SQL not found")
+	}
+
+	expectedCreate := "CREATE TABLE users (\n  id INTEGER PRIMARY KEY,\n  name VARCHAR(255) NOT NULL\n);\n"
+	if createTable != expectedCreate {
+		t.Errorf("Expected: %q\nGot: %q", expectedCreate, createTable)
+	}
+
+	insertData, ok := up["insert_data"].(string)
+	if !ok {
+		t.Fatal("insert_data SQL not found")
+	}
+
+	expectedInsert := "INSERT INTO users (name) VALUES ('John'), ('Jane');\n"
+	if insertData != expectedInsert {
+		t.Errorf("Expected: %q\nGot: %q", expectedInsert, insertData)
+	}
+}
