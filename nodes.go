@@ -908,7 +908,6 @@ func (a *ArithmeticNode) Eval(env *Environment) (any, error) {
 			return nil, fmt.Errorf("left operand of || is not bool")
 		}
 		rb, ok := rightVal.(bool)
-		fmt.Println(rightVal)
 		if !ok {
 			return nil, fmt.Errorf("right operand of || is not bool")
 		}
@@ -1026,7 +1025,8 @@ func (a *ArithmeticNode) Eval(env *Environment) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if leftVal != nil {
+		// Robust null/undefined check
+		if leftVal != nil && leftVal != (Undefined{}) {
 			return leftVal, nil
 		}
 		return a.Right.Eval(env)
@@ -1267,7 +1267,7 @@ func (t *TernaryNode) Eval(env *Environment) (any, error) {
 			}
 		}
 	}
-	fmt.Println(reflect.TypeOf(condVal))
+	// Remove debug print
 	return nil, fmt.Errorf("ternary condition did not evaluate to bool")
 }
 

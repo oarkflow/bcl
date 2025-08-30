@@ -15,7 +15,7 @@ tunnel "myservice-prod1" {
     enabled = true
     statuses = [0, 1]
     database "db1" {
-        host = "lcdocalhost"
+        host = "localhost"
         port = 3306
         username = "root"
         password = "root"

@@ -322,14 +322,14 @@ func subtract(params ...any) (any, error) {
 	if len(params) < 2 {
 		return nil, errors.New("subtract: requires at least two numeric parameters")
 	}
-	first, ok := toFloat(params[0])
-	if ok != nil {
+	first, err := toFloat(params[0])
+	if err != nil {
 		return nil, errors.New("subtract: parameters must be numbers")
 	}
 	result := first
 	for _, param := range params[1:] {
-		num, ok := toFloat(param)
-		if ok != nil {
+		num, err := toFloat(param)
+		if err != nil {
 			return nil, errors.New("subtract: parameters must be numbers")
 		}
 		result -= num
@@ -344,8 +344,8 @@ func multiply(params ...any) (any, error) {
 	}
 	result := 1.0
 	for _, param := range params {
-		num, ok := toFloat(param)
-		if ok != nil {
+		num, err := toFloat(param)
+		if err != nil {
 			return nil, errors.New("multiply: parameters must be numbers")
 		}
 		result *= num
@@ -359,12 +359,12 @@ func divide(params ...any) (any, error) {
 	if len(params) < 2 {
 		return nil, errors.New("divide: requires exactly two numeric parameters")
 	}
-	numerator, ok := toFloat(params[0])
-	if ok != nil {
+	numerator, err := toFloat(params[0])
+	if err != nil {
 		return nil, errors.New("divide: parameters must be numbers")
 	}
-	denom, ok := toFloat(params[1])
-	if ok != nil {
+	denom, err := toFloat(params[1])
+	if err != nil {
 		return nil, errors.New("divide: parameters must be numbers")
 	}
 	if denom == 0 {

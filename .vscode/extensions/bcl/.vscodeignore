@@ -1,4 +1,28 @@
+# Build output
+out/**
+!out/*.js
+!out/*/*.js
+
+# Node modules
+node_modules/**
+
+# Source files
+src/**
+
+# TypeScript config
+tsconfig.json
+
+# VS Code workspace files
 .vscode/**
-.vscode-test/**
+
+# Git files
+.git/**
 .gitignore
-vsc-extension-quickstart.md
+
+# Testing files
+*.test.*
+*.spec.*
+
+# Documentation
+README.md
+CHANGELOG.md
