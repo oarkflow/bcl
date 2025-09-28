@@ -68,7 +68,8 @@ connection.onInitialize((params) => {
             },
             hoverProvider: true,
             definitionProvider: true,
-            referencesProvider: true
+            referencesProvider: true,
+            documentFormattingProvider: true
         }
     };
     if (hasWorkspaceFolderCapability) {
@@ -715,6 +716,50 @@ connection.onReferences((params) => {
         }
     }
     return references;
+});
+// Handle document formatting
+connection.onDocumentFormatting((params) => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) {
+        return [];
+    }
+    const text = document.getText();
+    const lines = text.split('\n');
+    const formattedLines = [];
+    let indentLevel = 0;
+    const indentString = '\t'; // Use tab for indentation
+    for (let i = 0; i < lines.length; i++) {
+        let line = lines[i].trim();
+        if (line === '') {
+            formattedLines.push('');
+            continue;
+        }
+        // Decrease indent for lines starting with closing braces
+        if (line.startsWith('}') || line.startsWith(']') || line.startsWith(')')) {
+            indentLevel = Math.max(0, indentLevel - 1);
+        }
+        // Add indentation
+        const indentedLine = indentString.repeat(indentLevel) + line;
+        formattedLines.push(indentedLine);
+        // Increase indent after opening braces or brackets
+        if (line.endsWith('{') || line.endsWith('[') || line.endsWith('(')) {
+            indentLevel++;
+        }
+        // Handle special cases for BCL
+        // For blocks like: tunnel "name" {
+        // Increase indent after the opening brace
+        if (line.includes('{') && !line.endsWith('{')) {
+            // If { is in the middle, like tunnel "name" {
+            indentLevel++;
+        }
+        // For assignments or other statements, no change
+    }
+    const formattedText = formattedLines.join('\n');
+    // Return the full text edit
+    return [{
+            range: node_1.Range.create(node_1.Position.create(0, 0), document.positionAt(text.length)),
+            newText: formattedText
+        }];
 });
 // Make the text document manager listen on the connection
 // for open, change and close text document events

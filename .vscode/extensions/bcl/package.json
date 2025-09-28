@@ -52,7 +52,15 @@
                     "description": "Traces the communication between VS Code and the language server."
                 }
             }
-        }
+        },
+        "keybindings": [
+            {
+                "command": "editor.action.formatDocument",
+                "key": "ctrl+shift+f",
+                "when": "editorLangId == bcl",
+                "mac": "cmd+shift+f"
+            }
+        ]
     },
     "main": "./out/extension.js",
     "scripts": {
