@@ -1,0 +1,43 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+tenant "org1" {
+  name "Engineering Org"
+
+  attrs {
+    region "NP"
+    tier "enterprise"
+  }
+}
+
+namespace authz {
+  role "admin" {
+    permissions {
+      document:*
+      route:*
+    }
+  }
+
+  policy "allow-admin" {
+    tenant "org1"
+    effect allow
+    priority 100
+
+    actions {
+      read
+      write
+    }
+
+    resources {
+      document:*
+    }
+
+    meta {
+      owner "security-team"
+      description "Allow admin document access"
+      tags ["security", "rbac"]
+    }
+  }
+}

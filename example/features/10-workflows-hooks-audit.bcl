@@ -1,0 +1,78 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+pipeline "feature-rollout" {
+  entrypoint "plan"
+  version "2026.05"
+
+  step "plan" {
+    kind task
+    service "planning"
+
+    then {
+      emit "feature.rollout.planned"
+      log "Feature rollout planned"
+    }
+  }
+
+  step "risk-check" {
+    kind decision
+
+    when {
+      any {
+        feature.risk_score > 80
+        feature.owner empty
+      }
+    }
+  }
+
+  step "approve" {
+    kind action
+
+    then {
+      emit "feature.rollout.approved"
+      action "enable_feature"
+    }
+  }
+
+  step "manual-review" {
+    kind terminal
+    reason_code "MANUAL_REVIEW_REQUIRED"
+
+    then {
+      emit "feature.rollout.review"
+      action "notify_owner"
+    }
+  }
+
+  connection "plan-to-risk" {
+    from step.plan
+    to step.risk-check
+    on success
+  }
+
+  connection "risk-to-review" {
+    from step.risk-check
+    to step.manual-review
+    on matched
+  }
+
+  connection "risk-to-approve" {
+    from step.risk-check
+    to step.approve
+    on unmatched
+  }
+
+  audit {
+    level detailed
+
+    fields {
+      subject.id
+      feature.id
+      decision
+      matched_step
+    }
+  }
+}

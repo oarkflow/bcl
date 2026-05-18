@@ -1,0 +1,40 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+const ADMIN_ROLES = ["admin", "superadmin"]
+const READ_ACTIONS = ["read", "list", "view"]
+const API_TIMEOUT = 5s
+
+set "write-actions" {
+  write
+  update
+  delete
+}
+
+service {
+  host env("HOST", "0.0.0.0")
+  port env.int("PORT", 8080)
+  debug env.bool("DEBUG", false)
+  timeout env.duration("TIMEOUT", API_TIMEOUT)
+  max_body env.bytes("MAX_BODY", 2MB)
+  labels env.list("LABELS", ",")
+}
+
+policy "constants-and-sets" {
+  actions {
+    use set("write-actions")
+  }
+
+  when {
+    subject.roles has_any ADMIN_ROLES
+  }
+}
+
+role "team-lead" {
+  inherits {
+    ref role.viewer
+    ref role.editor
+  }
+}

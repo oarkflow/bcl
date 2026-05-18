@@ -1,0 +1,332 @@
+pack "tcpguard-fiber-server-demo" {
+  version "1.0.0"
+  mode enforce
+}
+
+guard "tcpguard-fiber-server" {
+  mode enforce
+  version "2026.05.13"
+  timezone "Asia/Kathmandu"
+
+  authz {
+    file "./tcpguard.authz"
+    strict false
+    timeout 25ms
+    error_policy deny
+  }
+
+  include "./rules/*/*.bcl"
+}
+
+policy_safety {
+  max_detector_timeout 25ms
+  max_lookup_timeout 50ms
+  max_action_timeout 2s
+  max_actions_per_rule 8
+  max_lookups_per_eval 20
+  max_retry_count 2
+  max_webhook_timeout 2s
+  allow_datasource_types ["memory", "redis", "csv", "json", "sql", "http"]
+}
+
+datasource "demo-cache" {
+  type memory
+}
+
+datasource "user-directory" {
+  type csv
+  path "./data/users.csv"
+  key "id"
+  cache_refresh 30s
+}
+
+datasource "tenant-config" {
+  type json
+  path "./data/tenants.json"
+  key "id"
+  cache_refresh 30s
+}
+
+datasource "account-db" {
+  type sql
+  driver sqlite
+  dsn env("ACCOUNT_DB_DSN", ":memory:")
+}
+
+datasource "external-risk-api" {
+  type http
+  url "http://127.0.0.1:18181/_demo/risk-source"
+  method POST
+  timeout 40ms
+  allow_private_url true
+}
+
+lookup "user-directory-lookup" {
+  source "user-directory"
+  mode preload
+  key user.id
+
+  output {
+    map "department" to user.department
+    map "region" to user.assigned_region
+  }
+
+  fallback {
+    policy default
+    value {
+      department "unknown"
+      region "unknown"
+    }
+  }
+}
+
+lookup "tenant-config-lookup" {
+  source "tenant-config"
+  mode preload
+  key tenant.id
+
+  output {
+    map "lockdown" to tenant.lockdown
+    map "region" to tenant.region
+  }
+
+  fallback {
+    policy error_fact
+  }
+}
+
+lookup "account-status" {
+  source "account-db"
+  mode preload
+  query "SELECT status, locked FROM accounts WHERE id = :user_id"
+
+  params {
+    user_id user.id
+  }
+
+  output {
+    map "status" to user.account.status
+    map "locked" to user.account.locked
+  }
+
+  fallback {
+    policy challenge
+    reason "account database unavailable"
+  }
+}
+
+lookup "external-risk" {
+  source "external-risk-api"
+  mode function
+  key user.id
+
+  fallback {
+    policy error_fact
+  }
+}
+
+action "notify_admin" {
+  type event_bus
+  provider memory
+  subject "security.tcpguard.admin"
+  success_codes ["2xx"]
+  retry_on_codes ["429", "5xx"]
+
+  retry {
+    attempts 2
+    backoff linear
+    jitter true
+  }
+
+  idempotency {
+    header "Idempotency-Key"
+    key concat(request.id, "-notify-admin")
+  }
+
+  request {
+    body {
+      request context("request.id", "unknown-request")
+      path context("request.path", "/unknown")
+      user context("user.id", "anonymous")
+      tenant context("tenant.id", "public")
+      severity "{{severity}}"
+      risk "{{risk.score}}"
+      include findings
+      field source "tcpguard-fiber-server"
+    }
+  }
+}
+
+action "notify_soc" {
+  type event_bus
+  provider memory
+  subject "security.tcpguard.soc"
+  success_codes ["2xx"]
+  retry_on_codes ["429", "5xx"]
+
+  retry {
+    attempts 2
+    backoff linear
+    jitter true
+  }
+
+  idempotency {
+    header "Idempotency-Key"
+    key concat(request.id, "-notify-soc")
+  }
+
+  request {
+    body {
+      request context("request.id", "unknown-request")
+      ip context("network.ip")
+      user context("user.id", "anonymous")
+      session session("id", "anonymous-session")
+      severity "{{severity}}"
+      risk "{{risk.score}}"
+      include matched_rules
+      include findings
+      field source "tcpguard-fiber-server"
+    }
+  }
+}
+
+intel "demo-bad-ip-feed" {
+  type file
+  path "./data/bad_ips.txt"
+  refresh 1m
+  match network.ip
+  field network.ip.blacklisted true
+  field network.ip.reputation 95
+}
+
+enricher "demo-user-directory" {
+  type lookup
+  source file "./data/users.csv"
+  key user.id
+  map "department" to user.department
+  map "region" to user.assigned_region
+}
+
+detector "debug-query-detector" {
+  type dsl
+
+  finding "debug_query_probe" {
+    risk 55
+    message "debug or probe query parameter was used"
+
+    when {
+      any {
+        request.query.debug equals "true"
+        request.query.probe equals "1"
+      }
+    }
+  }
+}
+
+detector "abuse" {
+  type abuse
+  window 10m
+  auth_ip_failure_threshold 3
+  auth_user_failure_threshold 3
+  password_spray_user_threshold 3
+  api_key_ip_threshold 2
+  api_key_user_threshold 2
+  scan_path_threshold 4
+  export_threshold 2
+  function_invoke_threshold 3
+  user_agent_rotation_threshold 3
+  tenant_user_threshold 4
+  account_enumeration_threshold 3
+  large_body_threshold 1024
+  payment_user_amount_threshold 200000
+  payment_tenant_amount_threshold 500000
+  profile_risk_threshold 70
+}
+
+baseline "user-login-hour" {
+  entity user.id
+  observe request.received
+  window 24h
+  min_samples 3
+
+  fields {
+    hour runtime.timestamp.hour
+  }
+}
+
+threat_model "stride-demo" {
+  category spoofing {
+    findings ["invalid_signature", "nonce_reused", "token_reuse"]
+  }
+
+  category tampering {
+    findings ["invalid_signature", "body_hash_mismatch"]
+  }
+
+  category denial_of_service {
+    findings ["rate_limit_abuse", "user_rate_limit_abuse", "tenant_rate_limit_abuse"]
+  }
+
+  category information_disclosure {
+    findings ["sensitive_export", "debug_query_probe"]
+  }
+
+  category elevation_of_privilege {
+    findings ["after_hours_admin_access", "admin_department_mismatch"]
+  }
+}
+
+threat_model "abuse-default" {
+  category account_takeover {
+    findings ["account_takeover_risk", "session_country_changed", "session_user_agent_changed", "new_device_login"]
+  }
+
+  category bot_abuse {
+    findings ["credential_stuffing", "password_spray", "account_enumeration", "endpoint_scanning", "suspicious_user_agent"]
+  }
+
+  category api_abuse {
+    findings ["api_key_ip_spread", "api_key_user_spread", "user_agent_rotation", "tenant_user_fanout"]
+  }
+
+  category application_abuse {
+    findings ["path_traversal_probe", "injection_probe", "xss_probe", "ssrf_probe"]
+  }
+
+  category function_abuse {
+    findings ["function_invocation_velocity", "function_error_abuse"]
+  }
+
+  category replay {
+    findings ["nonce_reused", "timestamp_skew", "invalid_signature"]
+  }
+
+  category data_exfiltration {
+    findings ["export_velocity", "large_export_body", "sensitive_export", "debug_query_probe"]
+  }
+
+  category payment_fraud {
+    findings ["payment_velocity", "tenant_payment_velocity", "high_value_action"]
+  }
+
+  category authorization_abuse {
+    findings ["destructive_admin_abuse", "destructive_admin_action", "after_hours_admin_access", "admin_department_mismatch", "sensitive_endpoint_access"]
+  }
+
+  category denial_of_service {
+    findings ["rate_limit_abuse", "user_rate_limit_abuse", "tenant_rate_limit_abuse", "endpoint_rate_limit_abuse"]
+  }
+}
+
+trigger "business.high_value_payment" {
+  source request.received
+
+  when {
+    all {
+      business.action equals "payment.approve"
+      business.amount greater_than 1000000
+    }
+  }
+
+  emit "business.high_value_payment"
+}

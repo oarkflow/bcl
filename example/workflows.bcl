@@ -1,0 +1,207 @@
+schema pipeline {
+  required version string
+  required entrypoint string
+  optional deprecated bool
+  optional input map
+}
+
+schema step {
+  required kind string enum [task, decision, action, terminal]
+  optional timeout duration
+  optional retries int
+  optional service string
+  optional reason_code string
+  optional then map
+  optional when expression
+}
+
+schema connection {
+  required from string
+  required to string
+  optional on string
+  optional when expression
+}
+
+pipeline "loan-approval" {
+  version "2026.05"
+  deprecated false
+  entrypoint "collect-documents"
+
+  input {
+    applicant_id string
+    amount float
+    country string
+    requested_product string
+  }
+
+  step "collect-documents" {
+    kind task
+    service "document-service"
+    timeout 24h
+    retries 3
+
+    then {
+      emit "loan.documents.requested"
+      log "Requested applicant documents"
+    }
+  }
+
+  step "verify-identity" {
+    kind task
+    service "identity-service"
+    timeout 10m
+    retries 2
+
+    then {
+      emit "loan.identity.checked"
+      action "verify_kyc"
+    }
+  }
+
+  step "score-risk" {
+    kind task
+    service "risk-service"
+    timeout 2m
+
+    then {
+      emit "loan.risk.scored"
+      action "calculate_risk_score"
+    }
+  }
+
+  step "risk-gate" {
+    kind decision
+
+    when {
+      any {
+        request.geo.country not_in subject.allowed_countries
+        request.amount > 100000
+        request.risk_score > 80
+      }
+    }
+
+    then {
+      emit "loan.risk.gate.evaluated"
+    }
+  }
+
+  step "manual-review" {
+    kind action
+    service "underwriting-service"
+    timeout 48h
+
+    then {
+      emit "loan.manual_review.required"
+      action "assign_underwriter"
+      action "notify_applicant"
+    }
+  }
+
+  step "approve-loan" {
+    kind action
+    service "loan-service"
+    timeout 1m
+
+    then {
+      emit "loan.approved"
+      action "approve_application"
+      action "send_approval_email"
+    }
+  }
+
+  step "deny-loan" {
+    kind terminal
+    reason_code "RISK_REJECTED"
+
+    then {
+      emit "loan.denied"
+      deny "Loan request did not satisfy risk policy"
+    }
+  }
+
+  step "complete" {
+    kind terminal
+
+    then {
+      emit "loan.workflow.completed"
+      log "Loan workflow completed"
+    }
+  }
+
+  connection "collect-to-identity" {
+    from step.collect-documents
+    to step.verify-identity
+    on success
+  }
+
+  connection "identity-to-risk-score" {
+    from step.verify-identity
+    to step.score-risk
+    on success
+  }
+
+  connection "risk-score-to-gate" {
+    from step.score-risk
+    to step.risk-gate
+    on success
+  }
+
+  connection "gate-to-manual-review" {
+    from step.risk-gate
+    to step.manual-review
+    on matched
+
+    when {
+      any {
+        request.amount > 100000
+        request.risk_score between 60 and 80
+      }
+    }
+  }
+
+  connection "gate-to-deny" {
+    from step.risk-gate
+    to step.deny-loan
+    on matched
+
+    when {
+      request.risk_score > 80
+    }
+  }
+
+  connection "gate-to-approve" {
+    from step.risk-gate
+    to step.approve-loan
+    on unmatched
+  }
+
+  connection "manual-review-to-approve" {
+    from step.manual-review
+    to step.approve-loan
+    on approved
+  }
+
+  connection "manual-review-to-deny" {
+    from step.manual-review
+    to step.deny-loan
+    on denied
+  }
+
+  connection "approve-to-complete" {
+    from step.approve-loan
+    to step.complete
+    on success
+  }
+}
+
+template "approval-email" {
+  subject "Loan request approved"
+  body <<EOF
+Hello ${applicant.name},
+
+Your loan request ${request.id} has been approved.
+
+Regards,
+ProcessGate
+EOF
+}

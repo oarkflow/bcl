@@ -1,0 +1,44 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+config {
+  roles ["admin", "superadmin", "auditor"]
+
+  block_roles {
+    admin
+    superadmin
+    auditor
+  }
+
+  attrs {
+    department "engineering"
+    clearance high
+    active true
+  }
+
+  limits {
+    request {
+      per_minute 100
+      burst 20
+    }
+
+    storage {
+      max_size 5GB
+    }
+  }
+
+  headers [
+    {
+      name "X-Tenant-ID"
+      value request.tenant_id
+    },
+    {
+      name "X-Request-ID"
+      value request.id
+    }
+  ]
+
+  geo [27.7172, 85.3240]
+}

@@ -1,0 +1,16 @@
+engine {
+  default_decision deny
+  evaluation_strategy deny_overrides
+  workers 8
+  hot_reload true
+
+  cache {
+    policy_ttl 5m
+    attr_ttl 10m
+  }
+
+  explain {
+    enabled true
+    include_trace true
+  }
+}

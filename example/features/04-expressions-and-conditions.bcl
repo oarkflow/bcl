@@ -1,0 +1,35 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+rule "compiled-predicates" {
+  when {
+    all {
+      subject.roles has_any ["admin", "superadmin"]
+      subject.status != "blocked"
+      resource.owner_id == subject.id
+      request.path matches regex("^/admin/.*")
+      request.id exists
+      request.optional empty
+    }
+  }
+
+  then {
+    emit "rule.compiled_predicates.matched"
+  }
+}
+
+rule "general-vm" {
+  when {
+    any {
+      request.score between 70 and 100
+      subject.department == lower("ENGINEERING")
+      request.path starts_with concat("/", "admin")
+    }
+  }
+
+  then {
+    action "evaluate_general_vm"
+  }
+}

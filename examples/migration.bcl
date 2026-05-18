@@ -1,9 +1,0 @@
-Migration "1744452752_create_users_table" {
-  Up "test" {
-    CreateTable "users" {
-      Column "name" {
-        type = "string"
-      }
-    }
-  }
-}

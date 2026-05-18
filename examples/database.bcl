@@ -1,7 +1,0 @@
-name = "db2"
-host = "localhost"
-port = 5432
-username = "root"
-password = "root"
-database = "oark"
-driver = "postgres"

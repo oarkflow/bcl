@@ -1,0 +1,55 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+service "accounts"
+port 8080
+debug true
+debug_port port + 1000
+log_level debug ? "debug" : "info"
+endpoint "https://" + service + ".example.com:" + debug_port
+
+request {
+  method "GET"
+  path "/admin/settings"
+  flags ["admin", "interactive"]
+}
+
+route_decision match request {
+  case { method: "GET", path: p } if p starts_with "/admin" => "admin_read"
+  case { method: m, ...rest } => lower(m)
+  case ANY => "unknown"
+}
+
+user {
+  id "user-001"
+  role "admin"
+}
+
+maybe_user true ? SOME(user) : NONE
+missing_user false ? SOME(user) : NONE
+
+subject_label match maybe_user {
+  case SOME(u) if u.role == "admin" => "admin:" + u.id
+  case SOME(u) => "user:" + u.id
+  case NONE => "anonymous"
+}
+
+missing_label match missing_user {
+  case SOME(u) => u.id
+  case NONE => "anonymous"
+}
+
+status "blocked"
+status_label match(status, case("active", "ok"), case("blocked", "needs_review"), case(ANY, "unknown"))
+
+roles ["admin", "editor"]
+roles_are_present roles matches ALL(ANY)
+
+priority "high"
+priority_label match priority {
+  case "critical" | "high" => "fast_lane"
+  case p:string => "normal:" + p
+  case ANY => "unknown"
+}

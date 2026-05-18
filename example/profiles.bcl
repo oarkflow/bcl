@@ -1,0 +1,30 @@
+engine {
+  cache_ttl 5m
+  attr_ttl 10m
+  workers 8
+  strict_mode true
+}
+
+profile "dev" {
+  debug true
+  database_url env("DEV_DATABASE_URL", "postgres://localhost/processgate_dev")
+
+  override engine {
+    workers 2
+    cache_ttl 30s
+  }
+}
+
+profile "prod" {
+  debug false
+  database_url sensitive(env.required("DATABASE_URL"))
+
+  override engine {
+    workers 16
+    cache_ttl 10m
+    strict_mode true
+  }
+}
+
+active_profile env("APP_ENV", "dev")
+

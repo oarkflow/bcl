@@ -1,0 +1,35 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+compact {
+  enabled true
+
+  roles {
+    admin
+    superadmin
+    auditor
+  }
+
+  attrs {
+    team "platform"
+    active true
+  }
+}
+
+policy "compact-policy" {
+  actions {
+    read
+    write
+    delete
+  }
+
+  resources {
+    document:*
+  }
+
+  when {
+    subject.roles has_any ["admin"]
+  }
+}

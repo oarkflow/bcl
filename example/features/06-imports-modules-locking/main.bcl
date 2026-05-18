@@ -1,0 +1,37 @@
+import "../../common.bcl" as common
+
+bcl {
+  version "1.0"
+  strict true
+}
+
+module "routing" {
+  source "../../modules/routing"
+
+  inputs {
+    tenant "org1"
+    region "NP"
+  }
+}
+
+module "risk" {
+  source "../../modules/risk"
+
+  inputs {
+    tenant "org1"
+    mode "strict"
+  }
+}
+
+route "local-feature-route" {
+  path "/feature/*"
+  upstream url("https://feature.internal.example.com")
+  timeout 2s
+
+  headers [
+    {
+      name "X-Feature"
+      value "imports-modules"
+    }
+  ]
+}

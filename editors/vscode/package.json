@@ -1,0 +1,110 @@
+{
+  "name": "bcl-vscode",
+  "displayName": "BCL Language Support",
+  "description": "Syntax highlighting, IntelliSense, diagnostics, navigation, formatting, and LSP support for BCL.",
+  "version": "0.1.0",
+  "publisher": "oarkflow",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:bcl",
+    "onCommand:bcl.restartLanguageServer",
+    "onCommand:bcl.showRecentSymbols",
+    "onCommand:bcl.validateWorkspace",
+    "onCommand:bcl.compileCurrentFile",
+    "onCommand:bcl.explainCurrentFile"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "bcl",
+        "aliases": [
+          "BCL",
+          "bcl"
+        ],
+        "extensions": [
+          ".bcl"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "bcl",
+        "scopeName": "source.bcl",
+        "path": "./syntaxes/bcl.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "bcl",
+        "path": "./snippets/bcl.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "bcl.restartLanguageServer",
+        "title": "BCL: Restart Language Server"
+      },
+      {
+        "command": "bcl.showRecentSymbols",
+        "title": "BCL: Show Recent Symbols"
+      },
+      {
+        "command": "bcl.validateWorkspace",
+        "title": "BCL: Validate Workspace"
+      },
+      {
+        "command": "bcl.compileCurrentFile",
+        "title": "BCL: Compile Current File"
+      },
+      {
+        "command": "bcl.explainCurrentFile",
+        "title": "BCL: Explain Current File"
+      }
+    ],
+    "configuration": {
+      "title": "BCL",
+      "properties": {
+        "bcl.languageServer.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a bcl-lsp binary. When empty, the extension uses its bundled binary or falls back to go run ./cmd/bcl-lsp in a BCL repository."
+        },
+        "bcl.cli.path": {
+          "type": "string",
+          "default": "bcl",
+          "description": "Path to the BCL CLI used by compile, validate, and explain commands."
+        },
+        "bcl.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace communication with the BCL language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.8",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.2"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

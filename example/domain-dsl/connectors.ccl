@@ -1,0 +1,58 @@
+http "identity-api" {
+  base_url env("IDENTITY_API_URL", "https://identity.example.test")
+  timeout 5s
+
+  auth bearer {
+    token sensitive(env("IDENTITY_API_TOKEN", "example-token"))
+  }
+
+  headers {
+    Accept "application/json"
+    User-Agent "AuthZEngine/1.0"
+  }
+
+  retry {
+    attempts 3
+    backoff exponential
+    retry_on_status [408, 429, 500, 502, 503, 504]
+  }
+
+  security {
+    allow_methods [GET, POST]
+    allow_paths ["/users/*", "/groups/*"]
+
+    deny_hosts {
+      localhost
+      127.0.0.1
+      169.254.169.254
+    }
+
+    max_response_size 2MB
+  }
+}
+
+source "subject-profile" {
+  type http
+  connector http("identity-api")
+
+  request {
+    method GET
+    path "/users/${subject.id}"
+
+    headers {
+      X-Tenant-ID subject.tenant
+      X-Request-ID request.id
+    }
+  }
+
+  response {
+    expect_status 200
+    format json
+
+    map {
+      subject.email body.email
+      subject.roles body.roles
+      subject.attrs body.attributes
+    }
+  }
+}

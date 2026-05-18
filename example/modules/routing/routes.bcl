@@ -1,0 +1,27 @@
+route "admin-api" {
+  path "/admin/*"
+  upstream url("https://admin.internal.example.com")
+  timeout 5s
+
+  headers [
+    {
+      name "X-Service"
+      value "admin"
+    },
+    {
+      name "X-Request-ID"
+      value request.id
+    }
+  ]
+
+  when {
+    subject.roles has_any ["admin", "superadmin"]
+  }
+}
+
+route "public-api" {
+  path "/api/*"
+  upstream url("https://api.internal.example.com")
+  timeout 3s
+}
+

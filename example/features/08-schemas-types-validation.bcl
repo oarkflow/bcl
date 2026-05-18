@@ -1,0 +1,32 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+type TenantID = string
+type Action = string
+type GeoPoint = tuple<float, float>
+
+schema route {
+  required tenant TenantID
+  required path string
+  required upstream url
+  optional methods list<Action> default ["GET"]
+  optional geo GeoPoint
+  optional headers list<object>
+}
+
+route "schema-backed-route" {
+  tenant "org1"
+  path "/schema/*"
+  upstream url("https://schema.internal.example.com")
+  methods ["GET", "POST"]
+  geo [27.7172, 85.3240]
+
+  headers [
+    {
+      name "X-Schema"
+      value "enabled"
+    }
+  ]
+}

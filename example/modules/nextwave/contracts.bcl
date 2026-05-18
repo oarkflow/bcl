@@ -1,0 +1,20 @@
+param tenant_id string {
+  required true
+  description "Tenant that owns the generated policy package"
+}
+
+param region string {
+  default "NP"
+  description "Runtime region used by policies and route decisions"
+}
+
+schema policy_package {
+  required tenant string
+  optional region string default "NP"
+  optional owner string default "platform"
+}
+
+policy_package "tenant-access" {
+  tenant "tenant-001"
+  region "NP"
+}

@@ -1,0 +1,52 @@
+{
+  "BCL version": {
+    "prefix": "bcl",
+    "body": [
+      "bcl {",
+      "  version \"${1:1.0}\"",
+      "  strict ${2:true}",
+      "}"
+    ],
+    "description": "BCL version declaration"
+  },
+  "Schema": {
+    "prefix": "schema",
+    "body": [
+      "schema ${1:name} {",
+      "  required ${2:field} ${3:string}",
+      "}"
+    ],
+    "description": "Schema declaration"
+  },
+  "Policy": {
+    "prefix": "policy",
+    "body": [
+      "policy \"${1:name}\" {",
+      "  effect ${2:allow}",
+      "}"
+    ],
+    "description": "Policy block"
+  },
+  "Set": {
+    "prefix": "set",
+    "body": [
+      "set \"${1:name}\" {",
+      "  ${2:item}",
+      "}"
+    ],
+    "description": "Reusable set"
+  },
+  "Pipeline": {
+    "prefix": "pipeline",
+    "body": [
+      "pipeline \"${1:name}\" {",
+      "  entrypoint \"${2:start}\"",
+      "",
+      "  step \"${2:start}\" {",
+      "    type ${3:action}",
+      "  }",
+      "}"
+    ],
+    "description": "Workflow pipeline"
+  }
+}
