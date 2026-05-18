@@ -209,7 +209,7 @@ func (s *server) handle(msg rpcMessage) {
 	case "textDocument/rename":
 		s.rename(msg)
 	case "textDocument/codeAction":
-		s.respond(msg.ID, s.codeActions())
+		s.respond(msg.ID, s.codeActions(msg.Params))
 	case "textDocument/semanticTokens/full":
 		var p struct {
 			TextDocument textDocumentIdentifier `json:"textDocument"`
@@ -242,7 +242,7 @@ func (s *server) analyzeURI(uri string) *bcl.Analysis {
 			text = string(b)
 		}
 	}
-	a, diags := bcl.AnalyzeFile(path, []byte(text), &bcl.Options{Strict: true})
+	a, diags := bcl.AnalyzeFile(path, []byte(text), &bcl.Options{Strict: true, Partial: s.suppressVersionWarning(path), ResolveImports: true, BaseDir: filepath.Dir(path)})
 	s.mu.Lock()
 	s.index[uri] = a
 	s.mu.Unlock()
@@ -256,7 +256,7 @@ func (s *server) indexWorkspace() {
 		return
 	}
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Ext(path) != ".bcl" {
+		if err != nil || d.IsDir() || !isBCLSourceFile(path) {
 			return nil
 		}
 		s.analyzeURI(pathURI(path))
@@ -411,15 +411,55 @@ func (s *server) workspaceSymbols(query string) []any {
 	return out
 }
 
-func (s *server) codeActions() []any {
-	return []any{
+func (s *server) codeActions(raw json.RawMessage) []any {
+	var p struct {
+		TextDocument textDocumentIdentifier `json:"textDocument"`
+		Context      struct {
+			Diagnostics []struct {
+				Message string   `json:"message"`
+				Range   rangeLSP `json:"range"`
+			} `json:"diagnostics"`
+		} `json:"context"`
+	}
+	_ = json.Unmarshal(raw, &p)
+	actions := []any{
 		map[string]any{"title": "Format BCL document", "kind": "source.format", "command": map[string]any{"title": "Format BCL document", "command": "editor.action.formatDocument"}},
-		map[string]any{"title": "Insert BCL version declaration", "kind": "quickfix"},
 		map[string]any{"title": "Wrap value with sensitive(...)", "kind": "quickfix"},
 		map[string]any{"title": "Add missing required module input", "kind": "quickfix"},
 		map[string]any{"title": "Create predicate or test stub", "kind": "quickfix"},
 		map[string]any{"title": "Restart BCL language server", "kind": "quickfix", "command": map[string]any{"title": "Restart BCL language server", "command": "bcl.restartLanguageServer"}},
 	}
+	if hasDiagnostic(p.Context.Diagnostics, "missing bcl version declaration") {
+		edit := map[string]any{
+			"changes": map[string]any{
+				p.TextDocument.URI: []any{
+					map[string]any{
+						"range":   rangeLSP{Start: position{Line: 0, Character: 0}, End: position{Line: 0, Character: 0}},
+						"newText": "bcl {\n  version \"1.0\"\n}\n\n",
+					},
+				},
+			},
+		}
+		actions = append([]any{map[string]any{
+			"title":       "Insert BCL version declaration",
+			"kind":        "quickfix",
+			"diagnostics": p.Context.Diagnostics,
+			"edit":        edit,
+		}}, actions...)
+	}
+	return actions
+}
+
+func hasDiagnostic(diags []struct {
+	Message string   `json:"message"`
+	Range   rangeLSP `json:"range"`
+}, message string) bool {
+	for _, d := range diags {
+		if d.Message == message {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *server) touch(name string) {
@@ -547,6 +587,169 @@ func pathURI(path string) string {
 	return u.String()
 }
 
+func (s *server) suppressVersionWarning(path string) bool {
+	if filepath.Ext(path) == ".schema" {
+		return true
+	}
+	return s.isPartialBCLFile(path) || s.importsVersionDeclaration(path)
+}
+
+func (s *server) isPartialBCLFile(path string) bool {
+	if path == "" || !isBCLSourceFile(path) {
+		return false
+	}
+	root := uriPath(s.rootURI)
+	if root == "" {
+		return false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	if filepath.Base(abs) != "main.bcl" {
+		if _, err := os.Stat(filepath.Join(filepath.Dir(abs), "main.bcl")); err == nil {
+			return true
+		}
+	}
+	var partial bool
+	_ = filepath.WalkDir(root, func(candidate string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !isBCLSourceFile(candidate) || partial {
+			return nil
+		}
+		doc, err := bcl.ParsePath(candidate)
+		if err != nil {
+			return nil
+		}
+		base := filepath.Dir(candidate)
+		for _, imported := range importedPaths(doc.Items, base) {
+			if samePath(abs, imported) {
+				partial = true
+				return nil
+			}
+		}
+		for _, dir := range moduleSourceDirs(doc.Items, base) {
+			rel, err := filepath.Rel(dir, abs)
+			if err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
+				partial = true
+				return nil
+			}
+		}
+		return nil
+	})
+	return partial
+}
+
+func (s *server) importsVersionDeclaration(path string) bool {
+	if path == "" || !isBCLSourceFile(path) {
+		return false
+	}
+	doc, err := bcl.ParsePath(path)
+	if err != nil {
+		return false
+	}
+	base := filepath.Dir(path)
+	for _, imported := range importedPaths(doc.Items, base) {
+		importedDoc, err := bcl.ParsePath(imported)
+		if err != nil {
+			continue
+		}
+		if hasBCLVersionBlock(importedDoc.Items) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBCLSourceFile(path string) bool {
+	switch filepath.Ext(path) {
+	case ".bcl", ".schema":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasBCLVersionBlock(nodes []bcl.Node) bool {
+	for _, n := range nodes {
+		b, ok := n.(*bcl.Block)
+		if !ok || b.Type != "bcl" {
+			continue
+		}
+		if blockStringAssignment(b, "version") != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func importedPaths(nodes []bcl.Node, base string) []string {
+	var out []string
+	for _, n := range nodes {
+		switch x := n.(type) {
+		case *bcl.ImportDecl:
+			pattern := x.Path
+			if !filepath.IsAbs(pattern) {
+				pattern = filepath.Join(base, pattern)
+			}
+			if matches, err := filepath.Glob(pattern); err == nil && len(matches) > 0 {
+				out = append(out, matches...)
+			} else {
+				out = append(out, pattern)
+			}
+		case *bcl.Block:
+			out = append(out, importedPaths(x.Body, base)...)
+		}
+	}
+	return out
+}
+
+func moduleSourceDirs(nodes []bcl.Node, base string) []string {
+	var out []string
+	for _, n := range nodes {
+		b, ok := n.(*bcl.Block)
+		if !ok {
+			continue
+		}
+		if b.Type == "module" {
+			if source := blockStringAssignment(b, "source"); source != "" {
+				if !filepath.IsAbs(source) {
+					source = filepath.Join(base, source)
+				}
+				out = append(out, source)
+			}
+		}
+		out = append(out, moduleSourceDirs(b.Body, base)...)
+	}
+	return out
+}
+
+func blockStringAssignment(b *bcl.Block, name string) string {
+	for _, n := range b.Body {
+		a, ok := n.(*bcl.Assignment)
+		if !ok || a.Name != name {
+			continue
+		}
+		if lit, ok := a.Value.(*bcl.Literal); ok {
+			if s, ok := lit.Data.(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func samePath(a, b string) bool {
+	aa, err := filepath.Abs(a)
+	if err == nil {
+		a = aa
+	}
+	bb, err := filepath.Abs(b)
+	if err == nil {
+		b = bb
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
 func severity(s string) int {
 	switch s {
 	case "error":
@@ -602,6 +805,10 @@ func semanticTypeIndex(kind string) int {
 	switch kind {
 	case "keyword":
 		return 15
+	case "property":
+		return 9
+	case "function":
+		return 12
 	case "string":
 		return 18
 	case "number":

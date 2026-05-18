@@ -77,7 +77,10 @@ async function startClient(context) {
     const clientOptions = {
         documentSelector: [{ scheme: 'file', language: 'bcl' }],
         synchronize: {
-            fileEvents: vscode.workspace.createFileSystemWatcher('**/*.bcl')
+            fileEvents: [
+                vscode.workspace.createFileSystemWatcher('**/*.bcl'),
+                vscode.workspace.createFileSystemWatcher('**/*.schema')
+            ]
         },
         middleware: {
             provideHover: async () => null

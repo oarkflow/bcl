@@ -10,6 +10,9 @@
       "include": "#strings"
     },
     {
+      "include": "#declarations"
+    },
+    {
       "include": "#numbers"
     },
     {
@@ -22,7 +25,13 @@
       "include": "#blocks"
     },
     {
+      "include": "#properties"
+    },
+    {
       "include": "#operators"
+    },
+    {
+      "include": "#punctuation"
     }
   ],
   "repository": {
@@ -62,6 +71,17 @@
           "end": "`"
         },
         {
+          "name": "string.quoted.single.bcl",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.bcl",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
           "name": "string.unquoted.heredoc.bcl",
           "begin": "<<\\s*([A-Za-z_][A-Za-z0-9_-]*)",
           "end": "^\\s*\\1\\s*$"
@@ -72,7 +92,7 @@
       "patterns": [
         {
           "name": "constant.numeric.bcl",
-          "match": "\\b\\d+(?:\\.\\d+)?(?:[A-Za-z]+)?\\b"
+          "match": "\\b-?\\d+(?:\\.\\d+)?(?:[A-Za-z]+)?\\b|\\b\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2}Z)?\\b"
         }
       ]
     },
@@ -80,7 +100,45 @@
       "patterns": [
         {
           "name": "keyword.control.bcl",
-          "match": "\\b(import|as|const|type|schema|required|optional|enum|default|description|doc|deprecated|sensitive|generated|min|max|pattern|format|examples|when|override|true|false|null|match|case|else)\\b"
+          "match": "\\b(import|as|const|type|schema|required|optional|enum|default|description|doc|deprecated|sensitive|generated|min|max|pattern|format|examples|when|override|match|case|else)\\b"
+        },
+        {
+          "name": "constant.language.boolean.bcl",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.null.bcl",
+          "match": "\\bnull\\b"
+        },
+        {
+          "name": "keyword.control.block.bcl",
+          "match": "\\b(bcl|namespace|profile|module|runtime|evaluation|audit|context|session|policy|rule|set|pipeline|step|connection|http|connector|source|action|file|command|output|phase|allow|deny|all|any|not|none|then|retry|auth|headers|capture|on_status|map|field|include)\\b(?=\\s*(?:\"|[A-Za-z0-9_.-]+)?\\s*\\{)"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(const)\\s+([A-Z_][A-Z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.bcl"
+            },
+            "2": {
+              "name": "entity.name.constant.bcl"
+            }
+          }
+        },
+        {
+          "match": "\\b(schema|type|param)\\s+([A-Za-z_][A-Za-z0-9_-]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.bcl"
+            },
+            "2": {
+              "name": "entity.name.type.bcl"
+            }
+          }
         }
       ]
     },
@@ -106,6 +164,30 @@
         {
           "name": "entity.name.tag.id.bcl",
           "match": "\\b[A-Za-z_][A-Za-z0-9_.-]*\\b(?=\\s*\\{)"
+        },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_-]*)\\s+([A-Za-z0-9_.-]+)(?=\\s*\\{)",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.block.bcl"
+            },
+            "2": {
+              "name": "string.unquoted.label.bcl"
+            }
+          }
+        }
+      ]
+    },
+    "properties": {
+      "patterns": [
+        {
+          "name": "variable.other.property.bcl",
+          "match": "^\\s*([A-Za-z_][A-Za-z0-9_.-]*|\"[^\"]+\")(?=\\s+(?:[^\\s#/{]|$))",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.bcl"
+            }
+          }
         }
       ]
     },
@@ -113,7 +195,31 @@
       "patterns": [
         {
           "name": "keyword.operator.bcl",
-          "match": "==|!=|<=|>=|&&|\\|\\||[=<>!+*/%-]|\\b(in|not_in|contains|starts_with|ends_with|matches|has|has_any|has_all|between|exists|empty|equals|greater_than|less_than|greater_or_equal|less_or_equal|and|or|to)\\b"
+          "match": "==|!=|<=|>=|&&|\\|\\||=>|[=<>!+*/%-]|\\b(in|not_in|contains|starts_with|ends_with|matches|has|has_any|has_all|between|exists|empty|equals|greater_than|less_than|greater_or_equal|less_or_equal|and|or|to)\\b"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.section.braces.bcl",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.section.brackets.bcl",
+          "match": "[\\[\\]]"
+        },
+        {
+          "name": "punctuation.section.parens.bcl",
+          "match": "[()]"
+        },
+        {
+          "name": "punctuation.separator.comma.bcl",
+          "match": ","
+        },
+        {
+          "name": "punctuation.accessor.dot.bcl",
+          "match": "\\."
         }
       ]
     }

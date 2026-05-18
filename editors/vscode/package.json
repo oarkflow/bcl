@@ -25,10 +25,16 @@
         "id": "bcl",
         "aliases": [
           "BCL",
-          "bcl"
+          "bcl",
+          "BCL Schema"
         ],
         "extensions": [
-          ".bcl"
+          ".bcl",
+          ".schema"
+        ],
+        "filenamePatterns": [
+          "*.bcl",
+          "*.schema"
         ],
         "configuration": "./language-configuration.json"
       }

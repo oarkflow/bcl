@@ -4,6 +4,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 func Parse(src []byte) (*Document, error) {
@@ -96,7 +98,7 @@ type parser struct {
 func (p *parser) parseNodes(until tokenKind) []Node {
 	nodes := make([]Node, 0, p.nodeCapacity(until))
 	for {
-		p.skipNewlines()
+		p.skipNodeSeparators()
 		if p.peek().kind == until || p.peek().kind == tokEOF {
 			if until != tokEOF && p.peek().kind == until {
 				p.next()
@@ -135,6 +137,9 @@ func (p *parser) nodeCapacity(until tokenKind) int {
 
 func (p *parser) parseNode() Node {
 	t := p.peek()
+	if t.kind == tokOperator && t.text == "&" {
+		return p.parseSpread()
+	}
 	if t.kind != tokIdent && t.kind != tokString && t.kind != tokNumber {
 		p.error(t, "expected declaration, assignment, or block")
 		return nil
@@ -178,6 +183,7 @@ func (p *parser) parseNode() Node {
 		}
 	}
 	name := p.next()
+	name.text = strings.TrimSuffix(name.text, ":")
 	if name.text == "override" && p.peek().kind == tokIdent && p.peekN(1).kind == tokString && p.peekN(2).kind == tokLBrace {
 		targetType := p.next()
 		targetID := p.next()
@@ -228,7 +234,7 @@ func (p *parser) parseNode() Node {
 	if p.peek().kind == tokLBrace {
 		lb := p.next()
 		body := p.parseNodes(tokRBrace)
-		if isKnownBlock(name.text) {
+		if isKnownBlock(name.text) || isCapitalizedBlockName(name.text) {
 			return &Block{Type: name.text, Body: body, Span: spanJoin(name.span, lb.span)}
 		}
 		return &Assignment{Name: name.text, Value: blockValue(name.text, body, spanJoin(name.span, lb.span)), Span: name.span}
@@ -244,6 +250,45 @@ func (p *parser) parseNode() Node {
 	}
 	v := p.parseValueUntilLine()
 	return &Assignment{Name: name.text, Value: v, Span: spanJoin(name.span, v.GetSpan())}
+}
+
+func (p *parser) parseSpread() Node {
+	start := p.next()
+	target := p.parseSpreadTarget()
+	sp := spanJoin(start.span, target.span)
+	var body []Node
+	if p.peek().kind == tokLBrace {
+		lb := p.next()
+		sp = spanJoin(sp, lb.span)
+		body = p.parseNodes(tokRBrace)
+		if len(body) > 0 {
+			sp = spanJoin(sp, body[len(body)-1].GetSpan())
+		}
+	}
+	return &Spread{Target: target.text, Body: body, Span: sp}
+}
+
+func (p *parser) parseSpreadTarget() token {
+	t := p.peek()
+	if t.kind != tokIdent && t.kind != tokString && t.kind != tokNumber {
+		p.error(t, "expected spread target")
+		return token{text: "", span: t.span}
+	}
+	first := p.next()
+	parts := []string{first.text}
+	sp := first.span
+	for p.peek().kind == tokDot {
+		p.next()
+		next := p.peek()
+		if next.kind != tokIdent && next.kind != tokString && next.kind != tokNumber {
+			p.error(next, "expected spread target path segment")
+			break
+		}
+		part := p.next()
+		parts = append(parts, part.text)
+		sp = spanJoin(sp, part.span)
+	}
+	return token{text: strings.Join(parts, "."), span: sp}
 }
 
 func (p *parser) parseConditionalBlock(first token) Node {
@@ -780,6 +825,12 @@ func (p *parser) skipNewlines() {
 	}
 }
 
+func (p *parser) skipNodeSeparators() {
+	for p.peek().kind == tokNewline || p.peek().kind == tokComma {
+		p.next()
+	}
+}
+
 func (p *parser) skipLineTail() {
 	for p.peek().kind != tokNewline && p.peek().kind != tokRBrace && p.peek().kind != tokEOF {
 		p.next()
@@ -867,6 +918,11 @@ func isKnownBlock(s string) bool {
 	default:
 		return false
 	}
+}
+
+func isCapitalizedBlockName(s string) bool {
+	r, _ := utf8.DecodeRuneInString(s)
+	return r != utf8.RuneError && unicode.IsUpper(r)
 }
 
 func isByteUnit(s string) bool {

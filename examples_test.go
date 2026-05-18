@@ -1,7 +1,9 @@
 package bcl
 
 import (
+	"encoding/json"
 	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -13,7 +15,7 @@ func TestExamplesParse(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || filepath.Ext(path) != ".bcl" {
+		if d.IsDir() || !isExampleSourceFile(path) {
 			return nil
 		}
 		if _, err := ParsePath(path); err != nil {
@@ -80,7 +82,7 @@ func TestFeatureExamplesCompile(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || filepath.Ext(path) != ".bcl" {
+		if d.IsDir() || !isExampleSourceFile(path) {
 			return nil
 		}
 		t.Run(path, func(t *testing.T) {
@@ -101,6 +103,56 @@ func TestFeatureExamplesCompile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func isExampleSourceFile(path string) bool {
+	switch filepath.Ext(path) {
+	case ".bcl", ".schema":
+		return true
+	default:
+		return false
+	}
+}
+
+func TestVSCodeExtensionAssociatesSchemaFilesWithBCL(t *testing.T) {
+	data, err := os.ReadFile("editors/vscode/package.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		Contributes struct {
+			Languages []struct {
+				ID               string   `json:"id"`
+				Extensions       []string `json:"extensions"`
+				FilenamePatterns []string `json:"filenamePatterns"`
+			} `json:"languages"`
+		} `json:"contributes"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	for _, lang := range manifest.Contributes.Languages {
+		if lang.ID != "bcl" {
+			continue
+		}
+		if !containsString(lang.Extensions, ".schema") {
+			t.Fatalf("bcl language extension list should include .schema: %#v", lang.Extensions)
+		}
+		if !containsString(lang.FilenamePatterns, "*.schema") {
+			t.Fatalf("bcl language filename patterns should include *.schema: %#v", lang.FilenamePatterns)
+		}
+		return
+	}
+	t.Fatal("missing bcl language contribution")
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func exampleContext() map[string]any {

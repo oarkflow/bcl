@@ -17,7 +17,7 @@ policy "allow-admin" {
 	if len(toks) == 0 {
 		t.Fatal("expected tokens")
 	}
-	var sawKeyword, sawString, sawNumber bool
+	var sawKeyword, sawString, sawNumber, sawProperty bool
 	for _, tok := range toks {
 		switch tok.Type {
 		case "keyword":
@@ -26,13 +26,15 @@ policy "allow-admin" {
 			sawString = true
 		case "number":
 			sawNumber = true
+		case "property":
+			sawProperty = true
 		}
 		if tok.Span.Start.Line == 0 || tok.Span.Start.Column == 0 {
 			t.Fatalf("token has invalid 1-based span: %+v", tok)
 		}
 	}
-	if !sawKeyword || !sawString || !sawNumber {
-		t.Fatalf("missing expected token classes: keyword=%v string=%v number=%v", sawKeyword, sawString, sawNumber)
+	if !sawKeyword || !sawString || !sawNumber || !sawProperty {
+		t.Fatalf("missing expected token classes: keyword=%v string=%v number=%v property=%v", sawKeyword, sawString, sawNumber, sawProperty)
 	}
 }
 
@@ -107,6 +109,128 @@ policy "allow-admin" {
 	}
 	if !sawEffectCompletion {
 		t.Fatalf("expected schema field completion, got %+v", a.Completions)
+	}
+}
+
+func TestAnalyzeFileAllowsExternalRuntimeReferences(t *testing.T) {
+	src := []byte(`bcl {
+  version "1.0"
+}
+
+headers {
+  "X-Tenant-ID" subject.tenant
+  "X-Request-ID" request.id
+  generated_at time.now
+  decision decision.effect
+}
+`)
+	_, diags := AnalyzeFile("runtime-refs.bcl", src, nil)
+	for _, d := range diags {
+		if strings.Contains(d.Message, "unknown reference") {
+			t.Fatalf("runtime reference should not be reported as unknown: %#v", diags)
+		}
+	}
+}
+
+func TestRuntimeReferenceHoverUsesHintCatalog(t *testing.T) {
+	src := []byte(`bcl {
+  version "1.0"
+}
+
+audit {
+  time time.now
+  decision decision.effect
+}
+`)
+	a, diags := AnalyzeFile("runtime-hover.bcl", src, nil)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	sym, ok := SymbolAt(a, 6, 8)
+	if !ok {
+		t.Fatal("expected symbol at time.now")
+	}
+	if sym.Kind != SymbolRuntime || sym.Name != "time.now" {
+		t.Fatalf("expected runtime symbol for time.now, got %+v", sym)
+	}
+	hover := RichHoverMarkdown(a, sym, src)
+	for _, want := range []string{"runtime value", "Current evaluation timestamp", "host application supplies"} {
+		if !strings.Contains(hover, want) {
+			t.Fatalf("runtime hover missing %q:\n%s", want, hover)
+		}
+	}
+}
+
+func TestBuiltinFunctionHoverUsesHintCatalog(t *testing.T) {
+	src := []byte(`bcl {
+  version "1.0"
+}
+
+database_url sensitive(env.required("DATABASE_URL"))
+`)
+	a, diags := AnalyzeFile("function-hover.bcl", src, nil)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	sym, ok := SymbolAt(a, 5, 14)
+	if !ok {
+		t.Fatal("expected symbol at sensitive(...)")
+	}
+	if sym.Kind != SymbolFunction || sym.Name != "sensitive" {
+		t.Fatalf("expected function symbol for sensitive, got %+v", sym)
+	}
+	hover := RichHoverMarkdown(a, sym, src)
+	for _, want := range []string{"function", "Marks a value for redaction", "Signature"} {
+		if !strings.Contains(hover, want) {
+			t.Fatalf("function hover missing %q:\n%s", want, hover)
+		}
+	}
+}
+
+func TestDefaultCompletionsIncludeDetailedRuntimeAndFunctionHints(t *testing.T) {
+	comps := DefaultCompletions()
+	want := map[string]string{
+		"time.now":         "Current evaluation timestamp",
+		"decision.effect":  "Final decision effect",
+		"env.required":     "missing",
+		"context.required": "required context value",
+	}
+	for label, doc := range want {
+		var found Completion
+		for _, c := range comps {
+			if c.Label == label {
+				found = c
+				break
+			}
+		}
+		if found.Label == "" || !strings.Contains(found.Documentation, doc) {
+			t.Fatalf("completion %q missing documentation %q: %+v", label, doc, found)
+		}
+	}
+}
+
+func TestAnalyzeFileReportsUnknownReferenceOnlyForKnownBlockTypes(t *testing.T) {
+	src := []byte(`bcl {
+  version "1.0"
+}
+
+policy "base" {
+  parent policy.missing
+  runtime decision.effect
+}
+`)
+	_, diags := AnalyzeFile("known-block-ref.bcl", src, nil)
+	var unknownPolicy, unknownDecision int
+	for _, d := range diags {
+		if strings.Contains(d.Message, `unknown reference "policy.missing"`) {
+			unknownPolicy++
+		}
+		if strings.Contains(d.Message, `unknown reference "decision.effect"`) {
+			unknownDecision++
+		}
+	}
+	if unknownPolicy != 1 || unknownDecision != 0 {
+		t.Fatalf("unexpected unknown reference diagnostics: policy=%d decision=%d diags=%#v", unknownPolicy, unknownDecision, diags)
 	}
 }
 

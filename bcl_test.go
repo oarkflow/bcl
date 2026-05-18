@@ -252,3 +252,369 @@ policy "a" {}
 		t.Fatalf("expected duplicate diagnostic")
 	}
 }
+
+func TestValidateAllowsMultipleScopedOverridesForSameTarget(t *testing.T) {
+	doc, err := Parse([]byte(`
+engine {
+  workers 8
+}
+
+profile "dev" {
+  override engine {
+    workers 2
+  }
+}
+
+profile "prod" {
+  override engine {
+    workers 16
+  }
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	diags := Validate(doc, nil)
+	for _, d := range diags {
+		if strings.Contains(d.Message, "duplicate block override.engine") {
+			t.Fatalf("scoped overrides should not be duplicate blocks: %#v", diags)
+		}
+	}
+}
+
+func TestCapitalizedBareBlocksCompileAsExtensibleCommands(t *testing.T) {
+	src := []byte(`
+Migration "1748976351_create_seo_metadatas_table" {
+  Version = "1.0.0"
+  Description = "Create table seo_metadatas."
+
+  Up {
+    CreateTable "seo_metadatas" {
+      Column "id" {
+        type = "integer"
+        primary_key = true
+      }
+    }
+  }
+
+  Down {
+    DropTable "seo_metadatas" {
+      Cascade = true
+    }
+  }
+}
+`)
+	n, err := CompileBytes(src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration := findBlock(n.Blocks, "Migration", "1748976351_create_seo_metadatas_table")
+	if migration == nil {
+		t.Fatalf("missing Migration block: %#v", n.Blocks)
+	}
+	body := migration["body"].(map[string]any)
+	if body["Version"] != "1.0.0" || body["Description"] != "Create table seo_metadatas." {
+		t.Fatalf("migration assignments = %#v", body)
+	}
+	up := firstNestedBlock(body, "Up")
+	if up == nil {
+		t.Fatalf("missing Up command block: %#v", body)
+	}
+	create := firstNestedBlock(up["body"].(map[string]any), "CreateTable")
+	if create == nil || create["id"] != "seo_metadatas" {
+		t.Fatalf("missing CreateTable command block: %#v", up)
+	}
+	column := firstNestedBlock(create["body"].(map[string]any), "Column")
+	if column == nil || column["id"] != "id" {
+		t.Fatalf("missing Column command block: %#v", create)
+	}
+	down := firstNestedBlock(body, "Down")
+	if down == nil {
+		t.Fatalf("missing Down command block: %#v", body)
+	}
+	drop := firstNestedBlock(down["body"].(map[string]any), "DropTable")
+	if drop == nil || drop["id"] != "seo_metadatas" {
+		t.Fatalf("missing DropTable command block: %#v", down)
+	}
+}
+
+func TestLowercaseBraceAssignmentsRemainObjects(t *testing.T) {
+	src := []byte(`
+engine {
+  workers 8
+}
+
+tenant "org1" {
+  attrs {
+    region "NP"
+  }
+}
+`)
+	n, err := CompileBytes(src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, ok := n.Body["engine"].(map[string]any)
+	if !ok || engine["workers"] != int64(8) {
+		t.Fatalf("engine should remain a body object: %#v", n.Body["engine"])
+	}
+	tenant := findBlock(n.Blocks, "tenant", "org1")
+	if tenant == nil {
+		t.Fatalf("missing tenant block: %#v", n.Blocks)
+	}
+	body := tenant["body"].(map[string]any)
+	attrs, ok := body["attrs"].(map[string]any)
+	if !ok || attrs["region"] != "NP" {
+		t.Fatalf("attrs should remain an object field: %#v", body["attrs"])
+	}
+	if firstNestedBlock(body, "attrs") != nil {
+		t.Fatalf("attrs unexpectedly normalized as nested block: %#v", body)
+	}
+}
+
+func TestBlockSpreadCanReuseSameTypeBlockWithOverrides(t *testing.T) {
+	src := []byte(`
+database "db" {
+  host "localhost"
+  port 5432
+  username "app"
+  password "secret"
+  pool {
+    max 10
+    idle 2
+  }
+}
+
+database "db-1" {
+  &db {
+    username "readonly"
+    password ""
+    pool.max 4
+  }
+}
+`)
+	n, err := CompileBytes(src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := findBlock(n.Blocks, "database", "db-1")
+	if db == nil {
+		t.Fatalf("missing database db-1: %#v", n.Blocks)
+	}
+	body := db["body"].(map[string]any)
+	if body["host"] != "localhost" || body["port"] != int64(5432) {
+		t.Fatalf("spread did not copy base fields: %#v", body)
+	}
+	if body["username"] != "readonly" || body["password"] != "" {
+		t.Fatalf("spread overrides not applied: %#v", body)
+	}
+	pool, _ := body["pool"].(map[string]any)
+	if pool["max"] != int64(4) || pool["idle"] != int64(2) {
+		t.Fatalf("nested spread merge failed: %#v", pool)
+	}
+}
+
+func TestExtensibleSamplesWithMixedAssignmentSeparators(t *testing.T) {
+	src := []byte(`
+network "RealWorldEnterprise" {
+  device Edge_Router {
+    type = "Router"
+    interfaces = {
+      eth0 = { ip = "203.0.113.1", protocol = "BGP", extra = { connection = "WAN", bandwidth = "1Gbps" } }
+    }
+  }
+}
+
+sources "prod-db" {
+  type: "mysql"
+  key: "prod-db"
+  port: 3306
+}
+
+tables "users" {
+  old_name: "tbl_user"
+  migrate: true
+  mapping = {
+    user_id = "user_uid"
+    email = "user_email_address"
+  }
+}
+`)
+	n, err := CompileBytes(src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	network := findBlock(n.Blocks, "network", "RealWorldEnterprise")
+	if network == nil {
+		t.Fatalf("missing network block: %#v", n.Blocks)
+	}
+	device := firstNestedBlock(network["body"].(map[string]any), "device")
+	if device == nil || device["id"] != "Edge_Router" {
+		t.Fatalf("missing device block: %#v", network)
+	}
+	sources := findBlock(n.Blocks, "sources", "prod-db")
+	if sources == nil {
+		t.Fatalf("missing sources block: %#v", n.Blocks)
+	}
+	sourceBody := sources["body"].(map[string]any)
+	if sourceBody["type"] != "mysql" || sourceBody["port"] != int64(3306) {
+		t.Fatalf("source body = %#v", sourceBody)
+	}
+	tables := findBlock(n.Blocks, "tables", "users")
+	if tables == nil {
+		t.Fatalf("missing tables block: %#v", n.Blocks)
+	}
+	tableBody := tables["body"].(map[string]any)
+	if tableBody["old_name"] != "tbl_user" || tableBody["migrate"] != true {
+		t.Fatalf("table body = %#v", tableBody)
+	}
+	mapping := tableBody["mapping"].(map[string]any)
+	if mapping["user_id"] != "user_uid" || mapping["email"] != "user_email_address" {
+		t.Fatalf("mapping = %#v", mapping)
+	}
+}
+
+func findBlock(blocks []map[string]any, typ, id string) map[string]any {
+	for _, b := range blocks {
+		if b["type"] == typ && b["id"] == id {
+			return b
+		}
+	}
+	return nil
+}
+
+func firstNestedBlock(body map[string]any, typ string) map[string]any {
+	blocks, ok := body[typ].([]map[string]any)
+	if ok && len(blocks) > 0 {
+		return blocks[0]
+	}
+	items, ok := body[typ].([]any)
+	if !ok || len(items) == 0 {
+		return nil
+	}
+	block, _ := items[0].(map[string]any)
+	return block
+}
+
+func TestSchemaBackedNestedBlocksAreScopedForDuplicateValidation(t *testing.T) {
+	doc, err := Parse([]byte(`
+schema Migration {
+}
+
+schema CreateTable {
+}
+
+schema Column {
+  optional type string
+}
+
+Migration "a" {
+  CreateTable "users" {
+    Column "id" {
+      type integer
+    }
+  }
+}
+
+Migration "b" {
+  CreateTable "events" {
+    Column "id" {
+      type integer
+    }
+  }
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range Validate(doc, &Options{Strict: true}) {
+		if strings.Contains(d.Message, "duplicate block Column.id") {
+			t.Fatalf("schema-backed nested command blocks should be scoped: %#v", d)
+		}
+	}
+}
+
+func TestDeepDomainPathUnderExistingBlockIsNotUnknownReference(t *testing.T) {
+	doc, err := Parse([]byte(`
+schema network {
+}
+
+schema device {
+  optional interfaces object
+}
+
+schema connection {
+  optional from string
+  optional to string
+}
+
+network "n" {
+  device Edge_Router {
+    interfaces {
+      eth1 {
+        ip "10.0.0.1"
+      }
+    }
+  }
+
+  connection Edge_to_Switch {
+    from device.Edge_Router.interfaces.eth1
+    to device.Edge_Router.interfaces.eth1
+  }
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range Validate(doc, &Options{Strict: true}) {
+		if strings.Contains(d.Message, `unknown reference "device.Edge_Router.interfaces.eth1"`) {
+			t.Fatalf("deep domain path under existing block should be allowed: %#v", d)
+		}
+	}
+}
+
+func TestResolveDocumentImportsSchemaFilesForValidation(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "commands.schema"), `
+schema Migration {
+}
+
+schema CreateTable {
+}
+
+schema Column {
+  optional type string
+}
+`)
+	mainPath := filepath.Join(dir, "main.bcl")
+	mustWrite(t, mainPath, `
+import "./commands.schema"
+
+Migration "a" {
+  CreateTable "users" {
+    Column "id" {
+      type integer
+    }
+  }
+}
+
+Migration "b" {
+  CreateTable "events" {
+    Column "id" {
+      type integer
+    }
+  }
+}
+`)
+	doc := mustParsePath(t, mainPath)
+	opts := &Options{Strict: true, ResolveImports: true, BaseDir: dir}
+	resolved, resolveDiags := ResolveDocument(doc, opts)
+	if len(resolveDiags) != 0 {
+		t.Fatalf("resolve diagnostics: %#v", resolveDiags)
+	}
+	for _, d := range Validate(resolved, opts) {
+		if strings.Contains(d.Message, "duplicate block Column.id") {
+			t.Fatalf("imported schema should scope nested commands: %#v", d)
+		}
+	}
+}

@@ -93,6 +93,15 @@ func writeNode(b *bytes.Buffer, n Node, indent int) {
 		fmt.Fprintf(b, "%s%s ", pad, x.Name)
 		writeValue(b, x.Value, indent)
 		b.WriteByte('\n')
+	case *Spread:
+		fmt.Fprintf(b, "%s&%s", pad, x.Target)
+		if len(x.Body) == 0 {
+			b.WriteByte('\n')
+			return
+		}
+		b.WriteString(" {\n")
+		writeNodes(b, x.Body, indent+1)
+		fmt.Fprintf(b, "%s}\n", pad)
 	case *Block:
 		if x.ID != "" {
 			if x.Type == "when" {

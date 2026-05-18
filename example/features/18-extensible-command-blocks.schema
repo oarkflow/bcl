@@ -1,0 +1,79 @@
+schema Migration {
+  optional Version string
+  optional Description string
+  optional Connection string
+}
+
+schema Up {
+}
+
+schema Down {
+}
+
+schema CreateTable {
+}
+
+schema DropTable {
+  optional Cascade bool
+}
+
+schema Column {
+  optional type string
+  optional primary_key bool
+  optional auto_increment bool
+  optional index bool
+  optional unique bool
+  optional default any
+  optional size int
+  optional is_nullable bool
+}
+
+schema network {
+}
+
+schema device {
+  optional type string
+  optional interfaces object
+  optional access object
+  optional extra object
+}
+
+schema connection {
+  optional from string
+  optional to string
+  optional parameters object
+}
+
+schema automation {
+  optional trigger string
+  optional condition string
+  optional action string
+}
+
+schema sources {
+  optional type string
+  optional key string
+  optional host string
+  optional port int
+  optional driver string
+  optional username string
+  optional password string
+  optional database string
+  optional disablelogger bool
+}
+
+schema destinations {
+  optional type string
+  optional key string
+  optional file string
+}
+
+schema tables {
+  optional old_name string
+  optional migrate bool
+  optional clone_source bool
+  optional batch_size int
+  optional truncate_destination bool
+  optional destination_key string
+  optional mapping object
+}

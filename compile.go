@@ -27,6 +27,7 @@ type Options struct {
 	ResolveModules       bool
 	Interpolate          bool
 	DisableInterpolation bool
+	Partial              bool
 	Strict               bool
 	LockfilePath         string
 	BaseDir              string
@@ -52,6 +53,8 @@ func Compile(doc *Document, opts *Options) (*Normalized, error) {
 		sets:        map[string][]Value{},
 		types:       map[string]string{},
 		schemaDecls: map[string]*SchemaDecl{},
+		blockIndex:  map[string]*Block{},
+		spreadStack: map[string]bool{},
 	}
 	c.loadEnvFiles(doc.Span, nil)
 	items := doc.Items
@@ -68,6 +71,7 @@ func Compile(doc *Document, opts *Options) (*Normalized, error) {
 	if opts.ResolveModules {
 		items = c.resolveModules(items, opts.BaseDir, map[string]bool{})
 	}
+	c.indexBlocks(items)
 	c.loadEnvFiles(doc.Span, envFileDecls(items))
 	c.collect(items)
 	c.emit(items, c.out.Body)
@@ -92,9 +96,32 @@ type compiler struct {
 	sets        map[string][]Value
 	types       map[string]string
 	schemaDecls map[string]*SchemaDecl
+	blockIndex  map[string]*Block
+	spreadStack map[string]bool
 	lock        *Lockfile
 	result      *CompileResult
 	errs        ErrorList
+}
+
+func (c *compiler) indexBlocks(nodes []Node) {
+	for _, n := range nodes {
+		switch x := n.(type) {
+		case *Block:
+			if x.ID != "" {
+				key := x.Type + "." + x.ID
+				if c.blockIndex[key] == nil {
+					c.blockIndex[key] = x
+				}
+			}
+			c.indexBlocks(x.Body)
+		case *Assignment:
+			if o, ok := x.Value.(*Object); ok {
+				c.indexBlocks(o.Fields)
+			}
+		case *Spread:
+			c.indexBlocks(x.Body)
+		}
+	}
 }
 
 func (c *compiler) loadEnvFiles(sp Span, declared []string) {
@@ -381,7 +408,7 @@ func (c *compiler) collect(nodes []Node) {
 			c.out.Types[x.Name] = x.Type
 		case *Block:
 			if x.Type == "namespace" && x.ID != "" {
-				ns := &compiler{opts: c.opts, out: &Normalized{Body: map[string]any{}, Constants: map[string]any{}, Params: map[string]any{}, Predicates: map[string]any{}, Sets: map[string][]any{}, Types: map[string]string{}, Schemas: map[string]any{}}, consts: c.consts, sets: c.sets, types: c.types, schemaDecls: c.schemaDecls}
+				ns := &compiler{opts: c.opts, out: &Normalized{Body: map[string]any{}, Constants: map[string]any{}, Params: map[string]any{}, Predicates: map[string]any{}, Sets: map[string][]any{}, Types: map[string]string{}, Schemas: map[string]any{}}, consts: c.consts, sets: c.sets, types: c.types, schemaDecls: c.schemaDecls, blockIndex: c.blockIndex, spreadStack: map[string]bool{}}
 				ns.collect(x.Body)
 				nsBody := map[string]any{}
 				ns.emit(x.Body, nsBody)
@@ -456,6 +483,10 @@ func (c *compiler) emit(nodes []Node, body map[string]any) {
 			default:
 				c.out.Blocks = append(c.out.Blocks, c.block(x))
 			}
+		case *Spread:
+			if merged := c.spreadBody("", x); merged != nil {
+				mergeMap(body, merged)
+			}
 		}
 	}
 }
@@ -487,6 +518,10 @@ func (c *compiler) block(b *Block) map[string]any {
 			setNormalized(body, x.Name, c.valueWithRedact(x.Value, x.Sensitive))
 		case *Block:
 			body[x.Type] = appendBlock(body[x.Type], c.block(x))
+		case *Spread:
+			if merged := c.spreadBody(b.Type, x); merged != nil {
+				mergeMap(body, merged)
+			}
 		}
 	}
 	out["body"] = body
@@ -504,6 +539,56 @@ func (c *compiler) applySchemaDefaults(blockType string, body map[string]any) {
 			body[f.Name] = c.value(f.Default)
 		}
 	}
+}
+
+func (c *compiler) spreadBody(currentType string, s *Spread) map[string]any {
+	target := s.Target
+	if target == "" {
+		c.errs = append(c.errs, Diagnostic{Severity: "error", Message: "missing spread target", Span: s.Span})
+		return nil
+	}
+	if !strings.Contains(target, ".") && currentType != "" {
+		target = currentType + "." + target
+	}
+	if c.spreadStack[target] {
+		c.errs = append(c.errs, Diagnostic{Severity: "error", Message: fmt.Sprintf("cyclic spread %q", target), Span: s.Span})
+		return nil
+	}
+	base := c.blockIndex[target]
+	if base == nil {
+		c.errs = append(c.errs, Diagnostic{Severity: "error", Message: fmt.Sprintf("unknown spread target %q", s.Target), Span: s.Span})
+		return nil
+	}
+	c.spreadStack[target] = true
+	compiled := c.block(base)
+	delete(c.spreadStack, target)
+	body, _ := compiled["body"].(map[string]any)
+	merged, _ := cloneAny(body).(map[string]any)
+	if merged == nil {
+		merged = map[string]any{}
+	}
+	if len(s.Body) > 0 {
+		overrides := c.nodesToBody(s.Body, currentType)
+		mergeMap(merged, overrides)
+	}
+	return merged
+}
+
+func (c *compiler) nodesToBody(nodes []Node, currentType string) map[string]any {
+	body := make(map[string]any, len(nodes))
+	for _, n := range nodes {
+		switch x := n.(type) {
+		case *Assignment:
+			setNormalized(body, x.Name, c.valueWithRedact(x.Value, x.Sensitive))
+		case *Block:
+			body[x.Type] = appendBlock(body[x.Type], c.block(x))
+		case *Spread:
+			if merged := c.spreadBody(currentType, x); merged != nil {
+				mergeMap(body, merged)
+			}
+		}
+	}
+	return body
 }
 
 func (c *compiler) value(v Value) any {
@@ -562,6 +647,10 @@ func (c *compiler) valueWithRedact(v Value, sensitive bool) any {
 				setNormalized(m, y.Name, c.valueWithRedact(y.Value, y.Sensitive))
 			case *Block:
 				m[y.Type] = appendBlock(m[y.Type], c.block(y))
+			case *Spread:
+				if merged := c.spreadBody("", y); merged != nil {
+					mergeMap(m, merged)
+				}
 			}
 		}
 		return m
@@ -1111,6 +1200,32 @@ func CompileFile(path string, opts *Options) (*Normalized, error) {
 	return Compile(doc, opts)
 }
 
+func ResolveDocument(doc *Document, opts *Options) (*Document, []Diagnostic) {
+	if opts == nil {
+		opts = &Options{}
+	}
+	if opts.BaseDir == "" && doc.File != "" && doc.File != "<input>" {
+		opts.BaseDir = filepath.Dir(doc.File)
+	}
+	c := &compiler{
+		opts:        opts,
+		out:         &Normalized{},
+		consts:      map[string]Value{},
+		sets:        map[string][]Value{},
+		types:       map[string]string{},
+		schemaDecls: map[string]*SchemaDecl{},
+	}
+	items := doc.Items
+	if opts.ResolveImports {
+		items = c.resolveImports(items, opts.BaseDir, map[string]bool{})
+	}
+	if opts.ResolveModules {
+		items = c.resolveModules(items, opts.BaseDir, map[string]bool{})
+	}
+	resolved := &Document{File: doc.File, Items: items, Span: doc.Span}
+	return resolved, c.errs
+}
+
 func ToJSON(src []byte, opts *Options) ([]byte, error) {
 	n, err := CompileBytes(src, opts)
 	if err != nil {
@@ -1151,9 +1266,13 @@ func resolveModuleFiles(source, baseDir string) ([]string, error) {
 	if !st.IsDir() {
 		return []string{source}, nil
 	}
-	matches, err := filepath.Glob(filepath.Join(source, "*.bcl"))
-	if err != nil {
-		return nil, err
+	var matches []string
+	for _, ext := range []string{"*.bcl", "*.schema"} {
+		files, err := filepath.Glob(filepath.Join(source, ext))
+		if err != nil {
+			return nil, err
+		}
+		matches = append(matches, files...)
 	}
 	sort.Strings(matches)
 	return matches, nil
@@ -1204,6 +1323,31 @@ func mergeMap(dst, src map[string]any) {
 			}
 		}
 		dst[k] = v
+	}
+}
+
+func cloneAny(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, v := range x {
+			out[k] = cloneAny(v)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, v := range x {
+			out[i] = cloneAny(v)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(x))
+		for i, v := range x {
+			out[i], _ = cloneAny(v).(map[string]any)
+		}
+		return out
+	default:
+		return v
 	}
 }
 

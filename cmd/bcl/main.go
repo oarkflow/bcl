@@ -109,7 +109,9 @@ func runValidate(args []string) error {
 	if err != nil {
 		return err
 	}
-	diags := bcl.Validate(doc, &bcl.Options{Strict: *strict})
+	opts := &bcl.Options{Strict: *strict, ResolveImports: true, ResolveModules: true, BaseDir: filepath.Dir(fs.Arg(0))}
+	resolved, resolveDiags := bcl.ResolveDocument(doc, opts)
+	diags := append(resolveDiags, bcl.Validate(resolved, opts)...)
 	printDiags(diags)
 	return hasErrors(diags)
 }

@@ -16,11 +16,12 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 	sets := map[string]bool{}
 	setUses := map[string]int{}
 	schemas := map[string]*SchemaDecl{}
+	schemaNames := collectSchemaNames(doc.Items)
 	aliases := map[string]string{}
 	predicates := map[string]*Block{}
 	refs := map[string][]Span{}
-	var walk func([]Node)
-	walk = func(nodes []Node) {
+	var walk func([]Node, int, string)
+	walk = func(nodes []Node, depth int, currentType string) {
 		for _, n := range nodes {
 			switch x := n.(type) {
 			case *ConstDecl:
@@ -43,12 +44,14 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 			case *Block:
 				if x.ID != "" {
 					key := x.Type + "." + x.ID
-					if old, ok := seen[key]; ok {
+					if old, ok := seen[key]; ok && shouldCheckGlobalBlockDuplicate(x.Type, depth, schemaNames) {
 						_ = old
 						diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("duplicate block %s", key), Span: x.Span})
 					}
-					seen[key] = x.Span
-					blocks[key] = x
+					if _, ok := blocks[key]; !ok {
+						seen[key] = x.Span
+						blocks[key] = x
+					}
 				}
 				if x.Type == "set" && x.ID != "" {
 					if sets[x.ID] {
@@ -62,16 +65,25 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 					}
 					predicates[x.ID] = x
 				}
-				walk(x.Body)
+				walk(x.Body, depth+1, x.Type)
+			case *Spread:
+				target := x.Target
+				if target != "" && !strings.Contains(target, ".") && currentType != "" {
+					target = currentType + "." + target
+				}
+				if target != "" {
+					refs[target] = append(refs[target], x.Span)
+				}
+				walk(x.Body, depth, currentType)
 			case *Assignment:
 				validateValueAdvanced(x.Value, &diags, refs, constUses, setUses)
 				if o, ok := x.Value.(*Object); ok {
-					walk(o.Fields)
+					walk(o.Fields, depth, currentType)
 				}
 			}
 		}
 	}
-	walk(doc.Items)
+	walk(doc.Items, 0, "")
 	validateSchemas(doc.Items, schemas, aliases, &diags)
 	validateReferences(blocks, refs, &diags)
 	validateCycles(blocks, refs, &diags)
@@ -85,6 +97,37 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 		validateUnknownSchemaFields(doc.Items, schemas, &diags)
 	}
 	return diags
+}
+
+func collectSchemaNames(nodes []Node) map[string]bool {
+	out := map[string]bool{}
+	var walk func([]Node)
+	walk = func(nodes []Node) {
+		for _, n := range nodes {
+			switch x := n.(type) {
+			case *SchemaDecl:
+				out[x.Name] = true
+			case *Block:
+				walk(x.Body)
+			case *Assignment:
+				if o, ok := x.Value.(*Object); ok {
+					walk(o.Fields)
+				}
+			}
+		}
+	}
+	walk(nodes)
+	return out
+}
+
+func shouldCheckGlobalBlockDuplicate(blockType string, depth int, schemaNames map[string]bool) bool {
+	if blockType == "override" {
+		return false
+	}
+	if depth == 0 {
+		return true
+	}
+	return !schemaNames[blockType]
 }
 
 func validatePredicates(nodes []Node, predicates map[string]*Block, diags *[]Diagnostic) {
@@ -338,7 +381,7 @@ func Lint(doc *Document, opts *Options) []Diagnostic {
 			hasVersion = true
 		}
 	}
-	if !hasVersion {
+	if !hasVersion && (opts == nil || !opts.Partial) {
 		diags = append(diags, Diagnostic{Severity: "warning", Message: "missing bcl version declaration", Span: doc.Span})
 	}
 	decls, uses := declarationUsage(doc)
@@ -737,16 +780,40 @@ func splitTypeList(s string) []string {
 }
 
 func validateReferences(blocks map[string]*Block, refs map[string][]Span, diags *[]Diagnostic) {
-	for ref, spans := range refs {
-		if ref == "" || strings.HasPrefix(ref, "config.") || strings.Contains(ref, ".") && blocks[ref] != nil {
-			continue
-		}
-		if strings.Contains(ref, ".") && blocks[ref] == nil {
-			for _, sp := range spans {
-				*diags = append(*diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("unknown reference %q", ref), Span: sp})
-			}
+	blockTypes := map[string]bool{}
+	for key := range blocks {
+		if root, _, ok := strings.Cut(key, "."); ok {
+			blockTypes[root] = true
 		}
 	}
+	for ref, spans := range refs {
+		root, _, dotted := strings.Cut(ref, ".")
+		if ref == "" || !dotted || !blockTypes[root] || blocks[ref] != nil || hasBlockPathPrefix(blocks, ref) {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, sp := range spans {
+			key := fmt.Sprintf("%d:%d:%d:%d", sp.Start.Line, sp.Start.Column, sp.End.Line, sp.End.Column)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			*diags = append(*diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("unknown reference %q", ref), Span: sp})
+		}
+	}
+}
+
+func hasBlockPathPrefix(blocks map[string]*Block, ref string) bool {
+	parts := strings.Split(ref, ".")
+	if len(parts) < 3 {
+		return false
+	}
+	for i := len(parts) - 1; i >= 2; i-- {
+		if blocks[strings.Join(parts[:i], ".")] != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCycles(blocks map[string]*Block, refs map[string][]Span, diags *[]Diagnostic) {
@@ -1143,15 +1210,6 @@ func namedFields(n Node) (string, []Node, Span, bool) {
 	return "", nil, Span{}, false
 }
 
-func hasField(b *Block, name string) bool {
-	for _, n := range b.Body {
-		if a, ok := n.(*Assignment); ok && a.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
 func hasFieldInNodes(nodes []Node, name string) bool {
 	for _, n := range nodes {
 		if a, ok := n.(*Assignment); ok && a.Name == name {
@@ -1179,17 +1237,6 @@ func stringFromFields(nodes []Node, name string) string {
 	return ""
 }
 
-func hasDeniedLocalhost(b *Block) bool {
-	for _, n := range b.Body {
-		child, ok := n.(*Assignment)
-		if !ok || child.Name != "deny_hosts" {
-			continue
-		}
-		return true
-	}
-	return false
-}
-
 func allowedHTTPMethod(method string) bool {
 	switch method {
 	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
@@ -1197,10 +1244,6 @@ func allowedHTTPMethod(method string) bool {
 	default:
 		return false
 	}
-}
-
-func statusValueValid(b *Block, name string) bool {
-	return statusValueValidNodes(b.Body, name)
 }
 
 func statusValueValidNodes(nodes []Node, name string) bool {

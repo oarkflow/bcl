@@ -65,6 +65,15 @@ type Block struct {
 func (*Block) node()           {}
 func (b *Block) GetSpan() Span { return b.Span }
 
+type Spread struct {
+	Target string `json:"target"`
+	Body   []Node `json:"body,omitempty"`
+	Span   Span   `json:"span,omitempty"`
+}
+
+func (*Spread) node()           {}
+func (s *Spread) GetSpan() Span { return s.Span }
+
 type ConstDecl struct {
 	Name  string `json:"name"`
 	Value Value  `json:"value"`
@@ -184,6 +193,9 @@ func (o *Object) ToInterface(redact bool) any {
 			m[x.Name] = x.Value.ToInterface(redact || x.Sensitive)
 		case *Block:
 			m[x.Type] = appendBlock(m[x.Type], normalizeBlock(x, redact))
+		case *Spread:
+			// Spread resolution needs compiler context, so raw AST conversion keeps a marker.
+			m["$spread"] = appendBlock(m["$spread"], map[string]any{"target": x.Target})
 		}
 	}
 	return m

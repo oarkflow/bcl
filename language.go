@@ -26,6 +26,7 @@ const (
 	SymbolType       SymbolKind = "type"
 	SymbolFunction   SymbolKind = "function"
 	SymbolReference  SymbolKind = "reference"
+	SymbolRuntime    SymbolKind = "runtime"
 )
 
 type LanguageSymbol struct {
@@ -58,6 +59,15 @@ type Completion struct {
 	InsertText    string `json:"insert_text,omitempty"`
 }
 
+type hintInfo struct {
+	Name        string
+	Kind        SymbolKind
+	Signature   string
+	Description string
+	InsertText  string
+	Examples    []string
+}
+
 type Analysis struct {
 	File         string                    `json:"file"`
 	Symbols      []LanguageSymbol          `json:"symbols"`
@@ -75,11 +85,11 @@ type Analysis struct {
 func TokenizeFile(name string, src []byte) ([]SyntaxToken, []Diagnostic) {
 	toks, errs := lex(name, src)
 	out := make([]SyntaxToken, 0, len(toks))
-	for _, tok := range toks {
+	for i, tok := range toks {
 		if tok.kind == tokEOF || tok.kind == tokNewline {
 			continue
 		}
-		out = append(out, SyntaxToken{Type: tokenEditorType(tok), Text: tok.text, Span: tok.span})
+		out = append(out, SyntaxToken{Type: tokenEditorTypeAt(toks, i), Text: tok.text, Span: tok.span})
 	}
 	return out, errs
 }
@@ -105,19 +115,28 @@ func AnalyzeFile(name string, src []byte, opts *Options) (*Analysis, []Diagnosti
 		a.Completions = DefaultCompletions()
 		return a, a.Diagnostics
 	}
-	a.Symbols = analyzeNodes(doc.Items, "", a)
-	a.Diagnostics = append(a.Diagnostics, Lint(doc, opts)...)
+	analysisDoc := doc
+	if opts != nil && (opts.ResolveImports || opts.ResolveModules) {
+		resolved, diags := ResolveDocument(doc, opts)
+		a.Diagnostics = append(a.Diagnostics, diags...)
+		analysisDoc = resolved
+	}
+	a.Symbols = analyzeNodes(analysisDoc.Items, "", a)
+	a.Diagnostics = append(a.Diagnostics, Lint(analysisDoc, opts)...)
 	a.Completions = analysisCompletions(a)
 	return a, a.Diagnostics
 }
 
 func DefaultCompletions() []Completion {
 	var out []Completion
-	for _, kw := range []string{"import", "param", "predicate", "test", "const", "type", "schema", "bcl", "namespace", "profile", "module", "override", "runtime", "evaluation", "audit", "context", "session", "policy", "rule", "set", "pipeline", "step", "connection", "http", "connector", "source", "action", "file", "command", "output", "when", "all", "any", "not", "none"} {
-		out = append(out, Completion{Label: kw, Kind: "keyword", Detail: "BCL keyword/block"})
+	for _, item := range keywordHints {
+		out = append(out, Completion{Label: item.Name, Kind: "keyword", Detail: item.Signature, Documentation: item.Description})
 	}
-	for _, fn := range []string{"env", "ref", "set", "http", "concat", "upper", "lower", "contains", "exists", "hash", "base64"} {
-		out = append(out, Completion{Label: fn, Kind: "function", Detail: "BCL function", InsertText: fn + "($1)"})
+	for _, item := range builtinFunctionHints {
+		out = append(out, Completion{Label: item.Name, Kind: "function", Detail: item.Signature, Documentation: item.Description, InsertText: item.InsertText})
+	}
+	for _, item := range runtimeValueHints {
+		out = append(out, Completion{Label: item.Name, Kind: "field", Detail: item.Signature, Documentation: item.Description})
 	}
 	for _, snip := range []Completion{
 		{Label: "schema block", Kind: "snippet", Detail: "Schema declaration", InsertText: "schema ${1:name} {\n  required ${2:field} ${3:string}\n}"},
@@ -133,12 +152,31 @@ func DefaultCompletions() []Completion {
 }
 
 func SymbolAt(a *Analysis, line, column int) (LanguageSymbol, bool) {
+	var refBest LanguageSymbol
+	var refOK bool
 	for _, r := range a.References {
 		if containsPosition(r.Span, line, column) {
-			if decl, found := a.Declarations[r.Name]; found {
-				return decl, true
+			var candidate LanguageSymbol
+			var found bool
+			if decl, ok := a.Declarations[r.Name]; ok {
+				candidate = decl
+				found = true
+			} else if sym, ok := builtinFunctionSymbol(r.Name, r.Span); ok {
+				candidate = sym
+				found = true
+			} else if sym, ok := runtimeReferenceSymbol(r.Name, r.Span); ok {
+				candidate = sym
+				found = true
+			}
+			if found && (!refOK || spanSize(r.Span) < spanSize(refBest.SelectionSpan)) {
+				refBest = candidate
+				refBest.SelectionSpan = r.Span
+				refOK = true
 			}
 		}
+	}
+	if refOK {
+		return refBest, true
 	}
 	var best LanguageSymbol
 	var ok bool
@@ -171,6 +209,12 @@ func HoverMarkdown(s LanguageSymbol) string {
 }
 
 func RichHoverMarkdown(a *Analysis, s LanguageSymbol, src []byte) string {
+	if s.Kind == SymbolRuntime {
+		return richRuntimeHover(a, s, src)
+	}
+	if s.Kind == SymbolFunction {
+		return richFunctionHover(a, s, src)
+	}
 	if s.Kind == SymbolBlock || s.Kind == SymbolSet {
 		switch s.Detail {
 		case "connection":
@@ -240,6 +284,11 @@ func richFallbackHover(a *Analysis, s LanguageSymbol, src []byte) string {
 }
 
 func tokenEditorType(tok token) string {
+	return tokenEditorTypeAt([]token{tok}, 0)
+}
+
+func tokenEditorTypeAt(toks []token, i int) string {
+	tok := toks[i]
 	switch tok.kind {
 	case tokIdent:
 		if isKeyword(tok.text) {
@@ -247,6 +296,12 @@ func tokenEditorType(tok token) string {
 		}
 		if isExprOperator(tok.text) {
 			return "operator"
+		}
+		if nextSignificantToken(toks, i).kind == tokLParen || isBuiltinFunction(tok.text) {
+			return "function"
+		}
+		if i == 0 || previousSignificantToken(toks, i).kind == tokNewline || previousSignificantToken(toks, i).kind == tokLBrace {
+			return "property"
 		}
 		return "identifier"
 	case tokString, tokHeredoc:
@@ -258,6 +313,29 @@ func tokenEditorType(tok token) string {
 	default:
 		return "punctuation"
 	}
+}
+
+func previousSignificantToken(toks []token, i int) token {
+	for j := i - 1; j >= 0; j-- {
+		if toks[j].kind != tokNewline {
+			return toks[j]
+		}
+	}
+	return token{kind: tokEOF}
+}
+
+func nextSignificantToken(toks []token, i int) token {
+	for j := i + 1; j < len(toks); j++ {
+		if toks[j].kind != tokNewline {
+			return toks[j]
+		}
+	}
+	return token{kind: tokEOF}
+}
+
+func isBuiltinFunction(s string) bool {
+	_, ok := builtinFunctionHint(s)
+	return ok
 }
 
 func analyzeNodes(nodes []Node, container string, a *Analysis) []LanguageSymbol {
@@ -359,6 +437,9 @@ func analyzeValue(v Value, a *Analysis) {
 	case *Object:
 		a.Symbols = append(a.Symbols, analyzeNodes(x.Fields, "", a)...)
 	case *Call:
+		if _, ok := builtinFunctionHint(x.Name); ok {
+			a.References = append(a.References, ReferenceUse{Name: x.Name, Kind: "function", Span: x.Span})
+		}
 		for _, arg := range x.Args {
 			analyzeValue(arg, a)
 		}
@@ -511,8 +592,193 @@ func emptyDefault(s, fallback string) string {
 	return s
 }
 
+var keywordHints = []hintInfo{
+	{Name: "import", Signature: `import "./file.bcl" [as alias]`, Description: "Loads another BCL file into the current compilation unit. Use `as` to place imported content under a namespace."},
+	{Name: "bcl", Signature: `bcl { version "1.0" }`, Description: "Declares document-level BCL metadata such as language version and strict mode."},
+	{Name: "const", Signature: `const NAME = value`, Description: "Declares a reusable constant available to later references."},
+	{Name: "schema", Signature: `schema name { required field string }`, Description: "Defines validation rules for blocks with the same type name."},
+	{Name: "type", Signature: `type Name = string`, Description: "Declares a type alias used by schemas and parameters."},
+	{Name: "param", Signature: `param name string { required true }`, Description: "Declares an input contract for modules."},
+	{Name: "profile", Signature: `profile "name" { ... }`, Description: "Defines environment-specific settings and scoped overrides."},
+	{Name: "override", Signature: `override target { ... }`, Description: "Overrides fields on an existing block, often inside a profile."},
+	{Name: "module", Signature: `module "name" { source "./module" }`, Description: "Loads reusable BCL content from a module source directory."},
+	{Name: "namespace", Signature: `namespace name { ... }`, Description: "Groups declarations and blocks under a named namespace."},
+	{Name: "runtime", Signature: `runtime { ... }`, Description: "Configures runtime behavior and sandbox settings."},
+	{Name: "evaluation", Signature: `evaluation { ... }`, Description: "Configures policy/rule evaluation behavior."},
+	{Name: "audit", Signature: `audit { ... }`, Description: "Configures audit output and redaction fields."},
+	{Name: "context", Signature: `context { ... }`, Description: "Declares values read from host-provided context."},
+	{Name: "session", Signature: `session { ... }`, Description: "Declares values read from host-provided session data."},
+	{Name: "policy", Signature: `policy "name" { effect allow }`, Description: "Defines a policy with effect, priority, conditions, and actions."},
+	{Name: "rule", Signature: `rule "name" { when { ... } then { ... } }`, Description: "Defines reusable rule logic with conditions and outcomes."},
+	{Name: "set", Signature: `set "name" { item }`, Description: "Defines a reusable collection consumed by `set(\"name\")`."},
+	{Name: "predicate", Signature: `predicate "name" { all { ... } }`, Description: "Defines a reusable boolean condition."},
+	{Name: "test", Signature: `test "name" { input { ... } expect { ... } }`, Description: "Defines an executable BCL test fixture."},
+	{Name: "pipeline", Signature: `pipeline "name" { step "id" { ... } }`, Description: "Defines a workflow graph made of steps and connections."},
+	{Name: "step", Signature: `step "id" { kind task }`, Description: "Defines a workflow state such as task, decision, action, or terminal."},
+	{Name: "connection", Signature: `connection "id" { from step.a to step.b }`, Description: "Connects workflow steps with transition metadata."},
+	{Name: "http", Signature: `http "name" { base_url "https://..." }`, Description: "Defines an HTTP integration configuration."},
+	{Name: "connector", Signature: `connector "name" { type http }`, Description: "Defines an external connector surface."},
+	{Name: "source", Signature: `source "name" { type http }`, Description: "Defines an external data source integration."},
+	{Name: "action", Signature: `action "name" { type http }`, Description: "Defines an executable integration action."},
+	{Name: "file", Signature: `file "name" { path "./out" mode write }`, Description: "Defines file access configuration."},
+	{Name: "command", Signature: `command "name" { exec [...] }`, Description: "Defines command execution configuration."},
+	{Name: "output", Signature: `output { fields [...] }`, Description: "Defines export shape, field filtering, and redaction."},
+	{Name: "when", Signature: `when { condition }`, Description: "Introduces a condition block or expression."},
+	{Name: "then", Signature: `then { emit "event" }`, Description: "Introduces outcomes for matched rules or workflow steps."},
+	{Name: "all", Signature: `all { ... }`, Description: "Requires every child condition to match."},
+	{Name: "any", Signature: `any { ... }`, Description: "Requires at least one child condition to match."},
+	{Name: "not", Signature: `not { ... }`, Description: "Negates a child condition."},
+	{Name: "none", Signature: `none`, Description: "Represents no diagnostics or no matches, depending on context."},
+}
+
+var builtinFunctionHints = []hintInfo{
+	{Name: "env", Signature: `env(name, default?)`, Description: "Reads an environment variable. Returns the optional default when the variable is absent.", InsertText: "env($1)", Examples: []string{`env("APP_ENV", "dev")`}},
+	{Name: "env.required", Signature: `env.required(name)`, Description: "Reads an environment variable and fails validation/evaluation when it is missing.", InsertText: "env.required($1)", Examples: []string{`env.required("DATABASE_URL")`}},
+	{Name: "env.int", Signature: `env.int(name, default?)`, Description: "Reads an environment variable and converts it to an integer.", InsertText: "env.int($1)", Examples: []string{`env.int("WORKERS", 8)`}},
+	{Name: "env.bool", Signature: `env.bool(name, default?)`, Description: "Reads an environment variable and converts it to a boolean.", InsertText: "env.bool($1)", Examples: []string{`env.bool("DEBUG", false)`}},
+	{Name: "env.duration", Signature: `env.duration(name, default?)`, Description: "Reads an environment variable and converts it to a duration.", InsertText: "env.duration($1)", Examples: []string{`env.duration("CACHE_TTL", 5m)`}},
+	{Name: "context", Signature: `context(path, default?)`, Description: "Reads a value from host-provided context using a dotted path.", InsertText: "context($1)", Examples: []string{`context("request.id", "unknown")`}},
+	{Name: "context.required", Signature: `context.required(path)`, Description: "Reads a required context value and fails when absent.", InsertText: "context.required($1)", Examples: []string{`context.required("request.id")`}},
+	{Name: "context.float", Signature: `context.float(path, default?)`, Description: "Reads a context value as a floating-point number.", InsertText: "context.float($1)", Examples: []string{`context.float("request.score", 0)`}},
+	{Name: "context.list", Signature: `context.list(path, separator?)`, Description: "Reads a context value as a list, optionally splitting a string value.", InsertText: "context.list($1)", Examples: []string{`context.list("request.flags", ",")`}},
+	{Name: "session", Signature: `session(path, default?)`, Description: "Reads a value from host-provided session data.", InsertText: "session($1)", Examples: []string{`session("id", "anonymous")`}},
+	{Name: "session.required", Signature: `session.required(path)`, Description: "Reads a required session value and fails when absent.", InsertText: "session.required($1)", Examples: []string{`session.required("subject.id")`}},
+	{Name: "session.bool", Signature: `session.bool(path, default?)`, Description: "Reads a session value as a boolean.", InsertText: "session.bool($1)", Examples: []string{`session.bool("attrs.mfa", false)`}},
+	{Name: "session.duration", Signature: `session.duration(path, default?)`, Description: "Reads a session value as a duration.", InsertText: "session.duration($1)", Examples: []string{`session.duration("expires_in", 30m)`}},
+	{Name: "ref", Signature: `ref(target)`, Description: "Creates an explicit reference to another BCL declaration or block.", InsertText: "ref($1)"},
+	{Name: "set", Signature: `set(name)`, Description: "Loads values from a named `set` block.", InsertText: "set($1)", Examples: []string{`set("admin-roles")`}},
+	{Name: "sensitive", Signature: `sensitive(value)`, Description: "Marks a value for redaction in exported output and hover summaries.", InsertText: "sensitive($1)"},
+	{Name: "concat", Signature: `concat(values...)`, Description: "Concatenates values into a string.", InsertText: "concat($1)"},
+	{Name: "upper", Signature: `upper(value)`, Description: "Converts a string to uppercase.", InsertText: "upper($1)"},
+	{Name: "lower", Signature: `lower(value)`, Description: "Converts a string to lowercase.", InsertText: "lower($1)"},
+	{Name: "contains", Signature: `contains(collection, value)`, Description: "Checks whether a string or collection contains a value.", InsertText: "contains($1)"},
+	{Name: "exists", Signature: `exists(value)`, Description: "Checks whether a runtime value is present.", InsertText: "exists($1)"},
+	{Name: "hash", Signature: `hash(value)`, Description: "Computes a hash for a value when hash support is enabled.", InsertText: "hash($1)"},
+	{Name: "base64", Signature: `base64(value)`, Description: "Encodes a value as Base64 when encoding support is enabled.", InsertText: "base64($1)"},
+	{Name: "cidr", Signature: `cidr(value)`, Description: "Treats a string as a CIDR/network value.", InsertText: "cidr($1)"},
+	{Name: "email", Signature: `email(value)`, Description: "Treats a string as an email value.", InsertText: "email($1)"},
+	{Name: "url", Signature: `url(value)`, Description: "Treats a string as a URL value.", InsertText: "url($1)"},
+	{Name: "regex", Signature: `regex(pattern)`, Description: "Compiles a regular expression pattern for matching.", InsertText: "regex($1)"},
+}
+
+var runtimeValueHints = []hintInfo{
+	{Name: "time.now", Signature: "timestamp", Description: "Current evaluation timestamp supplied by the host runtime. Use it for audit fields, generated metadata, and time-based decisions.", Examples: []string{"time time.now"}},
+	{Name: "decision.effect", Signature: "string", Description: "Final decision effect produced by policy or rule evaluation, commonly `allow` or `deny`.", Examples: []string{"decision decision.effect"}},
+	{Name: "decision.reason", Signature: "string", Description: "Human-readable decision reason or denial explanation supplied by the evaluator."},
+	{Name: "decision.matched_rule", Signature: "string", Description: "Identifier of the rule or policy that determined the current decision."},
+	{Name: "request.id", Signature: "string", Description: "Stable request identifier supplied by the host application."},
+	{Name: "request.path", Signature: "string", Description: "Request path used in routing, policy, and integration conditions."},
+	{Name: "request.method", Signature: "string", Description: "HTTP method or operation name for the current request."},
+	{Name: "request.ip", Signature: "string", Description: "Client or caller IP address supplied by the host application."},
+	{Name: "request.tenant_id", Signature: "string", Description: "Tenant identifier attached to the current request."},
+	{Name: "request.amount", Signature: "number", Description: "Request amount or transaction value supplied by domain-specific input."},
+	{Name: "request.risk_score", Signature: "number", Description: "Risk score supplied by prior evaluation or external risk systems."},
+	{Name: "request.geo.country", Signature: "string", Description: "Country code inferred or supplied for the request location."},
+	{Name: "subject.id", Signature: "string", Description: "Identifier for the user, principal, or entity being evaluated."},
+	{Name: "subject.tenant", Signature: "string", Description: "Tenant associated with the current subject or principal."},
+	{Name: "subject.roles", Signature: "list<string>", Description: "Roles assigned to the current subject."},
+	{Name: "subject.email", Signature: "string", Description: "Email address for the current subject."},
+	{Name: "subject.status", Signature: "string", Description: "Lifecycle/status value for the subject, such as active or blocked."},
+	{Name: "subject.allowed_countries", Signature: "list<string>", Description: "Countries the subject is allowed to operate from."},
+	{Name: "subject.clearance", Signature: "string", Description: "Subject clearance level used by policy checks."},
+	{Name: "resource.id", Signature: "string", Description: "Identifier for the resource being accessed or modified."},
+	{Name: "resource.owner_id", Signature: "string", Description: "Owner identifier for the target resource."},
+	{Name: "context.request.id", Signature: "string", Description: "Request identifier nested under generic host context."},
+	{Name: "context.request.path", Signature: "string", Description: "Request path nested under generic host context."},
+	{Name: "context.request.score", Signature: "number", Description: "Numeric score nested under generic host context."},
+	{Name: "context.request.flags", Signature: "list<string>", Description: "Flags attached to the request in host context."},
+	{Name: "session.id", Signature: "string", Description: "Current session identifier."},
+	{Name: "session.attrs.mfa", Signature: "bool", Description: "Whether the current session has satisfied MFA."},
+	{Name: "session.subject.id", Signature: "string", Description: "Subject identifier stored inside session data."},
+	{Name: "body.id", Signature: "any", Description: "Field read from an integration response body."},
+	{Name: "body.email", Signature: "string", Description: "Email field read from an integration response body."},
+	{Name: "body.roles", Signature: "list<string>", Description: "Roles field read from an integration response body."},
+	{Name: "body.attributes", Signature: "map", Description: "Attributes object read from an integration response body."},
+	{Name: "app.name", Signature: "string", Description: "Application name supplied by host context or config."},
+	{Name: "applicant.name", Signature: "string", Description: "Applicant display name supplied by workflow input or host data."},
+}
+
+func runtimeHint(name string) (hintInfo, bool) {
+	for _, item := range runtimeValueHints {
+		if item.Name == name {
+			return item, true
+		}
+	}
+	root, _, dotted := strings.Cut(name, ".")
+	if !dotted {
+		return hintInfo{}, false
+	}
+	switch root {
+	case "time":
+		return hintInfo{Name: name, Signature: "runtime time value", Description: "Time value supplied by the host runtime."}, true
+	case "decision":
+		return hintInfo{Name: name, Signature: "runtime decision value", Description: "Decision metadata supplied by policy or rule evaluation."}, true
+	case "request":
+		return hintInfo{Name: name, Signature: "runtime request value", Description: "Request-scoped value supplied by the host application."}, true
+	case "subject":
+		return hintInfo{Name: name, Signature: "runtime subject value", Description: "Subject/principal value supplied by the host application."}, true
+	case "resource":
+		return hintInfo{Name: name, Signature: "runtime resource value", Description: "Resource-scoped value supplied by the host application."}, true
+	case "context":
+		return hintInfo{Name: name, Signature: "runtime context value", Description: "Context value supplied by the host application."}, true
+	case "session":
+		return hintInfo{Name: name, Signature: "runtime session value", Description: "Session value supplied by the host application."}, true
+	case "body":
+		return hintInfo{Name: name, Signature: "integration body value", Description: "Value read from an integration response body."}, true
+	case "app", "applicant":
+		return hintInfo{Name: name, Signature: "domain input value", Description: "Domain-specific value supplied by input, context, or the host application."}, true
+	default:
+		return hintInfo{}, false
+	}
+}
+
+func builtinFunctionHint(name string) (hintInfo, bool) {
+	for _, item := range builtinFunctionHints {
+		if item.Name == name {
+			return item, true
+		}
+	}
+	return hintInfo{}, false
+}
+
+func builtinFunctionSymbol(name string, sp Span) (LanguageSymbol, bool) {
+	info, ok := builtinFunctionHint(name)
+	if !ok {
+		return LanguageSymbol{}, false
+	}
+	return LanguageSymbol{Name: name, Detail: info.Signature, Kind: SymbolFunction, Span: sp, SelectionSpan: sp, Value: info.Signature, ValueKind: "function"}, true
+}
+
+func runtimeReferenceSymbol(name string, sp Span) (LanguageSymbol, bool) {
+	info, ok := runtimeHint(name)
+	if !ok {
+		return LanguageSymbol{}, false
+	}
+	return LanguageSymbol{Name: name, Detail: info.Signature, Kind: SymbolRuntime, Span: sp, SelectionSpan: sp, Value: name, ValueKind: "runtime", ReferencedTargets: []string{name}}, true
+}
+
+func hasDeclaredBlockType(a *Analysis, typ string) bool {
+	prefix := typ + "."
+	for name, sym := range a.Declarations {
+		if strings.HasPrefix(name, prefix) && (sym.Kind == SymbolBlock || sym.Kind == SymbolSet) {
+			return true
+		}
+	}
+	return false
+}
+
 func symbolBehavior(s LanguageSymbol) string {
 	switch s.Kind {
+	case SymbolRuntime:
+		if info, ok := runtimeHint(s.Name); ok {
+			return info.Description
+		}
+		return "Runtime value supplied by the host application."
+	case SymbolFunction:
+		if info, ok := builtinFunctionHint(s.Name); ok {
+			return info.Description
+		}
+		return "BCL built-in function."
 	case SymbolConst:
 		return "Defines a reusable constant. References to this name are resolved during validation and compilation."
 	case SymbolSchema:
@@ -584,6 +850,10 @@ func symbolLiveStructure(s LanguageSymbol) string {
 
 func symbolEvaluation(a *Analysis, s LanguageSymbol) string {
 	switch s.Kind {
+	case SymbolRuntime:
+		return "- Resolved at evaluation time from host-provided runtime data.\n- Not required to have a matching BCL declaration.\n- Included in hover and completion metadata from the runtime hint catalog."
+	case SymbolFunction:
+		return "- Parsed as a built-in function call.\n- Arguments are validated and evaluated according to function semantics.\n- Included in hover and completion metadata from the function hint catalog."
 	case SymbolConst:
 		return "- Parsed as a constant declaration.\n- Available as a reference completion.\n- Checked for unused/duplicate declarations by lint."
 	case SymbolSchema:
@@ -876,6 +1146,58 @@ func richAssignmentHover(a *Analysis, s LanguageSymbol, src []byte) string {
 	return b.String()
 }
 
+func richRuntimeHover(a *Analysis, s LanguageSymbol, src []byte) string {
+	var b strings.Builder
+	info, _ := runtimeHint(s.Name)
+	writeHoverHeader(&b, "runtime value", s, src)
+	if info.Signature != "" {
+		fmt.Fprintf(&b, "**Signature**\n\n`%s`\n\n", info.Signature)
+	}
+	if info.Description != "" {
+		b.WriteString("**What it does**\n\n")
+		b.WriteString(info.Description)
+		b.WriteString("\n\n")
+	}
+	if len(info.Examples) > 0 {
+		b.WriteString("**Examples**\n\n")
+		for _, ex := range info.Examples {
+			fmt.Fprintf(&b, "- `%s`\n", ex)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("**How BCL evaluates it**\n\n- BCL records this as a runtime reference.\n- The host application supplies the value during evaluation or simulation.\n- Validation does not require a matching BCL block declaration for this namespace.\n\n")
+	writeDiagnosticsOrOK(&b, a, s.Span, "No diagnostics for this runtime value.")
+	b.WriteString("\n")
+	writeHoverCommands(&b)
+	return b.String()
+}
+
+func richFunctionHover(a *Analysis, s LanguageSymbol, src []byte) string {
+	var b strings.Builder
+	info, _ := builtinFunctionHint(s.Name)
+	writeHoverHeader(&b, "function", s, src)
+	if info.Signature != "" {
+		fmt.Fprintf(&b, "**Signature**\n\n`%s`\n\n", info.Signature)
+	}
+	if info.Description != "" {
+		b.WriteString("**What it does**\n\n")
+		b.WriteString(info.Description)
+		b.WriteString("\n\n")
+	}
+	if len(info.Examples) > 0 {
+		b.WriteString("**Examples**\n\n")
+		for _, ex := range info.Examples {
+			fmt.Fprintf(&b, "- `%s`\n", ex)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("**How BCL evaluates it**\n\n- Parses the call and its arguments from the current document.\n- Evaluates the function only when the host enables the required capability.\n- Preserves the call span for diagnostics, hover, and completion help.\n\n")
+	writeDiagnosticsOrOK(&b, a, s.Span, "No diagnostics for this function call.")
+	b.WriteString("\n")
+	writeHoverCommands(&b)
+	return b.String()
+}
+
 func writeHoverHeader(b *strings.Builder, label string, s LanguageSymbol, src []byte) {
 	fmt.Fprintf(b, "### BCL %s `%s`\n\n", label, s.Name)
 	if s.Detail != "" {
@@ -1111,8 +1433,15 @@ func referenceTargetSummary(a *Analysis, context LanguageSymbol, target string) 
 	if target == "" {
 		return "empty reference."
 	}
+	if info, ok := runtimeHint(target); ok {
+		return info.Description
+	}
 	decl, ok := a.Declarations[target]
 	if !ok {
+		root, _, dotted := strings.Cut(target, ".")
+		if dotted && !hasDeclaredBlockType(a, root) {
+			return "runtime or host-provided value. Add it to the runtime hint catalog for a more specific description."
+		}
 		return "not declared in the current analysis index."
 	}
 	if decl.Detail == "step" {
@@ -1129,6 +1458,11 @@ func referenceTargetSummary(a *Analysis, context LanguageSymbol, target string) 
 
 func symbolBriefSummary(s LanguageSymbol) string {
 	switch s.Kind {
+	case SymbolRuntime:
+		if info, ok := runtimeHint(s.Name); ok {
+			return info.Description
+		}
+		return "runtime value supplied by the host application."
 	case SymbolConst:
 		if s.Value != "" {
 			return fmt.Sprintf("constant declaration; value `%s`; value kind `%s`.", s.Value, emptyDefault(s.ValueKind, s.Detail))
