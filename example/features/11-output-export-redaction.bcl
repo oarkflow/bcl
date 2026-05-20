@@ -1,0 +1,26 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+output "public-runtime" {
+  format json
+
+  fields {
+    body.engine
+    blocks
+    schemas
+  }
+
+  redact {
+    body.database_url
+    blocks.auth.token
+    blocks.headers.Authorization
+  }
+}
+
+secret_config {
+  database_url sensitive(env.required("DATABASE_URL"))
+  api_token sensitive(env.required("API_TOKEN"))
+  public_name "feature-export"
+}

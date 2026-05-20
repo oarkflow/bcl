@@ -1,0 +1,91 @@
+import "./common.bcl" as common
+
+name "ProcessGate"
+enabled true
+workers env.int("WORKERS", 8)
+debug env.bool("DEBUG", false)
+cache_ttl env.duration("CACHE_TTL", 5m)
+max_payload 512MB
+ratio 0.75
+start_date 2026-05-17
+release_at 2026-05-17T09:30:00Z
+admin_contact email("security@example.com")
+public_url url("https://processgate.example.com")
+description null
+
+server {
+  host env("HOST", "0.0.0.0")
+  port env.int("PORT", 8080)
+
+  tls {
+    enabled env.bool("TLS_ENABLED", true)
+    cert_file env("TLS_CERT", "/etc/processgate/tls.crt")
+    key_file sensitive(env.required("TLS_KEY"))
+  }
+}
+
+database {
+  url sensitive(env.required("DATABASE_URL"))
+  max_open 32
+  max_idle 8
+  connect_timeout 5s
+}
+
+limits {
+  request {
+    per_minute 1000
+    burst 50
+  }
+
+  storage {
+    max_size 5GB
+    retention 720h
+  }
+}
+
+headers [
+  {
+    name "X-Tenant-ID"
+    value request.tenant_id
+  },
+  {
+    name "X-Request-ID"
+    value request.id
+  }
+]
+
+message_template <<EOF
+Hello ${subject.name},
+
+Your request ${request.id} was accepted by ${app.name}.
+EOF
+
+runtime {
+  allow_functions {
+    env
+    regex
+    cidr
+    time
+    date
+    sha256
+  }
+
+  deny_functions {
+    exec
+    file
+    http
+  }
+}
+
+evaluation {
+  strategy deny_overrides
+  default deny
+}
+
+audit {
+  level detailed
+  fields {
+    use set("audit-fields")
+  }
+}
+

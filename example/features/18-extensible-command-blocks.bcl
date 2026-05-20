@@ -1,0 +1,411 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+import "./18-extensible-command-blocks.schema"
+
+# Capitalized bare blocks are generic command blocks.
+# Lowercase brace blocks stay as object values.
+Migration "1748976351_create_seo_metadatas_table" {
+  Version "1.0.0"
+  Description "Create table seo_metadatas."
+  Connection "default"
+
+  Up {
+    CreateTable "seo_metadatas" {
+      Column "id" {
+        type integer
+        primary_key true
+        auto_increment true
+        index true
+        unique true
+      }
+
+      Column "is_active" {
+        type boolean
+        default false
+      }
+
+      Column "status" {
+        type string
+        size 20
+        default active
+      }
+
+      Column "created_at" {
+        type datetime
+        default now
+      }
+
+      Column "updated_at" {
+        type datetime
+        default now
+      }
+
+      Column "deleted_at" {
+        type datetime
+        is_nullable true
+      }
+    }
+  }
+
+  Down {
+    DropTable "seo_metadatas" {
+      Cascade true
+    }
+  }
+}
+
+Migration "1748976352_create_audit_events_table" {
+  Version "1.0.0"
+  Description "Create table audit_events."
+  Connection "default"
+
+  Up {
+    CreateTable "audit_events" {
+      Column "id" {
+        type integer
+        primary_key true
+        auto_increment true
+      }
+
+      Column "event_type" {
+        type string
+        size 80
+        index true
+      }
+
+      Column "payload" {
+        type json
+        is_nullable false
+      }
+    }
+  }
+
+  Down {
+    DropTable "audit_events" {
+      Cascade true
+    }
+  }
+}
+
+network "RealWorldEnterprise" {
+  device Edge_Router {
+    type Router
+
+    interfaces {
+      eth0 {
+        ip "203.0.113.1"
+        protocol BGP
+        extra {
+          connection WAN
+          bandwidth "1Gbps"
+        }
+      }
+
+      eth1 {
+        ip "10.0.0.1"
+        protocol OSPF
+        extra {
+          area 0
+        }
+      }
+    }
+
+    access {
+      method ssh
+      ssh {
+        ip "127.0.0.1"
+        port 2222
+        username ciscoAdmin
+        password secret
+      }
+    }
+
+    extra {
+      management_ip "198.51.100.10"
+      location DataCenter1
+      vendor Cisco
+      ip "127.0.0.1"
+      username ciscoAdmin
+      password secret
+      connection_method ssh
+    }
+  }
+
+  device DataCenter_Switch {
+    type Switch
+
+    interfaces {
+      port1 {
+        protocol VLAN
+        vlan 10
+        extra {
+          speed "1Gbps"
+        }
+      }
+
+      port2 {
+        protocol VLAN
+        vlan 20
+        extra {
+          speed "1Gbps"
+        }
+      }
+
+      port3 {
+        protocol VLAN
+        vlan 30
+        extra {
+          speed "10Gbps"
+        }
+      }
+    }
+
+    extra {
+      management_ip "198.51.100.11"
+      location DataCenter1
+      vendor Juniper
+      ip "127.0.0.1"
+      connection_method api
+      api_token juniperToken
+    }
+  }
+
+  device Branch_Router {
+    type Router
+
+    interfaces {
+      eth0 {
+        ip "192.0.2.1"
+        protocol BGP
+        extra {
+          connection MPLS
+          bandwidth "500Mbps"
+        }
+      }
+
+      eth1 {
+        ip "10.0.1.1"
+        protocol OSPF
+        extra {
+          area 1
+        }
+      }
+    }
+
+    extra {
+      management_ip "198.51.100.12"
+      location BranchOffice
+      vendor Arista
+      ip "127.0.0.1"
+      username aristaAdmin
+      password secret
+      connection_method ssh
+    }
+  }
+
+  device Wireless_AP {
+    type AccessPoint
+
+    interfaces {
+      radio0 {
+        protocol WIFI
+        extra {
+          ssid EnterpriseWiFi
+          band "5GHz"
+        }
+      }
+
+      radio1 {
+        protocol WIFI
+        extra {
+          ssid EnterpriseWiFi
+          band "2.4GHz"
+        }
+      }
+    }
+
+    extra {
+      management_ip "198.51.100.13"
+      location BranchOffice
+      vendor Ubiquiti
+      ip "127.0.0.1"
+      username ubiquitiAdmin
+      password secret
+      connection_method ssh
+    }
+  }
+
+  connection Edge_to_Switch {
+    from device.Edge_Router.interfaces.eth1
+    to device.DataCenter_Switch.interfaces.port1
+    parameters {
+      bandwidth "1Gbps"
+      latency "2ms"
+    }
+  }
+
+  connection Switch_to_Branch {
+    from device.DataCenter_Switch.interfaces.port3
+    to device.Branch_Router.interfaces.eth1
+    parameters {
+      bandwidth "500Mbps"
+      vlan 30
+    }
+  }
+
+  connection Branch_to_AP {
+    from device.Branch_Router.interfaces.eth0
+    to device.Wireless_AP.interfaces.radio0
+    parameters {
+      bandwidth "100Mbps"
+      encryption WPA2
+    }
+  }
+
+  connection AP_Backhaul {
+    from device.Wireless_AP.interfaces.radio1
+    to device.Edge_Router.interfaces.eth0
+    parameters {
+      bandwidth "100Mbps"
+      encryption WPA2
+    }
+  }
+
+  automation Device_Failure {
+    trigger deviceFailure
+    condition device_down
+    action notify_AdminTeam
+  }
+
+  automation High_Latency {
+    trigger latencyThresholdExceeded
+    condition latency_over_100ms
+    action rerouteTraffic
+  }
+}
+
+sources "prod-db" {
+  type mysql
+  key "prod-db"
+  host localhost
+  port 3306
+  driver mysql
+  username root
+  password root
+  database cleardb
+  disablelogger true
+}
+
+sources "analytics-db-readable" {
+  type postgres
+  key "analytics-db-readable"
+  host localhost
+  port 5432
+  driver postgres
+  username analytics
+  password analytics
+  database warehouse
+  disablelogger true
+}
+
+sources "analytics-db-reporting" {
+  &analytics-db-readable {
+    key "analytics-db-reporting"
+    username reporting
+    password ""
+  }
+}
+
+sources "analytics-db-audit" {
+  &analytics-db-readable {
+    key "analytics-db-audit"
+    database audit_warehouse
+    username auditor
+    password ""
+  }
+}
+
+destinations "users-csv" {
+  type csv
+  key "users-csv"
+  file "users.csv"
+}
+
+destinations "credentials-csv" {
+  type csv
+  key "credentials-csv"
+  file "credentials.csv"
+}
+
+destinations "user-settings-csv" {
+  type csv
+  key "user-settings-csv"
+  file "user-settings.csv"
+}
+
+destinations "audit-events-jsonl" {
+  type jsonl
+  key "audit-events-jsonl"
+  file "audit-events.jsonl"
+}
+
+deduplication {
+  enabled true
+  field user_uid
+}
+
+checkpoint {
+  file "checkpoint.txt"
+  field user_uid
+}
+
+tables "users" {
+  old_name tbl_user
+  migrate true
+  clone_source false
+  batch_size 1000
+  truncate_destination true
+  destination_key "users-csv"
+
+  mapping {
+    user_id user_uid
+    email user_email_address
+    first_name user_first_name
+    last_name user_last_name
+    user_type user_type
+    created_at added_utc
+    created_by added_by
+  }
+}
+
+tables "credentials" {
+  old_name tbl_credentials
+  migrate true
+  batch_size 1000
+  destination_key "credentials-csv"
+
+  mapping {
+    user_id user_uid
+    password_hash credential_password_hash
+    created_at added_utc
+  }
+}
+
+tables "audit-events" {
+  old_name tbl_audit_event
+  migrate true
+  clone_source false
+  batch_size 500
+  truncate_destination true
+  destination_key "audit-events-jsonl"
+
+  mapping {
+    id audit_event_id
+    event_type audit_event_type
+    payload audit_payload
+    created_at added_utc
+  }
+}

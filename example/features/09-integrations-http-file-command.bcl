@@ -1,0 +1,65 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+runtime {
+  mode sandboxed
+}
+
+capabilities {
+  http {
+    allow_hosts {
+      "api.internal.example.com"
+    }
+
+    deny_hosts {
+      "localhost"
+      "127.0.0.1"
+      "169.254.169.254"
+    }
+  }
+
+  command {
+    enabled false
+  }
+}
+
+http "feature-api" {
+  base_url "https://api.internal.example.com"
+  timeout 5s
+
+  auth {
+    type api_key
+    location header
+    name "X-API-Key"
+    value sensitive(env.required("FEATURE_API_KEY"))
+  }
+
+  headers {
+    "Accept" "application/json"
+  }
+
+  request {
+    method GET
+    path "/features/${feature.id}"
+  }
+
+  response {
+    expect_status [200, 202]
+    format json
+  }
+}
+
+file "feature-output" {
+  path "./out/features.jsonl"
+  mode write
+  format jsonl
+}
+
+command "feature-tool" {
+  enabled false
+  exec "/usr/local/bin/feature-tool"
+  args ["--dry-run"]
+  timeout 5s
+}

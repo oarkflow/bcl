@@ -1,0 +1,69 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+schema predicate_suite {
+  required description string
+  optional when expression
+  optional cases list<object>
+}
+
+predicate_suite "bytecode-fast-paths" {
+  description "Expressions commonly compiled into zero-allocation VM fast paths"
+
+  when {
+    all {
+      subject.roles has_any ["admin", "superadmin"]
+      subject.status != "blocked"
+      resource.owner_id == subject.id
+      request.path matches regex("^/admin/.*")
+      request.id exists
+    }
+  }
+
+  cases [
+    {
+      name "role membership"
+      expr `subject.roles has_any ["admin", "superadmin"]`
+      expect true
+    },
+    {
+      name "string comparison"
+      expr `subject.status != "blocked"`
+      expect true
+    },
+    {
+      name "reference equality"
+      expr `resource.owner_id == subject.id`
+      expect true
+    },
+    {
+      name "regex match"
+      expr `request.path matches regex("^/admin/.*")`
+      expect true
+    },
+    {
+      name "exists check"
+      expr `request.id exists`
+      expect true
+    },
+    {
+      name "empty check"
+      expr `request.optional empty`
+      expect true
+    }
+  ]
+}
+
+predicate_suite "general-bytecode" {
+  description "Expressions that use the general VM stack"
+
+  when {
+    any {
+      subject.department == lower("ENGINEERING")
+      request.path starts_with concat("/", "admin")
+      request.score between 70 and 100
+    }
+  }
+}

@@ -1,0 +1,43 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+runtime_scope {
+  app context("app", "ProcessGate")
+  environment context("environment", env("APP_ENV", "dev"))
+  region context("region", "NP")
+
+  request {
+    id context.required("request.id")
+    ip context("request.ip", ip("10.1.2.3"))
+    path context("request.path", "/admin/settings")
+    score context.float("request.score", 95)
+    flags context.list("request.flags", ",")
+  }
+
+  browser_session {
+    id session.required("id")
+    subject_id session.required("subject.id")
+    created_at session("created_at", 2026-05-17T10:30:00Z)
+    expires_in session.duration("expires_in", 30m)
+
+    attrs {
+      mfa session.bool("attrs.mfa", true)
+      device session("attrs.device", "trusted")
+    }
+  }
+}
+
+rule "context-session-check" {
+  when {
+    all {
+      context.request.path starts_with "/admin"
+      session.attrs.mfa == true
+    }
+  }
+
+  then {
+    emit "context.session.allowed"
+  }
+}

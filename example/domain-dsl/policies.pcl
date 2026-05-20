@@ -1,0 +1,54 @@
+policy "deny-sensitive" {
+  tenant "org1"
+  effect deny
+  priority 90
+
+  match {
+    actions {
+      read
+      write
+      delete
+    }
+
+    resources {
+      document:sensitive:*
+    }
+  }
+
+  when {
+    subject.attrs.clearance != "high"
+  }
+
+  reason "CLEARANCE_REQUIRED"
+}
+
+policy "owner-or-admin" {
+  tenant "org1"
+  effect allow
+  priority 100
+
+  match {
+    actions {
+      read
+      write
+      delete
+    }
+
+    resources {
+      document:*
+    }
+  }
+
+  uses {
+    source("subject-profile")
+  }
+
+  when {
+    any {
+      resource.owner_id == subject.id
+      subject.roles has_any ["admin", "superadmin"]
+    }
+  }
+
+  reason "OWNER_OR_ADMIN"
+}

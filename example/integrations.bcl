@@ -1,0 +1,174 @@
+runtime {
+  mode sandboxed
+}
+
+capabilities {
+  command {
+    enabled false
+  }
+
+  file {
+    read ["./example/*.bcl", "./example/data/*"]
+    write ["./out/*"]
+  }
+
+  http {
+    allow_hosts {
+      "identity.internal.example.com"
+      "security.internal.example.com"
+    }
+
+    deny_hosts {
+      "localhost"
+      "127.0.0.1"
+      "169.254.169.254"
+    }
+  }
+}
+
+phase load {
+  allow {
+    env
+    file_read
+  }
+}
+
+phase validate {
+  allow {
+    schema
+    references
+  }
+}
+
+phase evaluate {
+  allow {
+    expressions
+    cache
+  }
+}
+
+phase execute {
+  allow {
+    http
+    file_write
+    command
+  }
+}
+
+http "identity-api" {
+  base_url "https://identity.internal.example.com"
+  timeout 5s
+
+  auth {
+    type bearer
+    token sensitive(env.required("IDENTITY_API_TOKEN"))
+  }
+
+  headers {
+    "Accept" "application/json"
+    "Content-Type" "application/json"
+    "User-Agent" "BCL-Client/1.0"
+  }
+
+  retry {
+    attempts 3
+    backoff exponential
+    min_delay 200ms
+    max_delay 3s
+    retry_on_status [408, 429, 500, 502, 503, 504]
+  }
+
+  tls {
+    verify true
+    min_version "1.2"
+  }
+
+  security {
+    allow_methods {
+      GET
+      POST
+    }
+
+    allow_paths {
+      "/users/*"
+      "/groups/*"
+    }
+
+    max_response_size 2MB
+  }
+}
+
+source "subject-profile" {
+  type http
+  connector http("identity-api")
+
+  request {
+    method GET
+    path "/users/${subject.id}"
+
+    query {
+      include {
+        roles
+        groups
+        attrs
+      }
+    }
+
+    headers {
+      "X-Tenant-ID" subject.tenant
+      "X-Request-ID" request.id
+    }
+  }
+
+  response {
+    expect_status 200
+    format json
+
+    capture {
+      subject.email body.email
+      subject.roles body.roles
+      subject.attrs body.attributes
+    }
+  }
+}
+
+file "audit-log" {
+  path "./out/audit.jsonl"
+  mode write
+  format jsonl
+}
+
+action "write-audit-log" {
+  type file
+  target file("audit-log")
+
+  content {
+    time time.now
+    subject_id subject.id
+    decision decision.effect
+  }
+}
+
+command "backup-db" {
+  enabled false
+  exec "/usr/local/bin/pg_dump"
+
+  args {
+    "--format=custom"
+    "--file=/backup/app.dump"
+  }
+
+  env {
+    PGDATABASE env.required("DB_NAME")
+    PGUSER env.required("DB_USER")
+  }
+
+  timeout 30s
+
+  output {
+    capture stdout
+    max_size 1MB
+    redact ["password", "secret", "token"]
+  }
+}
+

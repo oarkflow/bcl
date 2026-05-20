@@ -1,0 +1,37 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+app {
+  name 'ProcessGate'
+  description `A generic BCL configuration example with "quoted" expression text`
+  enabled true
+  workers 8
+  ratio 0.75
+  nothing null
+  timeout 5s
+  cache_ttl 10m
+  max_size 512MB
+  start_date 2026-05-17
+  started_at 2026-05-17T10:30:00Z
+  network cidr("10.0.0.0/8")
+  pattern regex("^admin-.*$")
+  endpoint url("https://api.example.com")
+  support email("ops@example.com")
+  loopback ip("127.0.0.1")
+}
+
+message {
+  single 'subject.status != "blocked"'
+  double "plain string"
+  raw `subject.roles has_any ["admin", "superadmin"]`
+  multiline """
+This text can span multiple lines
+and still be a scalar string.
+"""
+  heredoc <<EOF
+Hello ${subject.name},
+Your request ${request.id} was approved.
+EOF
+}

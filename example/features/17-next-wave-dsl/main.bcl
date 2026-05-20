@@ -1,0 +1,86 @@
+import "../../common.bcl" as common
+
+bcl {
+  version "1.0"
+  strict true
+}
+
+module "tenant_policy" {
+  source "../../modules/nextwave"
+
+  inputs {
+    tenant_id "tenant-001"
+    region "NP"
+  }
+}
+
+param rollout_id string {
+  required true
+  description "Identifier supplied by a consuming module or test harness"
+}
+
+predicate "admin_mfa_request" {
+  all {
+    context.request.path starts_with "/admin"
+    session.attrs.mfa == true
+  }
+}
+
+predicate "trusted_feature_request" {
+  all {
+    predicate.admin_mfa_request
+    context.request.score >= 80
+    context.request.flags has_any ["admin", "interactive"]
+  }
+}
+
+rule "next-wave-admin-access" {
+  tenant "tenant-001"
+  effect allow
+  priority 50
+  reason_code "ADMIN_MFA_TRUSTED"
+
+  when {
+    predicate.trusted_feature_request
+  }
+
+  then {
+    emit "nextwave.admin.allowed"
+    audit {
+      fields ["context.request.id", "session.subject.id", "decision"]
+    }
+  }
+}
+
+test "admin mfa request is allowed" {
+  input {
+    context.request.id "req-next-001"
+    context.request.path "/admin/settings"
+    context.request.score 95
+    context.request.flags ["admin", "interactive"]
+    session.attrs.mfa true
+    session.subject.id "user-001"
+  }
+
+  expect {
+    emit "nextwave.admin.allowed"
+    effect allow
+    diagnostics none
+  }
+}
+
+test "missing mfa does not match" {
+  input {
+    context.request.id "req-next-002"
+    context.request.path "/admin/settings"
+    context.request.score 95
+    context.request.flags ["admin", "interactive"]
+    session.attrs.mfa false
+    session.subject.id "user-001"
+  }
+
+  expect {
+    effect deny
+    diagnostics none
+  }
+}

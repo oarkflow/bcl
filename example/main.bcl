@@ -1,0 +1,46 @@
+import "./common.bcl" as common
+import "./policies.bcl"
+import "./profiles.bcl"
+import "./integrations.bcl"
+import "./expressions.bcl"
+
+module "routing" {
+  source "./modules/routing"
+
+  inputs {
+    tenant "org1"
+    region "NP"
+  }
+}
+
+module "risk" {
+  source "./modules/risk"
+
+  inputs {
+    tenant "org1"
+    mode "strict"
+  }
+}
+
+namespace billing {
+  schema invoice {
+    required id string
+    required amount float
+    optional due_date date
+  }
+
+  rule "large-invoice-review" {
+    when {
+      invoice.amount > 10000
+    }
+
+    then {
+      emit "billing.invoice.review"
+      action "assign_finance_reviewer"
+    }
+  }
+}
+
+override engine {
+  attr_ttl 15m
+}

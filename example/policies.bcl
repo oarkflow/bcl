@@ -1,0 +1,84 @@
+import "./common.bcl"
+
+tenant "org1" {
+  name "Engineering Org"
+  parent "root"
+
+  attrs {
+    region "NP"
+    tier enterprise
+    active true
+  }
+}
+
+policy "document-owner-or-admin" {
+  tenant "org1"
+  effect allow
+  priority 100
+
+  actions {
+    read
+    use set("document-actions")
+  }
+
+  resources {
+    document:*
+  }
+
+  when {
+    any {
+      resource.owner_id == subject.id
+      subject.roles has_any ADMIN_ROLES
+    }
+
+    not {
+      subject.status == "blocked"
+    }
+  }
+
+  meta {
+    owner "security-team"
+    description "Allow owners or admins to access documents"
+    tags ["document", "rbac", "abac"]
+    created_by "admin"
+  }
+
+  audit {
+    level detailed
+    fields {
+      subject_id
+      resource_id
+      decision
+      matched_policy
+    }
+  }
+}
+
+policy "deny-sensitive-without-clearance" {
+  tenant "org1"
+  effect deny
+  priority 200
+  deny_message "You do not have clearance for this document"
+  reason_code "CLEARANCE_REQUIRED"
+
+  actions {
+    read
+    export
+  }
+
+  resources {
+    document:sensitive:*
+  }
+
+  when {
+    all {
+      resource.classification == "sensitive"
+      subject.clearance not_in ["high", "critical"]
+    }
+  }
+}
+
+override policy "document-owner-or-admin" {
+  priority 150
+}
+

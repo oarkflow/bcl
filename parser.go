@@ -1,1270 +1,951 @@
 package bcl
 
 import (
-	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
-	"text/scanner"
+	"unicode"
+	"unicode/utf8"
 )
 
-type ParserConfig struct {
-	Filename   string
-	Whitespace uint64
-	Mode       uint
+func Parse(src []byte) (*Document, error) {
+	return ParseFile("<input>", src)
 }
 
-type Parser struct {
-	scanner  scanner.Scanner
-	curr     tokenInfo
-	input    string
-	offset   int
-	lastLine int
+func ParseFile(name string, src []byte) (*Document, error) {
+	source := string(src)
+	toks, errs := lexStringPooled(name, source)
+	defer putTokenScratch(toks)
+	if len(errs) > 0 {
+		return nil, errs
+	}
+	p := &parser{file: name, source: source, toks: toks}
+	doc := &Document{File: name}
+	doc.Items = p.parseNodes(tokEOF)
+	if len(p.errs) > 0 {
+		return nil, p.errs
+	}
+	if len(doc.Items) > 0 {
+		doc.Span.Start = doc.Items[0].GetSpan().Start
+		doc.Span.End = doc.Items[len(doc.Items)-1].GetSpan().End
+		doc.Span.File = name
+	}
+	return doc, nil
 }
 
-func NewParser(input string) *Parser {
-	var s scanner.Scanner
-	s.Init(strings.NewReader(input))
-	s.Filename = "input.bcl"
-	s.Whitespace = 1<<' ' | 1<<'\t' | 1<<'\r' | 1<<'\n'
-	s.Mode |= scanner.ScanComments
-	p := &Parser{
-		scanner:  s,
-		input:    input,
-		offset:   0,
-		lastLine: 1,
-	}
-	p.nextToken()
-	return p
+type TriviaDocument struct {
+	Document *Document `json:"document"`
+	Comments []Trivia  `json:"comments,omitempty"`
 }
 
-func NewParserWithConfig(input string, cfg ParserConfig) *Parser {
-	var s scanner.Scanner
-	s.Init(strings.NewReader(input))
-	s.Filename = cfg.Filename
-	s.Whitespace = cfg.Whitespace
-	s.Mode = cfg.Mode
-	p := &Parser{
-		scanner:  s,
-		input:    input,
-		offset:   0,
-		lastLine: 1,
-	}
-	p.nextToken()
-	return p
+type Trivia struct {
+	Text string `json:"text"`
+	Span Span   `json:"span"`
 }
 
-func (p *Parser) nextToken() {
-	r := p.scanner.Scan() // <--- call Scan() at start
-	text := p.scanner.TokenText()
-	pos := p.scanner.Pos()
-	p.offset = int(pos.Offset)
-
-	// Handle "??" operator.
-	if text == "?" && p.scanner.Peek() == '?' {
-		p.scanner.Next() // consume second '?'
-		pos = p.scanner.Pos()
-		p.curr = tokenInfo{typ: OPERATOR, value: "??"}
-		p.offset = int(pos.Offset)
-		p.lastLine = pos.Line
-		return
-	}
-	// Handle "!=" operator.
-	if text == "!" && p.scanner.Peek() == '=' {
-		p.scanner.Next() // consume '='
-		pos = p.scanner.Pos()
-		p.curr = tokenInfo{typ: OPERATOR, value: "!="}
-		p.offset = int(pos.Offset)
-		p.lastLine = pos.Line
-		return
-	}
-
-	text = p.scanner.TokenText()
-	pos = p.scanner.Pos()
-	p.offset = int(pos.Offset)
-	if text == "?" && p.scanner.Peek() == '?' {
-		p.scanner.Next()
-		pos = p.scanner.Pos()
-		p.curr = tokenInfo{typ: OPERATOR, value: "??"}
-		p.offset = int(pos.Offset)
-		p.lastLine = pos.Line
-		return
-	}
-	if (text == "|" || text == "&") && p.scanner.Peek() == rune(text[0]) {
-		p.scanner.Next()
-		if text == "|" {
-			p.curr = tokenInfo{typ: OPERATOR, value: "||"}
-		} else {
-			p.curr = tokenInfo{typ: OPERATOR, value: "&&"}
-		}
-		p.lastLine = p.scanner.Pos().Line
-		return
-	}
-	switch text {
-	case "&", "|", "^":
-		p.curr = tokenInfo{typ: OPERATOR, value: text}
-		p.lastLine = pos.Line
-		return
-	}
-	if text == "<" && p.scanner.Peek() == '<' {
-		p.scanner.Next()
-		p.curr = tokenInfo{typ: OPERATOR, value: "<<"}
-		p.offset = int(p.scanner.Pos().Offset)
-		p.lastLine = p.scanner.Pos().Line
-		return
-	}
-	if text == "<" && p.scanner.Peek() == '=' {
-		p.scanner.Next()
-		p.curr = tokenInfo{typ: OPERATOR, value: "<="}
-		p.lastLine = p.scanner.Pos().Line
-		return
-	}
-	if text == ">" && p.scanner.Peek() == '=' {
-		p.scanner.Next()
-		p.curr = tokenInfo{typ: OPERATOR, value: ">="}
-		p.lastLine = p.scanner.Pos().Line
-		return
-	}
-	if text == "-" && p.scanner.Peek() == '>' {
-		p.scanner.Next()
-		p.curr = tokenInfo{typ: OPERATOR, value: "->"}
-		p.lastLine = p.scanner.Pos().Line
-		return
-	}
-	switch text {
-	case "<":
-		p.curr = tokenInfo{typ: OPERATOR, value: text}
-	case ">":
-		p.curr = tokenInfo{typ: OPERATOR, value: text}
-	}
-	if len(text) > 0 && text[0] == '\'' {
-		if len(text) >= 2 && text[len(text)-1] == '\'' {
-			inner := text[1 : len(text)-1]
-			inner = strings.ReplaceAll(inner, "\\'", "'")
-			p.curr = tokenInfo{typ: STRING, value: inner}
-			p.lastLine = p.scanner.Pos().Line
-			return
-		}
-		p.curr = tokenInfo{typ: STRING, value: text}
-		p.lastLine = p.scanner.Pos().Line
-		return
-	}
-	if len(text) > 0 && text[0] == '`' {
-		if len(text) >= 2 && text[len(text)-1] == '`' {
-			p.curr = tokenInfo{typ: STRING, value: text[1 : len(text)-1]}
-			p.lastLine = p.scanner.Pos().Line
-			return
-		}
-		p.curr = tokenInfo{typ: STRING, value: text}
-		p.lastLine = p.scanner.Pos().Line
-		return
-	}
-	if r == scanner.Comment {
-		p.curr = tokenInfo{typ: COMMENT, value: text}
-		p.lastLine = p.scanner.Pos().Line
-		return
-	}
-	if r == '#' {
-		sb := getBuilder(16)
-		sb.WriteString("#")
-		for ch := p.scanner.Peek(); ch != '\n' && ch != scanner.EOF; ch = p.scanner.Peek() {
-			sb.WriteByte(byte(p.scanner.Next()))
-		}
-		p.curr = tokenInfo{typ: COMMENT, value: sb.String()}
-		putBuilder(sb)
-		p.lastLine = p.scanner.Pos().Line
-		return
-	}
-	switch r {
-	case scanner.EOF:
-		p.curr = tokenInfo{typ: EOF, value: ""}
-	case scanner.Ident:
-		upper := strings.ToUpper(text)
-		if upper == "IF" || upper == "ELSEIF" || upper == "ELSE" {
-			p.curr = tokenInfo{typ: KEYWORD, value: upper}
-		} else if text == "true" || text == "false" {
-			p.curr = tokenInfo{typ: BOOL, value: text}
-		} else {
-			p.curr = tokenInfo{typ: IDENT, value: text}
-		}
-	case scanner.String:
-		unquoted, err := strconv.Unquote(text)
-		if err != nil {
-			unquoted = text
-		}
-		p.curr = tokenInfo{typ: STRING, value: unquoted}
-	case scanner.Int, scanner.Float:
-		p.curr = tokenInfo{typ: NUMBER, value: text}
-	default:
-		switch text {
-		case "=":
-			if p.scanner.Peek() == '=' {
-				p.scanner.Next()
-				p.curr = tokenInfo{typ: OPERATOR, value: "=="}
-			} else {
-				p.curr = tokenInfo{typ: ASSIGN, value: "="}
-			}
-		case "{":
-			p.curr = tokenInfo{typ: LBRACE, value: text}
-		case "}":
-			p.curr = tokenInfo{typ: RBRACE, value: text}
-		case "[":
-			p.curr = tokenInfo{typ: LBRACKET, value: text}
-		case "]":
-			p.curr = tokenInfo{typ: RBRACKET, value: text}
-		case "(":
-			p.curr = tokenInfo{typ: LPAREN, value: text}
-		case ")":
-			p.curr = tokenInfo{typ: RPAREN, value: text}
-		case ",":
-			p.curr = tokenInfo{typ: COMMA, value: text}
-		case "+", "-", "*", "/", "!", "%", "?", ":":
-			p.curr = tokenInfo{typ: OPERATOR, value: text}
-		case "@":
-			p.curr = tokenInfo{typ: AT, value: text}
-		case ".", "<", ">":
-			p.curr = tokenInfo{typ: OPERATOR, value: text}
-		default:
-			p.curr = tokenInfo{typ: IDENT, value: text}
-		}
-	}
-	p.lastLine = p.scanner.Pos().Line
-}
-
-func (p *Parser) parseError(msg string) error {
-	pos := p.scanner.Pos()
-	lines := strings.Split(p.input, "\n")
-	var errorLine string
-	if pos.Line-1 < len(lines) {
-		errorLine = lines[pos.Line-1]
-	}
-	return fmt.Errorf("%s at %s:%d:%d\nError line: %s\nHint: check your syntax near this token", msg, p.scanner.Filename, pos.Line, pos.Column, errorLine)
-}
-
-func (p *Parser) expect(typ Token) (tokenInfo, error) {
-	if p.curr.typ != typ {
-		return tokenInfo{}, p.parseError(fmt.Sprintf("expected token type %d but got %d (%v)", typ, p.curr.typ, p.curr.value))
-	}
-	tok := p.curr
-	p.nextToken()
-	return tok, nil
-}
-
-func (p *Parser) Parse() ([]Node, error) {
-	var nodes []Node
-	for p.curr.typ != EOF {
-		node, err := p.parseStatement()
-		if err != nil {
-			return nil, err
-		}
-		nodes = append(nodes, node)
-	}
-	return nodes, nil
-}
-
-func (p *Parser) parseComment() (Node, error) {
-	node := &CommentNode{Text: p.curr.value}
-	p.nextToken()
-	return node, nil
-}
-
-var edgeTypes = []string{
-	"Arrow",
-	"Edge",
-	"Connection",
-	"Link",
-	"Relation",
-	"Relationship",
-	"Association",
-	"Dependency",
-	"Flow",
-	"Path",
-	"Route",
-	"Linkage",
-	"Bridge",
-	"Connector",
-	"Channel",
-	"Network",
-	"Pipeline",
-	"Stream",
-	"Nexus",
-	"Tie",
-	"Bond",
-	"Interface",
-	"Conduit",
-	"Join",
-	"Interconnection",
-	"Coupling",
-	"Union",
-	"Intersection",
-	"Convergence",
-	"Confluence",
-	"Adjacency",
-	"Contact",
-	"Junction",
-	"Merge",
-	"Overlay",
-	"Attachment",
-	"Interlock",
-	"Correlation",
-	"Affinity",
-	"Liaison",
-	"Integration",
-	"Synthesis",
-	"Binding",
-	"Chain",
-	"Concatenation",
-	"Sequence",
-	"Thread",
-	"Continuum",
-	"Series",
-	"Linkup",
-	"Tie-in",
-	"Interweave",
-	"Mesh",
-	"Grid",
-}
-
-func (p *Parser) parseStatement() (Node, error) {
-	if p.curr.typ == COMMENT {
-		return p.parseComment()
-	}
-	if p.curr.typ == AT {
-		tok := p.peekToken()
-		// Only call parseInclude for @include or @ "file"
-		if (tok.typ == IDENT && tok.value == "include") || tok.typ == STRING {
-			return p.parseInclude()
-		}
-		// For all other supported commands, call parseCommand
-		if tok.typ == IDENT && (tok.value == "exec" || tok.value == "pipeline") {
-			return p.parseCommand()
-		}
-		// Print error with code block and hint
-		return nil, p.parseError(fmt.Sprintf(
-			"expected supported command after '@', got %v\n\nCode block:\n%s\nHint: Use @include, @exec, or @pipeline after '@'.",
-			tok.value, getErrorBlock(p.input, p.scanner.Pos().Line),
-		))
-	}
-	if p.curr.typ == KEYWORD {
-		return p.parseControl()
-	}
-	if p.curr.typ == IDENT && slices.Contains(edgeTypes, p.curr.value) {
-		arrowType := p.curr.value
-		p.nextToken()
-		// Look ahead for "->"
-		rem := strings.TrimLeft(p.input[p.offset:], " \t")
-		if strings.HasPrefix(rem, "->") {
-			return p.parseArrow(arrowType)
-		}
-		// Otherwise, fall through to normal processing
-		// (e.g., if type token is followed by a regular assignment)
-		// Here we treat it as a normal identifier.
-	}
-	// If no arrow type token, check if the next token is an arrow operator.
-	if p.curr.typ == IDENT || p.curr.typ == STRING {
-		rem := strings.TrimLeft(p.input[p.offset:], " \t")
-		if strings.HasPrefix(rem, "->") {
-			// Default arrow type to "Edge"
-			return p.parseArrow("Edge")
-		}
-		// Normal processing for blocks or assignments.
-		typeName := p.curr.value
-		p.nextToken()
-		if p.curr.typ == LBRACE {
-			return p.parseBlock(typeName, "")
-		}
-		if p.curr.typ == IDENT || p.curr.typ == STRING {
-			label := p.curr.value
-			p.nextToken()
-			return p.parseBlock(typeName, label)
-		}
-		return p.parseAssignment(typeName)
-	}
-	return nil, p.parseError(fmt.Sprintf("unexpected token: %v", p.curr.value))
-}
-
-func (p *Parser) parseArrow(arrowType string) (Node, error) {
-	// If the type token was provided (e.g. "Edge" or "Arrow"), use it;
-	// otherwise, arrowType may be "Edge" by default.
-	// Now, current token is the source.
-	source := p.curr.value
-	p.nextToken()
-
-	if p.curr.typ != OPERATOR || p.curr.value != "->" {
-		return nil, p.parseError(fmt.Sprintf("expected '->' operator after source, got %v", p.curr.value))
-	}
-	p.nextToken() // consume "->"
-
-	if p.curr.typ != IDENT && p.curr.typ != STRING {
-		return nil, p.parseError(fmt.Sprintf("expected target after '->', got %v", p.curr.value))
-	}
-	target := p.curr.value
-	p.nextToken() // consume target
-
-	// Check if an optional block of properties is provided.
-	var nodes []Node
-	if p.curr.typ == LBRACE {
-		// Consume the left brace.
-		_, err := p.expect(LBRACE)
-		if err != nil {
-			return nil, err
-		}
-		// Parse statements until the matching right brace is encountered.
-		for p.curr.typ != RBRACE && p.curr.typ != EOF {
-			stmt, err := p.parseStatement()
-			if err != nil {
-				return nil, err
-			}
-			nodes = append(nodes, stmt)
-		}
-		_, err = p.expect(RBRACE)
-		if err != nil {
-			return nil, err
-		}
-	}
-	// Create the ArrowNode with or without properties.
-	return &ArrowNode{Type: arrowType, Source: source, Target: target, Props: nodes}, nil
-}
-
-func (p *Parser) parseInclude() (Node, error) {
-	p.nextToken()
-	// Accept IDENT or STRING for include
-	if (p.curr.typ != IDENT || p.curr.value != "include") && p.curr.typ != STRING {
-		return nil, p.parseError(fmt.Sprintf("expected 'include' after '@', got %v", p.curr.value))
-	}
-	if p.curr.typ == IDENT && p.curr.value == "include" {
-		p.nextToken()
-	}
-	fileName, err := p.parseFileName()
+func ParseFileWithTrivia(name string, src []byte) (*TriviaDocument, error) {
+	doc, err := ParseFile(name, src)
 	if err != nil {
 		return nil, err
 	}
-	var content []byte
-	if strings.HasPrefix(fileName, "http://") || strings.HasPrefix(fileName, "https://") {
-		resp, err := http.Get(fileName)
-		if err != nil {
-			return nil, p.parseError(fmt.Sprintf("failed to fetch URL %s: %v", fileName, err))
-		}
-		defer resp.Body.Close()
-		content, err = io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, p.parseError(fmt.Sprintf("failed to read content from URL %s: %v", fileName, err))
-		}
-	} else {
-		if !filepath.IsAbs(fileName) {
-			baseDir := filepath.Dir(p.scanner.Filename)
-			fileName = filepath.Join(baseDir, fileName)
-		}
-		content, err = os.ReadFile(fileName)
-		if err != nil {
-			return nil, p.parseError(fmt.Sprintf("failed to read include file %s: %v", fileName, err))
-		}
-	}
-	subParser := NewParser(string(content))
-	nodes, err := subParser.Parse()
-	if err != nil {
-		return nil, p.parseError(fmt.Sprintf("failed to parse include source %s: %v", fileName, err))
-	}
-	return &IncludeNode{FileName: fileName, Nodes: nodes}, nil
+	return &TriviaDocument{Document: doc, Comments: collectCommentTrivia(name, string(src))}, nil
 }
 
-func (p *Parser) parseFileName() (string, error) {
-	sb := getBuilder(16)
-	if p.curr.typ == STRING {
-		sb.WriteString(p.curr.value)
-		p.nextToken()
-		result := sb.String()
-		putBuilder(sb)
-		return result, nil
-	} else if p.curr.typ == IDENT {
-		sb.WriteString(p.curr.value)
-		p.nextToken()
-		for (p.curr.typ == OPERATOR && p.curr.value == ".") || p.curr.typ == IDENT {
-			if p.curr.typ == OPERATOR && p.curr.value == "." {
-				sb.WriteByte('.')
-				p.nextToken()
-				if p.curr.typ != IDENT {
-					putBuilder(sb)
-					return "", p.parseError(fmt.Sprintf("expected identifier after dot in file name, got %v", p.curr.value))
+func collectCommentTrivia(file, src string) []Trivia {
+	var out []Trivia
+	l := &lexer{file: file, src: src, line: 1, col: 1}
+	for {
+		r := l.peek()
+		if r == 0 {
+			return out
+		}
+		if r == '#' || r == '/' && l.peekN(1) == '/' {
+			sp := l.spanAt()
+			start := l.pos
+			l.skipLine()
+			sp.End = l.posn()
+			out = append(out, Trivia{Text: src[start:l.pos], Span: sp})
+			continue
+		}
+		if r == '/' && l.peekN(1) == '*' {
+			sp := l.spanAt()
+			start := l.pos
+			_ = l.skipBlockComment()
+			sp.End = l.posn()
+			out = append(out, Trivia{Text: src[start:l.pos], Span: sp})
+			continue
+		}
+		l.advance()
+	}
+}
+
+func ParsePath(path string) (*Document, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ParseFile(path, b)
+}
+
+type parser struct {
+	file   string
+	source string
+	toks   []token
+	pos    int
+	errs   ErrorList
+}
+
+func (p *parser) parseNodes(until tokenKind) []Node {
+	nodes := make([]Node, 0, p.nodeCapacity(until))
+	for {
+		p.skipNodeSeparators()
+		if p.peek().kind == until || p.peek().kind == tokEOF {
+			if until != tokEOF && p.peek().kind == until {
+				p.next()
+			}
+			return nodes
+		}
+		n := p.parseNode()
+		if n != nil {
+			nodes = append(nodes, n)
+		} else {
+			p.recoverLine()
+		}
+	}
+}
+
+func (p *parser) nodeCapacity(until tokenKind) int {
+	remaining := len(p.toks) - p.pos
+	if remaining <= 0 {
+		return 0
+	}
+	if until == tokEOF {
+		capHint := remaining / 5
+		if capHint < 4 {
+			return 4
+		}
+		if capHint > 32 {
+			return 32
+		}
+		return capHint
+	}
+	if remaining < 16 {
+		return 2
+	}
+	return 4
+}
+
+func (p *parser) parseNode() Node {
+	t := p.peek()
+	if t.kind == tokOperator && t.text == "&" {
+		return p.parseSpread()
+	}
+	if t.kind != tokIdent && t.kind != tokString && t.kind != tokNumber {
+		p.error(t, "expected declaration, assignment, or block")
+		return nil
+	}
+	if t.kind == tokNumber {
+		name := p.next()
+		if p.peek().kind == tokNewline || p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+			return &Assignment{Name: name.text, Value: &Reference{Path: "", Span: name.span}, Span: name.span}
+		}
+		v := p.parseValueUntilLine()
+		return &Assignment{Name: name.text, Value: v, Span: spanJoin(name.span, v.GetSpan())}
+	}
+	if t.kind == tokString {
+		name := p.next()
+		if p.peek().kind == tokLBrace {
+			lb := p.next()
+			return &Assignment{Name: name.text, Value: &Object{Fields: p.parseNodes(tokRBrace), Span: spanJoin(name.span, lb.span)}, Span: name.span}
+		}
+		if p.peek().kind == tokNewline || p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+			return &Assignment{Name: name.text, Value: &Literal{Type: "string", Data: name.text, Span: name.span}, Span: name.span}
+		}
+		v := p.parseValueUntilLine()
+		return &Assignment{Name: name.text, Value: v, Span: spanJoin(name.span, v.GetSpan())}
+	}
+	switch t.text {
+	case "import":
+		return p.parseImport()
+	case "param":
+		if p.peekN(1).kind == tokIdent {
+			return p.parseParam()
+		}
+	case "const":
+		return p.parseConst()
+	case "schema":
+		if p.peekN(1).kind == tokIdent && p.peekN(2).kind == tokLBrace {
+			return p.parseSchema()
+		}
+	case "type":
+		if p.peekN(1).kind == tokIdent && p.peekN(2).kind == tokEqual {
+			return p.parseTypeDecl()
+		}
+	}
+	name := p.next()
+	name.text = strings.TrimSuffix(name.text, ":")
+	if name.text == "override" && p.peek().kind == tokIdent && p.peekN(1).kind == tokString && p.peekN(2).kind == tokLBrace {
+		targetType := p.next()
+		targetID := p.next()
+		bodyStart := p.next()
+		return &Block{Type: "override", ID: targetType.text + "." + targetID.text, Body: p.parseNodes(tokRBrace), Span: spanJoin(name.span, bodyStart.span)}
+	}
+	if name.text == "when" && p.peek().kind != tokLBrace {
+		return p.parseConditionalBlock(name)
+	}
+	if p.peek().kind == tokLParen {
+		return p.parseExprNode(name)
+	}
+	if isCommandStatement(name.text) {
+		return p.parseExprNode(name)
+	}
+	if p.peek().kind == tokDot && p.dottedAssignmentAhead() {
+		return p.parseDottedAssignment(name)
+	}
+	if name.text == "override" && p.peek().kind == tokIdent && p.peekN(1).kind == tokLBrace {
+		target := p.next()
+		bodyStart := p.next()
+		return &Block{Type: "override", ID: target.text, Body: p.parseNodes(tokRBrace), Span: spanJoin(name.span, bodyStart.span)}
+	}
+	if p.peek().kind == tokString && p.peekN(1).kind == tokLBrace {
+		id := p.next()
+		bodyStart := p.next()
+		return &Block{Type: name.text, ID: id.text, Body: p.parseNodes(tokRBrace), Span: spanJoin(name.span, bodyStart.span)}
+	}
+	if p.peek().kind == tokNumber && p.peekN(1).kind == tokLBrace {
+		id := p.next()
+		bodyStart := p.next()
+		return &Block{Type: name.text, ID: id.text, Body: p.parseNodes(tokRBrace), Span: spanJoin(name.span, bodyStart.span)}
+	}
+	if p.peek().kind == tokIdent && p.peekN(1).kind == tokLBrace {
+		id := p.next()
+		bodyStart := p.next()
+		return &Block{Type: name.text, ID: id.text, Body: p.parseNodes(tokRBrace), Span: spanJoin(name.span, bodyStart.span)}
+	}
+	if p.peek().kind == tokIdent && (p.peekN(1).kind == tokString || p.peekN(1).kind == tokHeredoc) {
+		kind := p.next()
+		val := p.parseValue()
+		obj := &Object{Fields: []Node{
+			&Assignment{Name: "type", Value: &Literal{Type: "identifier", Data: kind.text, Span: kind.span}, Span: kind.span},
+			&Assignment{Name: "value", Value: val, Span: val.GetSpan()},
+		}, Span: spanJoin(kind.span, val.GetSpan())}
+		return &Assignment{Name: name.text, Value: obj, Span: spanJoin(name.span, val.GetSpan())}
+	}
+	if p.peek().kind == tokLBrace {
+		lb := p.next()
+		body := p.parseNodes(tokRBrace)
+		if isKnownBlock(name.text) || isCapitalizedBlockName(name.text) {
+			return &Block{Type: name.text, Body: body, Span: spanJoin(name.span, lb.span)}
+		}
+		return &Assignment{Name: name.text, Value: blockValue(name.text, body, spanJoin(name.span, lb.span)), Span: name.span}
+	}
+	if p.startsExpressionAfterName() {
+		return p.parseExprNode(name)
+	}
+	if p.peek().kind == tokEqual {
+		p.next()
+	}
+	if p.peek().kind == tokNewline || p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+		return &Assignment{Name: name.text, Value: &Reference{Path: "", Span: name.span}, Span: name.span}
+	}
+	v := p.parseValueUntilLine()
+	return &Assignment{Name: name.text, Value: v, Span: spanJoin(name.span, v.GetSpan())}
+}
+
+func (p *parser) parseSpread() Node {
+	start := p.next()
+	target := p.parseSpreadTarget()
+	sp := spanJoin(start.span, target.span)
+	var body []Node
+	if p.peek().kind == tokLBrace {
+		lb := p.next()
+		sp = spanJoin(sp, lb.span)
+		body = p.parseNodes(tokRBrace)
+		if len(body) > 0 {
+			sp = spanJoin(sp, body[len(body)-1].GetSpan())
+		}
+	}
+	return &Spread{Target: target.text, Body: body, Span: sp}
+}
+
+func (p *parser) parseSpreadTarget() token {
+	t := p.peek()
+	if t.kind != tokIdent && t.kind != tokString && t.kind != tokNumber {
+		p.error(t, "expected spread target")
+		return token{text: "", span: t.span}
+	}
+	first := p.next()
+	parts := []string{first.text}
+	sp := first.span
+	for p.peek().kind == tokDot {
+		p.next()
+		next := p.peek()
+		if next.kind != tokIdent && next.kind != tokString && next.kind != tokNumber {
+			p.error(next, "expected spread target path segment")
+			break
+		}
+		part := p.next()
+		parts = append(parts, part.text)
+		sp = spanJoin(sp, part.span)
+	}
+	return token{text: strings.Join(parts, "."), span: sp}
+}
+
+func (p *parser) parseConditionalBlock(first token) Node {
+	start := first.span
+	depth := 0
+	rawStart := first.span.End.Offset
+	rawEnd := rawStart
+	for {
+		t := p.peek()
+		if t.kind == tokEOF || (depth == 0 && t.kind == tokLBrace) {
+			break
+		}
+		if t.kind == tokLBracket || t.kind == tokLParen {
+			depth++
+		}
+		if t.kind == tokRBracket || t.kind == tokRParen {
+			depth--
+		}
+		rawEnd = p.next().span.End.Offset
+	}
+	bodyStart := p.expect(tokLBrace, "expected conditional block body")
+	body := p.parseNodes(tokRBrace)
+	cond := &Expr{Raw: p.rawExpr(rawStart, rawEnd), Span: spanJoin(start, bodyStart.span)}
+	return &Block{Type: first.text, ID: cond.Raw, Body: body, Span: spanJoin(start, bodyStart.span)}
+}
+
+func (p *parser) startsExpressionAfterName() bool {
+	t := p.peek()
+	return t.kind == tokDot || t.kind == tokOperator || isExprOperator(t.text)
+}
+
+func (p *parser) dottedAssignmentAhead() bool {
+	i := p.pos
+	for i+1 < len(p.toks) && p.toks[i].kind == tokDot && p.toks[i+1].kind == tokIdent {
+		i += 2
+	}
+	if i >= len(p.toks) {
+		return false
+	}
+	t := p.toks[i]
+	if t.kind == tokNewline || t.kind == tokRBrace || t.kind == tokEOF {
+		return false
+	}
+	if t.kind == tokOperator || isExprOperator(t.text) {
+		return false
+	}
+	return true
+}
+
+func (p *parser) parseDottedAssignment(first token) Node {
+	parts := []string{first.text}
+	for p.peek().kind == tokDot {
+		p.next()
+		parts = append(parts, p.expect(tokIdent, "expected assignment path segment").text)
+	}
+	v := p.parseValueUntilLine()
+	return &Assignment{Name: strings.Join(parts, "."), Value: v, Span: spanJoin(first.span, v.GetSpan())}
+}
+
+func (p *parser) parseExprNode(first token) Node {
+	start := first.span
+	depth := 0
+	rawStart := first.span.Start.Offset
+	rawEnd := first.span.End.Offset
+	for {
+		t := p.peek()
+		if t.kind == tokEOF || (depth == 0 && (t.kind == tokNewline || t.kind == tokRBrace)) {
+			break
+		}
+		if t.kind == tokLBrace || t.kind == tokLBracket || t.kind == tokLParen {
+			depth++
+		}
+		if t.kind == tokRBrace || t.kind == tokRBracket || t.kind == tokRParen {
+			depth--
+		}
+		rawEnd = p.next().span.End.Offset
+	}
+	end := start
+	if p.pos > 0 {
+		end = p.toks[p.pos-1].span
+	}
+	out := &Expr{Raw: p.rawExpr(rawStart, rawEnd), Span: spanJoin(start, end)}
+	return &Assignment{Name: "$expr", Value: out, Span: out.Span}
+}
+
+func (p *parser) parseImport() Node {
+	start := p.next()
+	path := p.expect(tokString, "expected import path string")
+	imp := &ImportDecl{Path: path.text, Span: spanJoin(start.span, path.span)}
+	if p.peek().kind == tokIdent && p.peek().text == "as" {
+		p.next()
+		alias := p.expect(tokIdent, "expected import alias")
+		imp.Alias = alias.text
+		imp.Span = spanJoin(imp.Span, alias.span)
+	}
+	return imp
+}
+
+func (p *parser) parseParam() Node {
+	start := p.next()
+	name := p.expect(tokIdent, "expected param name")
+	typ := p.parseSchemaType()
+	param := &ParamDecl{Name: name.text, Type: typ, Span: spanJoin(start.span, name.span)}
+	if p.peek().kind == tokLBrace {
+		lb := p.next()
+		param.Span = spanJoin(param.Span, lb.span)
+		for {
+			p.skipNewlines()
+			if p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+				if p.peek().kind == tokRBrace {
+					param.Span = spanJoin(param.Span, p.next().span)
 				}
-				sb.WriteString(p.curr.value)
-				p.nextToken()
-			} else if p.curr.typ == IDENT {
-				sb.WriteString(p.curr.value)
-				p.nextToken()
-			} else {
+				return param
+			}
+			key := p.expect(tokIdent, "expected param option")
+			switch key.text {
+			case "required":
+				v := p.parseValueUntilLine()
+				if lit, ok := v.(*Literal); ok {
+					if b, ok := lit.Data.(bool); ok {
+						param.Required = b
+					}
+				}
+			case "default":
+				param.Default = p.parseValueUntilLine()
+			case "description", "doc":
+				param.Description = p.schemaStringClause()
+			default:
+				p.skipLineTail()
+			}
+		}
+	}
+	return param
+}
+
+func (p *parser) parseTypeDecl() Node {
+	start := p.next()
+	name := p.expect(tokIdent, "expected type alias name")
+	if p.peek().kind == tokEqual {
+		p.next()
+	}
+	typ := p.parseSchemaType()
+	return &TypeDecl{Name: name.text, Type: typ, Span: spanJoin(start.span, name.span)}
+}
+
+func (p *parser) parseConst() Node {
+	start := p.next()
+	name := p.expect(tokIdent, "expected constant name")
+	if p.peek().kind == tokEqual {
+		p.next()
+	}
+	v := p.parseValueUntilLine()
+	return &ConstDecl{Name: name.text, Value: v, Span: spanJoin(start.span, v.GetSpan())}
+}
+
+func (p *parser) parseSchema() Node {
+	start := p.next()
+	name := p.expect(tokIdent, "expected schema name")
+	p.expect(tokLBrace, "expected schema body")
+	s := &SchemaDecl{Name: name.text, Span: spanJoin(start.span, name.span)}
+	for {
+		p.skipNewlines()
+		if p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+			if p.peek().kind == tokRBrace {
+				s.Span = spanJoin(s.Span, p.next().span)
+			}
+			return s
+		}
+		s.Fields = append(s.Fields, p.parseSchemaField())
+	}
+}
+
+func (p *parser) parseSchemaField() SchemaField {
+	req := p.expect(tokIdent, "expected required or optional")
+	field := SchemaField{Required: req.text == "required", Span: req.span}
+	field.Name = p.expect(tokIdent, "expected field name").text
+	field.Type = p.parseSchemaType()
+	if field.Type == "" && p.peek().kind == tokIdent && p.peek().text == "enum" {
+		field.Type = "enum"
+	}
+	if p.peek().kind == tokLBrace {
+		p.next()
+		for {
+			p.skipNewlines()
+			if p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+				if p.peek().kind == tokRBrace {
+					field.Span = spanJoin(field.Span, p.next().span)
+				}
 				break
 			}
+			field.Fields = append(field.Fields, p.parseSchemaField())
 		}
-		result := sb.String()
-		putBuilder(sb)
-		return result, nil
+		return field
 	}
-	return "", p.parseError(fmt.Sprintf("expected file name, got %v", p.curr.value))
-}
-
-func (p *Parser) parseAssignment(varName string) (Node, error) {
-	if p.curr.typ == COMMA {
-		lhs := []string{varName}
-		for p.curr.typ == COMMA {
-			p.nextToken()
-			if p.curr.typ != IDENT {
-				return nil, p.parseError(fmt.Sprintf("expected identifier in multiple assignment, got %v", p.curr.value))
-			}
-			lhs = append(lhs, p.curr.value)
-			p.nextToken()
-		}
-		if p.curr.typ != ASSIGN && !(p.curr.typ == OPERATOR && p.curr.value == ":") {
-			var assignments []*AssignmentNode
-			for _, variable := range lhs {
-				assignments = append(assignments, &AssignmentNode{VarName: variable, Value: &PrimitiveNode{Value: true}})
-			}
-			return &MultiAssignNode{Assignments: assignments}, nil
-		} else {
-			p.nextToken()
-		}
-		var rhs []Node
-		expr, err := p.parseExpression()
-		if err != nil {
-			return nil, err
-		}
-		rhs = append(rhs, expr)
-		for p.curr.typ == COMMA {
-			p.nextToken()
-			expr, err := p.parseExpression()
-			if err != nil {
-				return nil, err
-			}
-			rhs = append(rhs, expr)
-		}
-		var assignments []*AssignmentNode
-		// Allow single RHS value returning a tuple when there are multiple LHS.
-		if len(rhs) == 1 && len(lhs) > 1 {
-			for i, variable := range lhs {
-				// Wrap the single RHS node with TupleExtractNode for index i.
-				assignments = append(assignments, &AssignmentNode{
-					VarName: variable,
-					Value:   &TupleExtractNode{Base: rhs[0], Index: i},
-				})
-			}
-		} else if len(lhs) != len(rhs) {
-			return nil, p.parseError("number of variables and values do not match in multiple assignment")
-		} else {
-			for i, variable := range lhs {
-				assignments = append(assignments, &AssignmentNode{VarName: variable, Value: rhs[i]})
-			}
-		}
-		return &MultiAssignNode{Assignments: assignments}, nil
-	}
-
-	if p.curr.typ != ASSIGN && !(p.curr.typ == OPERATOR && p.curr.value == ":") {
-		return &AssignmentNode{VarName: varName, Value: &PrimitiveNode{Value: true}}, nil
-	} else {
-		p.nextToken()
-	}
-	expr, err := p.parseExpression()
-	if err != nil {
-		return nil, err
-	}
-	firstAssign := &AssignmentNode{VarName: varName, Value: expr}
-	assignments := []*AssignmentNode{firstAssign}
-	for p.curr.typ == COMMA {
-		p.nextToken()
-		if p.curr.typ != IDENT {
-			break
-		}
-		nextVar := p.curr.value
-		p.nextToken()
-		if p.curr.typ != ASSIGN && !(p.curr.typ == OPERATOR && p.curr.value == ":") {
-			assignments = append(assignments, &AssignmentNode{VarName: nextVar, Value: &PrimitiveNode{Value: true}})
+	for p.peek().kind != tokNewline && p.peek().kind != tokRBrace && p.peek().kind != tokEOF {
+		if p.peek().kind != tokIdent {
+			p.next()
 			continue
 		}
-		p.nextToken()
-		nextExpr, err := p.parseExpression()
-		if err != nil {
-			return nil, err
-		}
-		assignments = append(assignments, &AssignmentNode{VarName: nextVar, Value: nextExpr})
-	}
-	if len(assignments) == 1 {
-		return firstAssign, nil
-	}
-	return &MultiAssignNode{Assignments: assignments}, nil
-}
-
-func (p *Parser) parseBlock(typ, label string) (Node, error) {
-	_, err := p.expect(LBRACE)
-	if err != nil {
-		return nil, err
-	}
-	var nodes []Node
-	for p.curr.typ != RBRACE && p.curr.typ != EOF {
-		if p.curr.typ == COMMENT {
-			comment, err := p.parseComment()
-			if err != nil {
-				return nil, err
+		switch p.peek().text {
+		case "enum":
+			p.next()
+			if l, ok := p.parseValue().(*List); ok {
+				field.Enum = l.Items
 			}
-			nodes = append(nodes, comment)
-			continue
-		}
-		if p.curr.typ != IDENT && p.curr.typ != STRING {
-			return nil, p.parseError(fmt.Sprintf("expected property name, got %v", p.curr.value))
-		}
-		propName := p.curr.value
-		p.nextToken()
-		var node Node
-		if p.curr.typ == ASSIGN || (p.curr.typ == OPERATOR && p.curr.value == ":") {
-			node, err = p.parseAssignment(propName)
-			if err != nil {
-				return nil, err
-			}
-		} else if p.curr.typ == LBRACE {
-			node, err = p.parseBlock(propName, "")
-			if err != nil {
-				return nil, err
-			}
-		} else if p.curr.typ == IDENT || p.curr.typ == STRING {
-			lbl := p.curr.value
-			p.nextToken()
-			if p.curr.typ == LBRACE {
-				node, err = p.parseBlock(propName, lbl)
-				if err != nil {
-					return nil, err
-				}
+		case "default":
+			p.next()
+			field.Default = p.parseValue()
+		case "description", "doc":
+			p.next()
+			field.Description = p.schemaStringClause()
+		case "deprecated":
+			p.next()
+			if p.peek().kind == tokNewline || p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+				field.Deprecated = "true"
 			} else {
-				node = &AssignmentNode{VarName: propName, Value: &PrimitiveNode{Value: true}}
+				field.Deprecated = p.schemaStringClause()
 			}
-		} else if p.curr.typ == COMMA || p.curr.typ == RBRACE {
-			node = &AssignmentNode{VarName: propName, Value: &PrimitiveNode{Value: true}}
-		} else {
-			return nil, p.parseError(fmt.Sprintf("unexpected token %v after property key %s", p.curr.value, propName))
-		}
-		nodes = append(nodes, node)
-		if p.curr.typ == COMMA {
-			p.nextToken()
+		case "sensitive":
+			p.next()
+			field.Sensitive = true
+		case "generated":
+			p.next()
+			field.Generated = true
+		case "min":
+			p.next()
+			field.Min = p.parseValue()
+		case "max":
+			p.next()
+			field.Max = p.parseValue()
+		case "pattern":
+			p.next()
+			field.Pattern = p.schemaStringClause()
+		case "format":
+			p.next()
+			field.Format = p.schemaStringClause()
+		case "examples":
+			p.next()
+			if l, ok := p.parseValue().(*List); ok {
+				field.Examples = l.Items
+			}
+		default:
+			p.skipLineTail()
 		}
 	}
-	_, err = p.expect(RBRACE)
-	if err != nil {
-		return nil, err
-	}
-	return &BlockNode{Type: typ, Label: label, Props: nodes}, nil
+	return field
 }
 
-func (p *Parser) parseExpression() (Node, error) {
-	expr, err := p.parseBinaryExpression(0)
-	if err != nil {
-		return nil, err
-	}
-	if p.curr.typ == OPERATOR && p.curr.value == "?" {
-		p.nextToken()
-		trueExpr, err := p.parseExpression()
-		if err != nil {
-			return nil, err
-		}
-		if p.curr.typ != OPERATOR || p.curr.value != ":" {
-			return nil, p.parseError(fmt.Sprintf("expected ':' in ternary operator, got %v", p.curr.value))
-		}
-		p.nextToken()
-		falseExpr, err := p.parseExpression()
-		if err != nil {
-			return nil, err
-		}
-		return &TernaryNode{Condition: expr, TrueExpr: trueExpr, FalseExpr: falseExpr}, nil
-	}
-	return expr, nil
-}
-
-func (p *Parser) parseUnary() (Node, error) {
-	if p.curr.typ == OPERATOR && (p.curr.value == "-" || p.curr.value == "!") {
-		op := p.curr.value
-		p.nextToken()
-		child, err := p.parseUnary()
-		if err != nil {
-			return nil, err
-		}
-		return &UnaryNode{Op: op, Child: child}, nil
-	}
-	return p.parsePrimary()
-}
-
-func (p *Parser) parseBinaryExpression(minPrec int) (Node, error) {
-	left, err := p.parseUnary()
-	if err != nil {
-		return nil, err
-	}
-	for {
-		opToken := p.curr
-		op, isOp := p.getOperator(opToken)
-		if !isOp {
-			break
-		}
-		prec := getPrecedence(op)
-		if prec < minPrec {
-			break
-		}
-		p.nextToken()
-		right, err := p.parseBinaryExpression(prec + 1)
-		if err != nil {
-			return nil, err
-		}
-		if op == "." {
-			switch r := right.(type) {
-			case *IdentifierNode:
-				propName := r.Name
-				// Combine adjacent '-' and identifier tokens into a single property name
-				for p.curr.typ == OPERATOR && p.curr.value == "-" {
-					p.nextToken() // consume the hyphen
-					if p.curr.typ != IDENT {
-						return nil, p.parseError("expected identifier after '-' in property name")
-					}
-					propName = propName + "-" + p.curr.value
-					p.nextToken()
-				}
-				left = &DotAccessNode{Left: left, Right: propName}
-			case *PrimitiveNode:
-				if s, ok := r.Value.(string); ok {
-					left = &DotAccessNode{Left: left, Right: s}
-				} else {
-					return nil, p.parseError("dot operator right operand must be string or identifier")
-				}
-			default:
-				return nil, p.parseError("invalid right operand for dot operator")
-			}
-		} else {
-			left = &ArithmeticNode{Op: op, Left: left, Right: right}
-		}
-	}
-	return left, nil
-}
-
-func (p *Parser) parseEnvLookup() (Node, error) {
-	envNode := &IdentifierNode{Name: "env"}
-	p.nextToken()
-	if p.curr.typ != DOT {
-		return envNode, nil
-	}
-	p.nextToken()
-	var parts []string
-	if p.curr.typ != IDENT {
-		return nil, p.parseError(fmt.Sprintf("expected identifier after 'env.' but got %v", p.curr.value))
-	}
-	parts = append(parts, p.curr.value)
-	p.nextToken()
-	for p.curr.typ == DOT || p.curr.typ == IDENT || p.curr.typ == OPERATOR {
-		parts = append(parts, p.curr.value)
-		p.nextToken()
-	}
-	return &DotAccessNode{Left: envNode, Right: strings.Join(parts, "")}, nil
-}
-
-func (p *Parser) parsePrimary() (Node, error) {
-	if p.curr.typ == AT {
-		tok := p.peekToken()
-		// Only call parseInclude for @include or @ "file"
-		if (tok.typ == IDENT && tok.value == "include") || tok.typ == STRING {
-			return p.parseInclude()
-		}
-		// For all other supported commands, call parseCommand
-		if tok.typ == IDENT && (tok.value == "exec" || tok.value == "pipeline") {
-			return p.parseCommand()
-		}
-		// Print error with code block and hint
-		return nil, p.parseError(fmt.Sprintf(
-			"expected supported command after '@', got %v\n\nCode block:\n%s\nHint: Use @include, @exec, or @pipeline after '@'.",
-			tok.value, getErrorBlock(p.input, p.scanner.Pos().Line),
-		))
-	}
-	if p.curr.typ == OPERATOR && p.curr.value == "<<" {
-		// Check if this is a SQL block
-		peekTok := p.peekToken()
-		if peekTok.typ == IDENT && strings.ToUpper(peekTok.value) == "SQL" {
-			return p.parseSQL()
-		}
-		return p.parseHeredoc()
-	}
-	switch p.curr.typ {
-	case STRING:
-		value := p.curr.value
-		if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
-			inner := value[2 : len(value)-1]
-			parts := strings.SplitN(inner, ":", 2)
-			if len(parts) == 2 {
-				envVar := strings.TrimSpace(parts[0])
-				defaultValue := strings.ReplaceAll(strings.TrimSpace(parts[1]), "'", "")
-				p.nextToken()
-				return &EnvInterpolationNode{EnvVar: envVar, DefaultValue: defaultValue}, nil
-			}
-		}
-		if len(value) > 0 && (value[0] == '"' || value[0] == '`') {
-			unquoted, err := strconv.Unquote(value)
-			if err != nil {
-				return nil, p.parseError(fmt.Sprintf("malformed quoted string: %v", value))
-			}
-			value = unquoted
-		}
-		p.nextToken()
-		return &PrimitiveNode{Value: value}, nil
-	case NUMBER:
-		text := p.curr.value
-		p.nextToken()
-		if strings.Contains(text, ".") {
-			f, err := strconv.ParseFloat(text, 64)
-			if err != nil {
-				return nil, err
-			}
-			return &PrimitiveNode{Value: f}, nil
-		}
-		i, err := strconv.Atoi(text)
-		if err != nil {
-			return nil, err
-		}
-		return &PrimitiveNode{Value: i}, nil
-	case BOOL:
-		b, err := strconv.ParseBool(p.curr.value)
-		if err != nil {
-			return nil, err
-		}
-		p.nextToken()
-		return &PrimitiveNode{Value: b}, nil
-	case IDENT:
-		if p.curr.value == "null" {
-			p.nextToken()
-			return &PrimitiveNode{Value: nil}, nil
-		}
-		if p.curr.value == "env" {
-			return p.parseEnvLookup()
-		}
-		ident := p.curr.value
-		p.nextToken()
-		if p.curr.typ == LPAREN {
-			p.nextToken()
-			var args []Node
-			if p.curr.typ != RPAREN {
-				for {
-					arg, err := p.parseExpression()
-					if err != nil {
-						return nil, err
-					}
-					args = append(args, arg)
-					if p.curr.typ == COMMA {
-						p.nextToken()
-					} else {
-						break
-					}
-				}
-			}
-			_, err := p.expect(RPAREN)
-			if err != nil {
-				return nil, err
-			}
-			return &FunctionNode{FuncName: ident, Args: args}, nil
-		}
-		return &IdentifierNode{Name: ident}, nil
-	case LPAREN:
-		p.nextToken()
-		expr, err := p.parseExpression()
-		if err != nil {
-			return nil, err
-		}
-		_, err = p.expect(RPAREN)
-		if err != nil {
-			return nil, err
-		}
-		return &GroupNode{Child: expr}, nil
-	case LBRACE:
-		return p.parseMap()
-	case LBRACKET:
-		return p.parseSlice()
-	case AT:
-		return p.parseInclude()
+func (p *parser) schemaStringClause() string {
+	v := p.parseValue()
+	switch x := v.(type) {
+	case *Literal:
+		return literalScalar(x)
+	case *Reference:
+		return x.Path
 	default:
-		return nil, p.parseError(fmt.Sprintf("unexpected token in expression: %v", p.curr.value))
+		return ""
 	}
 }
 
-func (p *Parser) getOperator(tok tokenInfo) (string, bool) {
-	if tok.typ == OPERATOR {
-		if tok.value == "?" || tok.value == ":" {
-			return "", false
-		}
-		return tok.value, true
-	}
-	if tok.typ == DOT {
-		return ".", true
-	}
-	return "", false
-}
-
-func (p *Parser) parseHeredoc() (Node, error) {
-	heredocStartOffset := p.offset
-	p.nextToken()
-	delimTok, err := p.expect(IDENT)
-	if err != nil {
-		return nil, err
-	}
-	delimiter := delimTok.value
-	newlineIdx := strings.IndexByte(p.input[heredocStartOffset:], '\n')
-	if newlineIdx == -1 {
-		return nil, p.parseError(fmt.Sprintf("expected newline after heredoc marker, got marker: %q", p.input[heredocStartOffset:]))
-	}
-	contentStart := heredocStartOffset + newlineIdx + 1
-	pos := contentStart
-	var delimPos int = -1
+func (p *parser) parseSchemaType() string {
+	var parts []string
+	depth := 0
 	for {
-		nextNewline := strings.IndexByte(p.input[pos:], '\n')
-		if nextNewline == -1 {
+		t := p.peek()
+		if t.kind == tokEOF || t.kind == tokNewline || t.kind == tokRBrace || t.kind == tokLBrace {
 			break
 		}
-		line := p.input[pos : pos+nextNewline]
-		if strings.TrimSpace(line) == delimiter {
-			delimPos = pos
+		if depth == 0 && t.kind == tokIdent && isSchemaClause(t.text) {
 			break
 		}
-		pos += nextNewline + 1
+		if t.text == "<" {
+			depth++
+		}
+		if t.text == ">" && depth > 0 {
+			depth--
+		}
+		parts = append(parts, p.next().text)
 	}
-	if delimPos == -1 {
-		return nil, p.parseError(fmt.Sprintf("heredoc delimiter %s not found", delimiter))
+	if len(parts) == 0 {
+		return "any"
 	}
-	content := p.input[contentStart:delimPos]
-	newOffset := delimPos + len(delimiter)
-	if newOffset < len(p.input) && p.input[newOffset] == '\n' {
-		newOffset++
-	}
-	p.input = p.input[newOffset:]
-	p.offset = 0
-	var s scanner.Scanner
-	s.Init(strings.NewReader(p.input))
-	s.Filename = p.scanner.Filename
-	s.Whitespace = 1<<' ' | 1<<'\t' | 1<<'\r' | 1<<'\n'
-	s.Mode |= scanner.ScanComments
-	p.scanner = s
-	p.nextToken()
-	return &PrimitiveNode{Value: content}, nil
+	return joinTypeParts(parts)
 }
 
-func (p *Parser) parseSQL() (Node, error) {
-	sqlStartOffset := p.offset
-	p.nextToken()
-	delimTok, err := p.expect(IDENT)
-	if err != nil {
-		return nil, err
+func isSchemaClause(s string) bool {
+	switch s {
+	case "enum", "default", "description", "doc", "deprecated", "sensitive", "generated", "min", "max", "pattern", "format", "examples":
+		return true
+	default:
+		return false
 	}
-	delimiter := delimTok.value
-	newlineIdx := strings.IndexByte(p.input[sqlStartOffset:], '\n')
-	if newlineIdx == -1 {
-		return nil, p.parseError(fmt.Sprintf("expected newline after SQL marker, got marker: %q", p.input[sqlStartOffset:]))
+}
+
+func (p *parser) parseValueUntilLine() Value {
+	if p.isExpressionLine() {
+		return p.parseExprLine()
 	}
-	contentStart := sqlStartOffset + newlineIdx + 1
-	pos := contentStart
-	var delimPos int = -1
+	return p.parseValue()
+}
+
+func (p *parser) parseValue() Value {
+	t := p.next()
+	switch t.kind {
+	case tokString, tokHeredoc:
+		return &Literal{Type: "string", Data: t.text, Span: t.span}
+	case tokNumber:
+		return parseNumber(t)
+	case tokIdent:
+		path := p.collectRef(t)
+		switch t.text {
+		case "true":
+			return &Literal{Type: "bool", Data: true, Span: t.span}
+		case "false":
+			return &Literal{Type: "bool", Data: false, Span: t.span}
+		case "null":
+			return &Literal{Type: "null", Data: nil, Span: t.span}
+		}
+		if p.peek().kind == tokLParen {
+			t.text = path
+			return p.parseCall(t)
+		}
+		if path == t.text && !looksConstantName(path) {
+			return &Literal{Type: "identifier", Data: path, Span: t.span}
+		}
+		return &Reference{Path: path, Span: t.span}
+	case tokLBracket:
+		return p.parseList(t)
+	case tokLBrace:
+		body := p.parseNodes(tokRBrace)
+		return &Object{Fields: body, Span: t.span}
+	default:
+		p.error(t, "expected value")
+		return &Literal{Type: "null", Data: nil, Span: t.span}
+	}
+}
+
+func (p *parser) parseList(start token) Value {
+	items := make([]Value, 0, 4)
 	for {
-		nextNewline := strings.IndexByte(p.input[pos:], '\n')
-		if nextNewline == -1 {
-			break
+		p.skipNewlines()
+		if p.peek().kind == tokRBracket || p.peek().kind == tokEOF {
+			end := p.next()
+			return &List{Items: items, Tuple: len(items) > 0, Span: spanJoin(start.span, end.span)}
 		}
-		line := p.input[pos : pos+nextNewline]
-		if strings.TrimSpace(line) == delimiter {
-			delimPos = pos
-			break
+		if p.peek().kind == tokLBrace {
+			lb := p.next()
+			items = append(items, &Object{Fields: p.parseNodes(tokRBrace), Span: lb.span})
+		} else {
+			items = append(items, p.parseValue())
 		}
-		pos += nextNewline + 1
+		p.skipNewlines()
+		if p.peek().kind == tokComma {
+			p.next()
+		}
 	}
-	if delimPos == -1 {
-		return nil, p.parseError(fmt.Sprintf("SQL delimiter %s not found", delimiter))
-	}
-	content := p.input[contentStart:delimPos]
-	newOffset := delimPos + len(delimiter)
-	if newOffset < len(p.input) && p.input[newOffset] == '\n' {
-		newOffset++
-	}
-	p.input = p.input[newOffset:]
-	p.offset = 0
-	var s scanner.Scanner
-	s.Init(strings.NewReader(p.input))
-	s.Filename = p.scanner.Filename
-	s.Whitespace = 1<<' ' | 1<<'\t' | 1<<'\r' | 1<<'\n'
-	s.Mode |= scanner.ScanComments
-	p.scanner = s
-	p.nextToken()
-	return &SQLNode{SQL: content}, nil
 }
 
-func (p *Parser) parseMap() (Node, error) {
-	_, err := p.expect(LBRACE)
-	if err != nil {
-		return nil, err
+func (p *parser) parseCall(name token) Value {
+	p.next()
+	call := &Call{Name: name.text, Args: make([]Value, 0, 2), Span: name.span}
+	for {
+		p.skipNewlines()
+		if p.peek().kind == tokRParen || p.peek().kind == tokEOF {
+			call.Span = spanJoin(call.Span, p.next().span)
+			return call
+		}
+		call.Args = append(call.Args, p.parseValue())
+		p.skipNewlines()
+		if p.peek().kind == tokComma {
+			p.next()
+		}
 	}
-	var entries []*AssignmentNode
-	var blocks []Node
-	for p.curr.typ != RBRACE && p.curr.typ != EOF {
-		if p.curr.typ == COMMENT {
-			comment, err := p.parseComment()
-			if err != nil {
-				return nil, err
+}
+
+func (p *parser) parseExprLine() Value {
+	start := p.peek().span
+	depth := 0
+	rawStart := start.Start.Offset
+	rawEnd := start.End.Offset
+	for {
+		t := p.peek()
+		if t.kind == tokEOF || (depth == 0 && (t.kind == tokNewline || t.kind == tokRBrace)) {
+			break
+		}
+		if t.kind == tokLBrace || t.kind == tokLBracket || t.kind == tokLParen {
+			depth++
+		}
+		if t.kind == tokRBrace || t.kind == tokRBracket || t.kind == tokRParen {
+			depth--
+		}
+		rawEnd = p.next().span.End.Offset
+	}
+	end := start
+	if p.pos > 0 {
+		end = p.toks[p.pos-1].span
+	}
+	return &Expr{Raw: p.rawExpr(rawStart, rawEnd), Span: spanJoin(start, end)}
+}
+
+func (p *parser) isExpressionLine() bool {
+	if p.peek().kind == tokIdent && p.peek().text == "match" {
+		return true
+	}
+	depth := 0
+	for i := p.pos; i < len(p.toks); i++ {
+		t := p.toks[i]
+		if depth == 0 && (t.kind == tokNewline || t.kind == tokRBrace || t.kind == tokEOF) {
+			return false
+		}
+		if depth == 0 && (t.kind == tokOperator || isExprOperator(t.text)) {
+			return true
+		}
+		if t.kind == tokLBracket || t.kind == tokLParen {
+			depth++
+		}
+		if t.kind == tokRBracket || t.kind == tokRParen {
+			depth--
+		}
+	}
+	return false
+}
+
+func blockValue(name string, body []Node, sp Span) Value {
+	if name == "when" {
+		return buildCondition("all", body, sp)
+	}
+	if name == "then" {
+		return &Object{Fields: body, Span: sp}
+	}
+	allBare := len(body) > 0
+	items := make([]Value, 0, len(body))
+	for _, n := range body {
+		a, ok := n.(*Assignment)
+		if !ok || a.Value == nil || a.Name == "" {
+			allBare = false
+			break
+		}
+		if ref, ok := a.Value.(*Reference); ok && ref.Path == "" {
+			items = append(items, &Literal{Type: "identifier", Data: a.Name, Span: a.Span})
+		} else {
+			allBare = false
+			break
+		}
+	}
+	if allBare {
+		return &List{Items: items, Span: sp}
+	}
+	return &Object{Fields: body, Span: sp}
+}
+
+func buildCondition(op string, body []Node, sp Span) Value {
+	cond := &Condition{Op: op, Span: sp}
+	for _, n := range body {
+		switch x := n.(type) {
+		case *Assignment:
+			if expr, ok := x.Value.(*Expr); ok {
+				cond.Children = append(cond.Children, &Condition{Op: "expr", Expr: expr, Span: expr.Span})
 			}
-			blocks = append(blocks, comment)
+		case *Block:
+			if x.Type == "all" || x.Type == "any" || x.Type == "not" || x.Type == "none" {
+				if child, ok := buildCondition(x.Type, x.Body, x.Span).(*Condition); ok {
+					cond.Children = append(cond.Children, child)
+				}
+			}
+		}
+	}
+	if len(cond.Children) == 1 && op == "all" {
+		return cond.Children[0]
+	}
+	return cond
+}
+
+func parseNumber(t token) Value {
+	raw := t.text
+	if looksDateTime(raw) {
+		typ := "date"
+		if strings.Contains(raw, "T") || strings.Count(raw, ":") > 0 {
+			typ = "datetime"
+		}
+		return &Literal{Type: typ, Raw: raw, Data: raw, Span: t.span}
+	}
+	unitStart := len(raw)
+	for i, r := range raw {
+		if i > 0 && (r < '0' || r > '9') && r != '.' {
+			unitStart = i
+			break
+		}
+	}
+	num, unit := raw[:unitStart], raw[unitStart:]
+	if unit != "" {
+		typ := "duration"
+		if isByteUnit(unit) {
+			typ = "bytes"
+		}
+		return &Literal{Type: typ, Raw: raw, Data: raw, Span: t.span}
+	}
+	if strings.Contains(num, ".") {
+		f, _ := strconv.ParseFloat(num, 64)
+		return &Literal{Type: "float", Raw: raw, Data: f, Span: t.span}
+	}
+	i, _ := strconv.ParseInt(num, 10, 64)
+	return &Literal{Type: "int", Raw: raw, Data: i, Span: t.span}
+}
+
+func looksDateTime(s string) bool {
+	if len(s) < 10 {
+		return false
+	}
+	return len(s) >= 10 && s[4] == '-' && s[7] == '-'
+}
+
+func looksConstantName(s string) bool {
+	for _, r := range s {
+		if r >= 'A' && r <= 'Z' {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *parser) collectRef(first token) string {
+	parts := []string{first.text}
+	for p.peek().kind == tokDot {
+		p.next()
+		parts = append(parts, p.expect(tokIdent, "expected reference segment").text)
+	}
+	return strings.Join(parts, ".")
+}
+
+func (p *parser) skipNewlines() {
+	for p.peek().kind == tokNewline {
+		p.next()
+	}
+}
+
+func (p *parser) skipNodeSeparators() {
+	for p.peek().kind == tokNewline || p.peek().kind == tokComma {
+		p.next()
+	}
+}
+
+func (p *parser) skipLineTail() {
+	for p.peek().kind != tokNewline && p.peek().kind != tokRBrace && p.peek().kind != tokEOF {
+		p.next()
+	}
+}
+
+func (p *parser) recoverLine() {
+	for p.peek().kind != tokNewline && p.peek().kind != tokEOF {
+		p.next()
+	}
+}
+
+func (p *parser) expect(k tokenKind, msg string) token {
+	t := p.peek()
+	if t.kind != k {
+		p.error(t, msg)
+		return t
+	}
+	return p.next()
+}
+
+func (p *parser) next() token {
+	t := p.peek()
+	if p.pos < len(p.toks) {
+		p.pos++
+	}
+	return t
+}
+
+func (p *parser) peek() token {
+	if p.pos >= len(p.toks) {
+		return token{kind: tokEOF}
+	}
+	return p.toks[p.pos]
+}
+
+func (p *parser) peekN(n int) token {
+	if p.pos+n >= len(p.toks) {
+		return token{kind: tokEOF}
+	}
+	return p.toks[p.pos+n]
+}
+
+func (p *parser) error(t token, msg string) {
+	p.errs = append(p.errs, Diagnostic{Severity: "error", Message: msg, Span: t.span})
+}
+
+func (p *parser) rawExpr(start, end int) string {
+	if start < 0 || end < start || end > len(p.source) {
+		return ""
+	}
+	return strings.TrimSpace(p.source[start:end])
+}
+
+func spanJoin(a Span, b Span) Span {
+	if a.File == "" {
+		a.File = b.File
+	}
+	a.End = b.End
+	return a
+}
+
+func isExprOperator(s string) bool {
+	switch s {
+	case "in", "not_in", "contains", "starts_with", "ends_with", "matches", "has", "has_any", "has_all", "between", "exists", "empty", "equals", "greater_than", "less_than", "greater_or_equal", "less_or_equal", "to", "and", "or":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCommandStatement(s string) bool {
+	switch s {
+	case "map", "field", "include":
+		return true
+	default:
+		return false
+	}
+}
+
+func isKnownBlock(s string) bool {
+	switch s {
+	case "bcl", "namespace", "profile", "module", "override", "runtime", "evaluation", "audit", "context", "session", "all", "any", "not", "none":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCapitalizedBlockName(s string) bool {
+	r, _ := utf8.DecodeRuneInString(s)
+	return r != utf8.RuneError && unicode.IsUpper(r)
+}
+
+func isByteUnit(s string) bool {
+	switch len(s) {
+	case 1:
+		return s[0] == 'B' || s[0] == 'b'
+	case 2:
+		return (s[1] == 'B' || s[1] == 'b') && (s[0] == 'K' || s[0] == 'k' || s[0] == 'M' || s[0] == 'm' || s[0] == 'G' || s[0] == 'g' || s[0] == 'T' || s[0] == 't')
+	case 3:
+		return (s[1] == 'I' || s[1] == 'i') && (s[2] == 'B' || s[2] == 'b') && (s[0] == 'K' || s[0] == 'k' || s[0] == 'M' || s[0] == 'm' || s[0] == 'G' || s[0] == 'g' || s[0] == 'T' || s[0] == 't')
+	default:
+		return false
+	}
+}
+
+func joinTypeParts(parts []string) string {
+	var b strings.Builder
+	for _, p := range parts {
+		if p == "," {
+			b.WriteString(", ")
 			continue
 		}
-		if p.curr.typ != IDENT {
-			return nil, p.parseError(fmt.Sprintf("expected key in map, got %v", p.curr.value))
-		}
-		key := p.curr.value
-		p.nextToken()
-		if p.curr.typ == ASSIGN {
-			assignment, err := p.parseAssignment(key)
-			if err != nil {
-				return nil, err
-			}
-			switch v := assignment.(type) {
-			case *AssignmentNode:
-				entries = append(entries, v)
-			case *MultiAssignNode:
-				if len(v.Assignments) == 1 {
-					entries = append(entries, v.Assignments[0])
-				} else {
-					entries = append(entries, v.Assignments...)
-				}
-			}
-		} else if p.curr.typ == LBRACE {
-			block, err := p.parseBlock(key, "")
-			if err != nil {
-				return nil, err
-			}
-			blocks = append(blocks, block)
-		} else if p.curr.typ == IDENT || p.curr.typ == STRING {
-			label := p.curr.value
-			p.nextToken()
-			if p.curr.typ != LBRACE {
-				return nil, p.parseError(fmt.Sprintf("expected '{' after label %s, got %v", label, p.curr.value))
-			}
-			block, err := p.parseBlock(key, label)
-			if err != nil {
-				return nil, err
-			}
-			blocks = append(blocks, block)
-		} else {
-			return nil, p.parseError(fmt.Sprintf("unexpected token %v after key %s", p.curr.value, key))
-		}
-		if p.curr.typ == COMMA {
-			p.nextToken()
-		}
-	}
-	_, err = p.expect(RBRACE)
-	if err != nil {
-		return nil, err
-	}
-	return &CombinedMapNode{Entries: entries, Blocks: blocks}, nil
-}
-
-func (p *Parser) parseSlice() (Node, error) {
-	_, err := p.expect(LBRACKET)
-	if err != nil {
-		return nil, err
-	}
-	var elems []Node
-	for p.curr.typ != RBRACKET && p.curr.typ != EOF {
-		elem, err := p.parseExpression()
-		if err != nil {
-			return nil, err
-		}
-		elems = append(elems, elem)
-		if p.curr.typ == COMMA {
-			p.nextToken()
-		}
-	}
-	_, err = p.expect(RBRACKET)
-	if err != nil {
-		return nil, err
-	}
-	return &SliceNode{Elements: elems}, nil
-}
-
-func (p *Parser) parseControl() (Node, error) {
-	keyword := p.curr.value
-	p.nextToken()
-	var condition Node
-	if keyword != "ELSE" {
-		if p.curr.typ == LPAREN {
-			_, err := p.expect(LPAREN)
-			if err != nil {
-				return nil, err
-			}
-			cond, err := p.parseExpression()
-			if err != nil {
-				return nil, err
-			}
-			condition = cond
-			_, err = p.expect(RPAREN)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			cond, err := p.parseExpression()
-			if err != nil {
-				return nil, err
-			}
-			condition = cond
-		}
-	}
-	var blockStart Token
-	if p.curr.typ == LBRACE {
-		blockStart = LBRACE
-	} else if p.curr.typ == LPAREN {
-		blockStart = LPAREN
-	} else {
-		return nil, p.parseError(fmt.Sprintf("expected block start token (\"{\" or \"(\") but got %v", p.curr.value))
-	}
-	_, err := p.expect(blockStart)
-	if err != nil {
-		return nil, err
-	}
-	var blockEnd Token
-	if blockStart == LBRACE {
-		blockEnd = RBRACE
-	} else {
-		blockEnd = RPAREN
-	}
-	var body []Node
-	for p.curr.typ != blockEnd && p.curr.typ != EOF {
-		stmt, err := p.parseStatement()
-		if err != nil {
-			return nil, err
-		}
-		body = append(body, stmt)
-	}
-	_, err = p.expect(blockEnd)
-	if err != nil {
-		return nil, err
-	}
-	control := &ControlNode{Condition: condition, Body: body}
-	if p.curr.typ == KEYWORD && (p.curr.value == "ELSEIF" || p.curr.value == "ELSE") {
-		elseNode, err := p.parseControl()
-		if err != nil {
-			return nil, err
-		}
-		if ctrlElse, ok := elseNode.(*ControlNode); ok {
-			control.Else = ctrlElse
-		}
-	}
-	return control, nil
-}
-
-func (p *Parser) parseCommand() (Node, error) {
-	// Consume the '@' token.
-	p.nextToken()
-	// Accept IDENT or STRING for command
-	if p.curr.typ == STRING {
-		// Assume @include "file.bcl" style
-		return p.parseInclude()
-	}
-	if p.curr.typ != IDENT {
-		return nil, p.parseError("expected command name after '@'")
-	}
-	cmd := p.curr.value
-	p.nextToken()
-	switch cmd {
-	case "include":
-		return p.parseInclude() // existing include handling
-	case "exec":
-		return p.parseExec()
-	case "pipeline":
-		return p.parsePipeline()
-	default:
-		return nil, p.parseError(fmt.Sprintf("unknown command @%s", cmd))
-	}
-}
-
-func (p *Parser) parseExec() (Node, error) {
-	_, err := p.expect(LPAREN)
-	if err != nil {
-		return nil, err
-	}
-	config := make(map[string]Node)
-	for p.curr.typ != RPAREN && p.curr.typ != EOF {
-		if p.curr.typ != IDENT {
-			return nil, p.parseError(fmt.Sprintf("expected identifier in @exec, got %v", p.curr.value))
-		}
-		key := p.curr.value
-		p.nextToken()
-		if p.curr.typ != ASSIGN && !(p.curr.typ == OPERATOR && p.curr.value == ":") {
-			return nil, p.parseError(fmt.Sprintf("expected assignment operator after %s, got %v", key, p.curr.value))
-		}
-		p.nextToken()
-		value, err := p.parseExpression()
-		if err != nil {
-			return nil, err
-		}
-		config[key] = value
-		if p.curr.typ == COMMA {
-			p.nextToken()
-		}
-	}
-	_, err = p.expect(RPAREN)
-	if err != nil {
-		return nil, err
-	}
-	return &ExecNode{Config: config}, nil
-}
-
-func (p *Parser) parsePipeline() (Node, error) {
-	if p.curr.typ != LBRACE {
-		return nil, p.parseError(fmt.Sprintf("expected '{' after @pipeline, got %v", p.curr.value))
-	}
-	_, err := p.expect(LBRACE)
-	if err != nil {
-		return nil, err
-	}
-	var nodes []Node
-	for p.curr.typ != RBRACE && p.curr.typ != EOF {
-		node, err := p.parseStatement()
-		if err != nil {
-			return nil, err
-		}
-		nodes = append(nodes, node)
-		if p.curr.typ == COMMA {
-			p.nextToken()
-		}
-	}
-	_, err = p.expect(RBRACE)
-	if err != nil {
-		return nil, err
-	}
-	return &PipelineNode{Nodes: nodes}, nil
-}
-
-// Add new peekToken() method to Parser.
-func (p *Parser) peekToken() tokenInfo {
-	temp := NewParser(p.input[p.offset:])
-	// Preserve the original filename if needed.
-	temp.scanner.Filename = p.scanner.Filename
-	return temp.curr
-}
-
-// Helper to print a code block with the error line and a few lines of context.
-func getErrorBlock(input string, errLine int) string {
-	lines := strings.Split(input, "\n")
-	start := errLine - 2
-	if start < 0 {
-		start = 0
-	}
-	end := errLine + 1
-	if end > len(lines) {
-		end = len(lines)
-	}
-	var b strings.Builder
-	for i := start; i < end; i++ {
-		if i == errLine-1 {
-			b.WriteString(">> ")
-		} else {
-			b.WriteString("   ")
-		}
-		b.WriteString(lines[i])
-		b.WriteByte('\n')
+		b.WriteString(p)
 	}
 	return b.String()
 }

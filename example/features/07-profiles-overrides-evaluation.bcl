@@ -1,0 +1,42 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+active_profile env("APP_ENV", "dev")
+
+engine {
+  workers 4
+  cache_ttl 1m
+  strict_mode false
+}
+
+evaluation {
+  strategy deny_overrides
+  default deny
+}
+
+profile "dev" {
+  debug true
+  database_url env("DEV_DATABASE_URL", "postgres://localhost/dev")
+
+  override engine {
+    workers 2
+    cache_ttl 30s
+  }
+}
+
+profile "prod" {
+  debug false
+  database_url sensitive(env.required("DATABASE_URL"))
+
+  override engine {
+    workers 16
+    cache_ttl 10m
+    strict_mode true
+  }
+}
+
+override engine {
+  attr_ttl 15m
+}

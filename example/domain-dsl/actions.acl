@@ -1,0 +1,21 @@
+action "audit-deny" {
+  type http
+  connector http("audit-api")
+
+  trigger {
+    on decision.deny
+  }
+
+  request {
+    method POST
+    path "/audit"
+
+    body json {
+      subject_id subject.id
+      resource request.resource
+      action request.action
+      reason decision.reason
+      policy decision.policy_id
+    }
+  }
+}

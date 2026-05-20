@@ -1,0 +1,26 @@
+env_file ".env"
+
+name "ProcessGate"
+enabled true
+workers 8
+cache_ttl 5m
+public_endpoint "https://processgate.example.com:8443/api"
+
+server {
+  host "0.0.0.0"
+  port 8080
+  trusted_proxies ["10.0.0.1", "10.0.0.2"]
+}
+
+database {
+  driver "postgres"
+  url env.required("DATABASE_URL")
+  max_open 20
+  password env.required("DATABASE_PASSWORD")
+}
+
+features {
+  audit true
+  explain true
+  hot_reload false
+}

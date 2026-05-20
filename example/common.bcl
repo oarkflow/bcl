@@ -1,0 +1,56 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+const ADMIN_ROLES = ["admin", "superadmin", "root"]
+const READ_ACTIONS = [read, list, view]
+const WRITE_ACTIONS = [write, update, delete]
+const TRUSTED_NETWORKS = [cidr("10.0.0.0/8"), cidr("192.168.0.0/16")]
+
+set "admin-roles" {
+  admin
+  superadmin
+  root
+}
+
+set "document-actions" {
+  read
+  list
+  view
+  write
+  update
+  delete
+}
+
+set "audit-fields" {
+  subject_id
+  resource_id
+  request_id
+  decision
+  matched_rule
+}
+
+schema tenant {
+  required name string
+  optional parent string
+  optional attrs map
+}
+
+schema policy {
+  required tenant string
+  required effect string enum [allow, deny]
+  required priority int
+  optional actions list<string>
+  optional resources list<string>
+  optional when expression
+  optional meta map
+}
+
+schema route {
+  required path string
+  required upstream url
+  optional timeout duration
+  optional headers list<object>
+}
+

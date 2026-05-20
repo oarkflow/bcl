@@ -1,0 +1,24 @@
+schema policy {
+  required tenant string pattern "^[a-zA-Z0-9_-]+$" description "Tenant identifier"
+  required effect enum ["allow", "deny"] description "Decision produced when this policy matches"
+  required priority int min 0 max 10000 default 0
+
+  required match block {
+    optional actions list<string> examples [["read", "write"]]
+    optional resources list<string> examples [["document:*"]]
+  }
+
+  optional when expression
+  optional reason string pattern "^[A-Z0-9_]+$"
+  optional id string default uuid()
+  optional slug string default unique_id("pol")
+  optional created_at datetime default now()
+  optional updated_at datetime default CURRENT_TIMESTAMP
+  optional effective_date date default date()
+  optional expires_on date default date("2027-01-01")
+  optional review_at datetime default datetime()
+  optional review_time time default time()
+  optional owner_email email format email
+  optional audit_token string sensitive
+  optional deprecated_reason string deprecated "Use reason instead"
+}
