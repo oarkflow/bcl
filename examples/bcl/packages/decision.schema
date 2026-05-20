@@ -1,0 +1,54 @@
+schema loan_application {
+  required applicant object {
+    required age number min 18 max 120
+    required credit_score number min 300 max 900
+    required monthly_income number min 0
+    optional country string enum ["NP", "US", "IN"]
+    optional blacklisted bool
+  }
+
+  required loan object {
+    required emi number min 1
+  }
+}
+
+schema ticket_routing {
+  required ticket object {
+    required severity string enum ["low", "normal", "critical"]
+    required age_hours number min 0
+    optional topic string
+  }
+
+  required customer object {
+    required plan string enum ["free", "pro", "enterprise"]
+  }
+}
+
+schema response_safety {
+  required ai object {
+    required intent string
+    required risk_score number
+    required confidence number
+  }
+}
+
+schema procurement_request {
+  required request object {
+    required amount number min 0
+  }
+
+  required budget object {
+    required available number min 0
+  }
+}
+
+schema sms_route {
+  required recipient object {
+    required country string
+    optional phone_hash string
+  }
+
+  required message object {
+    required compliance_checked bool
+  }
+}

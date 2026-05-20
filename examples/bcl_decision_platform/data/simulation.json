@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {
+      "decision": "fraud-review",
+      "context": {
+        "customer": {
+          "blacklisted": false,
+          "country": "NP"
+        },
+        "transaction": {
+          "amount": 125000
+        }
+      }
+    }
+  ]
+}

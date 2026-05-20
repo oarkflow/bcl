@@ -44,9 +44,18 @@ func TestFile(path string, opts *Options) (*TestSuiteResult, error) {
 	if len(tests) == 0 {
 		return suite, nil
 	}
+	decisionProgram, _ := CompileDecisionDocument(doc, opts)
 	for _, testBlock := range tests {
 		input := testInputFromBlock(testBlock, opts)
 		testOpts := cloneOptionsForTest(opts, input)
+		if decisionName := decisionNameFromTestBlock(testBlock, opts); decisionName != "" && decisionProgram != nil {
+			result := runDecisionTest(decisionProgram, testBlock, decisionName, testOpts)
+			if !result.Passed {
+				suite.Passed = false
+			}
+			suite.Tests = append(suite.Tests, result)
+			continue
+		}
 		n, err := Compile(doc, testOpts)
 		if err != nil {
 			suite.Passed = false
@@ -66,6 +75,16 @@ func TestFile(path string, opts *Options) (*TestSuiteResult, error) {
 		suite.Tests = append(suite.Tests, result)
 	}
 	return suite, nil
+}
+
+func decisionNameFromTestBlock(test *Block, opts *Options) string {
+	c := &compiler{opts: opts, out: &Normalized{Body: map[string]any{}}, consts: map[string]Value{}, sets: map[string][]Value{}, types: map[string]string{}, schemaDecls: map[string]*SchemaDecl{}}
+	for _, n := range test.Body {
+		if a, ok := n.(*Assignment); ok && a.Name == "decision" {
+			return scalarString(c.value(a.Value))
+		}
+	}
+	return ""
 }
 
 func collectTestBlocks(nodes []Node) []*Block {
@@ -139,6 +158,44 @@ func runCompiledTest(n *Normalized, test map[string]any, opts *Options) TestResu
 		}
 	}
 	result.Diagnostics = append(result.Diagnostics, sim.Diagnostics...)
+	return result
+}
+
+func runDecisionTest(program *DecisionProgram, testBlock *Block, decisionName string, opts *Options) TestResult {
+	builder := newDecisionBuilder(opts)
+	test := builder.testFromBlock(testBlock)
+	if test.Input == nil {
+		test.Input = map[string]any{}
+	}
+	result := TestResult{Name: test.Name, Passed: true, Expected: test.Expect}
+	decision, err := EvaluateDecision(program, decisionName, test.Input, opts)
+	if err != nil {
+		result.Passed = false
+		result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: err.Error(), Span: testBlock.Span})
+		return result
+	}
+	result.Simulation = &SimulationResult{
+		Decision: map[string]any{
+			"effect":    decision.Effect,
+			"allowed":   decision.Allowed,
+			"policy_id": decision.PolicyID,
+			"rank":      decision.Rank,
+			"score":     decision.Score,
+		},
+		Diagnostics: decision.Diagnostics,
+	}
+	if wantEffect := scalarString(test.Expect["effect"]); wantEffect != "" && decision.Effect != wantEffect {
+		result.Passed = false
+		result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected effect %q", test.Name, wantEffect)})
+	}
+	if wantAllowed, ok := test.Expect["allowed"].(bool); ok && decision.Allowed != wantAllowed {
+		result.Passed = false
+		result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected allowed %v", test.Name, wantAllowed)})
+	}
+	result.Diagnostics = append(result.Diagnostics, decision.Diagnostics...)
+	if len(decision.Diagnostics) > 0 {
+		result.Passed = false
+	}
 	return result
 }
 

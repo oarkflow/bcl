@@ -519,6 +519,7 @@ func evalOptionsFrom(opts *Options, vars map[string]any) *EvalOptions {
 		eopts.AllowHash = opts.AllowHash
 		eopts.AllowEncoding = opts.AllowEncoding
 		eopts.AllowTime = opts.AllowTime
+		eopts.Functions = opts.EvalFunctions
 	}
 	return eopts
 }

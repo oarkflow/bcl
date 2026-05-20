@@ -1,0 +1,15 @@
+{
+  "name": "AI blocked intent",
+  "decision": "response-safety",
+  "input": {
+    "ai": {
+      "intent": "malware_generation",
+      "risk_score": 95,
+      "confidence": 0.92
+    }
+  },
+  "expect": {
+    "effect": "deny",
+    "allowed": false
+  }
+}

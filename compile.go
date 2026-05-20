@@ -32,6 +32,9 @@ type Options struct {
 	LockfilePath         string
 	BaseDir              string
 	Redact               bool
+	EvalFunctions        map[string]EvalFunction
+	DecisionActions      map[string]DecisionActionHandler
+	DecisionRankers      map[string]DecisionRankingScorer
 }
 
 func Compile(doc *Document, opts *Options) (*Normalized, error) {
@@ -473,7 +476,7 @@ func (c *compiler) emit(nodes []Node, body map[string]any) {
 			if x.Name == "env_file" || x.Name == "env_files" {
 				continue
 			}
-			setNormalized(body, x.Name, c.valueWithRedact(x.Value, x.Sensitive))
+			setNormalized(body, x.Name, c.assignmentValue(x))
 		case *Block:
 			switch x.Type {
 			case "set", "bcl", "schema", "predicate", "test":
@@ -515,7 +518,7 @@ func (c *compiler) block(b *Block) map[string]any {
 	for _, n := range b.Body {
 		switch x := n.(type) {
 		case *Assignment:
-			setNormalized(body, x.Name, c.valueWithRedact(x.Value, x.Sensitive))
+			setNormalized(body, x.Name, c.assignmentValue(x))
 		case *Block:
 			body[x.Type] = appendBlock(body[x.Type], c.block(x))
 		case *Spread:
@@ -579,7 +582,7 @@ func (c *compiler) nodesToBody(nodes []Node, currentType string) map[string]any 
 	for _, n := range nodes {
 		switch x := n.(type) {
 		case *Assignment:
-			setNormalized(body, x.Name, c.valueWithRedact(x.Value, x.Sensitive))
+			setNormalized(body, x.Name, c.assignmentValue(x))
 		case *Block:
 			body[x.Type] = appendBlock(body[x.Type], c.block(x))
 		case *Spread:
@@ -593,6 +596,15 @@ func (c *compiler) nodesToBody(nodes []Node, currentType string) map[string]any 
 
 func (c *compiler) value(v Value) any {
 	return c.valueWithRedact(v, false)
+}
+
+func (c *compiler) assignmentValue(a *Assignment) any {
+	if a.Name == "$expr" {
+		if expr, ok := a.Value.(*Expr); ok {
+			return map[string]any{"$expr": expr.Raw}
+		}
+	}
+	return c.valueWithRedact(a.Value, a.Sensitive)
 }
 
 func (c *compiler) valueWithRedact(v Value, sensitive bool) any {
@@ -644,7 +656,7 @@ func (c *compiler) valueWithRedact(v Value, sensitive bool) any {
 		for _, n := range x.Fields {
 			switch y := n.(type) {
 			case *Assignment:
-				setNormalized(m, y.Name, c.valueWithRedact(y.Value, y.Sensitive))
+				setNormalized(m, y.Name, c.assignmentValue(y))
 			case *Block:
 				m[y.Type] = appendBlock(m[y.Type], c.block(y))
 			case *Spread:
@@ -655,7 +667,7 @@ func (c *compiler) valueWithRedact(v Value, sensitive bool) any {
 		}
 		return m
 	case *Expr:
-		v, err := EvalExpr(x.Raw, &EvalOptions{Variables: c.evalVars(), AllowEncoding: c.opts.AllowEncoding, AllowHash: c.opts.AllowHash, AllowTime: c.opts.AllowTime})
+		v, err := EvalExpr(x.Raw, &EvalOptions{Variables: c.evalVars(), AllowEncoding: c.opts.AllowEncoding, AllowHash: c.opts.AllowHash, AllowTime: c.opts.AllowTime, Functions: c.opts.EvalFunctions})
 		if err != nil {
 			c.errs = append(c.errs, Diagnostic{Severity: "error", Message: err.Error(), Span: x.Span})
 			return map[string]any{"$expr": x.Raw}
@@ -744,7 +756,7 @@ func (c *compiler) call(x *Call) any {
 		for _, a := range x.Args {
 			args = append(args, c.value(a))
 		}
-		v, err := EvalExpr(callToExpr(x.Name, args), &EvalOptions{Variables: c.evalVars(), AllowEncoding: c.opts.AllowEncoding, AllowHash: c.opts.AllowHash, AllowTime: c.opts.AllowTime})
+		v, err := EvalExpr(callToExpr(x.Name, args), &EvalOptions{Variables: c.evalVars(), AllowEncoding: c.opts.AllowEncoding, AllowHash: c.opts.AllowHash, AllowTime: c.opts.AllowTime, Functions: c.opts.EvalFunctions})
 		if err == nil {
 			return v
 		}
@@ -866,7 +878,7 @@ var interpolationPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 func (c *compiler) interpolate(s string) string {
 	return interpolationPattern.ReplaceAllStringFunc(s, func(match string) string {
 		expr := strings.TrimSuffix(strings.TrimPrefix(match, "${"), "}")
-		v, err := EvalExpr(expr, &EvalOptions{Variables: c.evalVars(), AllowEncoding: c.opts.AllowEncoding, AllowHash: c.opts.AllowHash, AllowTime: c.opts.AllowTime})
+		v, err := EvalExpr(expr, &EvalOptions{Variables: c.evalVars(), AllowEncoding: c.opts.AllowEncoding, AllowHash: c.opts.AllowHash, AllowTime: c.opts.AllowTime, Functions: c.opts.EvalFunctions})
 		if err != nil || v == nil {
 			return match
 		}

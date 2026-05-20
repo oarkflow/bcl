@@ -19,7 +19,10 @@ type EvalOptions struct {
 	AllowEncoding bool
 	AllowTime     bool
 	Variables     map[string]any
+	Functions     map[string]EvalFunction
 }
+
+type EvalFunction func(args []any, opts *EvalOptions) (any, error)
 
 func Eval(raw string, vars map[string]any) (any, error) {
 	return evalExpr(raw, vars, nil)
@@ -709,6 +712,11 @@ func infixPrecedence(op string) (int, bool) {
 func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 	if opts == nil {
 		opts = defaultEvalOptions()
+	}
+	if opts.Functions != nil {
+		if fn := opts.Functions[name]; fn != nil {
+			return fn(args, opts)
+		}
 	}
 	switch name {
 	case "SOME":

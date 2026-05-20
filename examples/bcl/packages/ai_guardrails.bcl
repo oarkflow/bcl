@@ -1,0 +1,68 @@
+import "./decision.schema"
+import "./shared_ai_constants.bcl"
+
+module "ai-guardrails" {
+  version "1"
+  environment "example"
+
+  decision_schema "response-safety" {
+    effects [allow, deny, require_review]
+    default allow
+    strategy deny_overrides
+  }
+
+  predicate "blocked_ai_intent" {
+    match(ai.intent, case("malware_generation", true), case("credential_extraction", true), false)
+  }
+
+  policy "response-safety" {
+    default allow
+    strategy deny_overrides
+
+    deny "deny-blocked-intent" when {
+      predicate.blocked_ai_intent
+    } reason "blocked AI intent is disallowed"
+
+    require_review "review-low-confidence" when {
+      ai.confidence < 0.75
+    } reason "low model confidence"
+
+    require_review "review-high-risk" when {
+      ai.risk_score >= REVIEW_RISK
+      ai.risk_score < DENY_RISK
+    } reason "medium risk response"
+  }
+
+  rule_set "response-safety" {
+    rule "safety-case-create" {
+      when {
+        any {
+          ai.confidence < 0.75
+          ai.risk_score >= REVIEW_RISK
+        }
+      }
+      then {
+        score += 25
+        action create_case { queue "ai-safety" }
+      }
+      reason "human review case should be created"
+    }
+  }
+
+  action "create_case" {
+    description "Create a safety review case"
+  }
+
+  test "malware generation is denied" {
+    decision "response-safety"
+    input {
+      ai.intent "malware_generation"
+      ai.risk_score 95
+      ai.confidence 0.92
+    }
+    expect {
+      effect "deny"
+      allowed false
+    }
+  }
+}

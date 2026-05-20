@@ -1,0 +1,103 @@
+module "fraud-intelligence" {
+  version "1"
+  environment "production"
+
+  schema "fraud-review" {
+    required customer.blacklisted
+    required transaction.amount
+    type transaction.amount number
+  }
+
+  policy "fraud-review" {
+    default allow
+
+    deny "deny-blacklisted" when {
+      customer.blacklisted == true
+    } reason "customer is blacklisted"
+
+    require_review "review-market" when {
+      customer.country == "NP"
+    } reason "manual review market"
+  }
+
+  rule_set "fraud-review" {
+    rule "1001" {
+      when {
+        all {
+          transaction.amount > 100000
+          any {
+            customer.country == "NP"
+            customer.tier == "vip"
+          }
+          not {
+            customer.blacklisted == true
+          }
+        }
+      }
+      then {
+        decision "require_review"
+        score += 40
+        action notify { team "compliance" }
+      }
+      reason "high value transaction"
+    }
+  }
+
+  ranking "fraud-review" {
+    selection best
+    priority_path "provider.priority"
+    cost_path "provider.load"
+
+    rule "active" {
+      when { provider.active == true }
+    }
+
+    score "priority" {
+      metric "provider.priority"
+      weight 0.7
+      normalize 1 10
+    }
+  }
+
+  optimize "queue-optimization" {
+    decision "fraud-review"
+    goal "maximize reviewer readiness while minimizing queue load"
+    ranking "fraud-review"
+    selection best
+  }
+
+  workflow "fraud-review-workflow" {
+    start at "intake"
+
+    stage "intake" {
+      rule "2001" {
+        when { transaction.amount > 100000 }
+        then { decision "escalate" }
+      }
+    }
+  }
+
+  action "notify" {
+    description "Send an operational notification"
+  }
+
+  governance {
+    owner "risk"
+    maker "risk-ops"
+    checkers ["compliance"]
+    approvers ["head-of-risk"]
+  }
+
+  test "blacklisted customers are denied" {
+    decision "fraud-review"
+    input {
+      customer.blacklisted true
+      customer.country "NP"
+      transaction.amount 1000
+    }
+    expect {
+      effect "deny"
+      allowed false
+    }
+  }
+}

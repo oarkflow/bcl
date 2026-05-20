@@ -1,0 +1,12 @@
+module "shared-ai-constants" {
+  version "1"
+  environment "example"
+
+  const REVIEW_RISK 40
+  const DENY_RISK 80
+
+  metadata {
+    owner "ai-safety"
+    purpose "shared constants for BCL import examples"
+  }
+}

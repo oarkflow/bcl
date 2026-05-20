@@ -1,0 +1,104 @@
+import "./decision.schema"
+
+module "support-priority" {
+  version "1"
+  environment "example"
+
+  decision_schema "ticket-routing" {
+    effects [allow, deny, escalate]
+    default allow
+    strategy first_match
+  }
+
+  dataset "support-queues" {
+    record "database" {
+      name "Database Queue"
+      provider.open true
+      provider.primary_skill "database"
+      provider.priority 10
+      provider.load 0.2
+    }
+
+    record "general" {
+      name "General Queue"
+      provider.open true
+      provider.generalist true
+      provider.priority 5
+      provider.load 0.4
+    }
+  }
+
+  policy "ticket-routing" {
+    default allow
+
+    escalate "escalate-critical-enterprise" when {
+      ticket.severity == "critical"
+      customer.plan == "enterprise"
+    } reason "critical enterprise ticket"
+  }
+
+  rule_set "ticket-routing" {
+    rule "priority-critical" {
+      when { ticket.severity == "critical" }
+      then {
+        decision "escalate"
+        score += 50
+        action notify { team "incident-command" }
+      }
+      reason "critical severity"
+    }
+
+    rule "priority-aged-ticket" {
+      when { ticket.age_hours > 24 }
+      then { score += 20 }
+      reason "ticket is older than one day"
+    }
+  }
+
+  ranking "ticket-routing" {
+    dataset "support-queues"
+    selection best
+    priority_path "provider.priority"
+    cost_path "provider.load"
+
+    rule "queue-open" {
+      when { provider.open == true }
+    }
+
+    rule "queue-has-skill" {
+      when {
+        any {
+          ticket.topic == provider.primary_skill
+          provider.generalist == true
+        }
+      }
+    }
+
+    score "queue-priority" {
+      metric "provider.priority"
+      weight 0.7
+      normalize 1 10
+    }
+
+    score "queue-load" {
+      metric "provider.load"
+      weight -0.3
+      normalize 0 1
+    }
+  }
+
+  test "critical enterprise ticket escalates" {
+    decision "ticket-routing"
+    input {
+      ticket.severity "critical"
+      ticket.age_hours 2
+      ticket.topic "database"
+      customer.plan "enterprise"
+    }
+    expect {
+      effect "escalate"
+      allowed false
+      rank.id "database"
+    }
+  }
+}

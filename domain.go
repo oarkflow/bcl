@@ -33,6 +33,7 @@ type DomainProgram struct {
 	Schemas     map[string]any      `json:"schemas,omitempty"`
 	Policies    []PolicyIR          `json:"policies,omitempty"`
 	PolicyPlan  *PolicyPlan         `json:"policy_plan,omitempty"`
+	Decisions   *DecisionProgram    `json:"decisions,omitempty"`
 	Diagnostics []Diagnostic        `json:"diagnostics,omitempty"`
 	Normalized  map[string][]string `json:"normalized_files,omitempty"`
 }
@@ -124,11 +125,65 @@ func CompileDomainDir(dir string, opts *Options) (*DomainProgram, error) {
 		compileDomainFileInto(prog, df)
 	}
 	prog.Diagnostics = append(prog.Diagnostics, validateDomainSchemas(prog)...)
+	prog.Decisions = buildDomainDecisionProgram(prog, opts)
+	if len(prog.Policies) == 0 && prog.Decisions != nil {
+		prog.Policies = policiesFromDecisionProgram(prog.Decisions)
+	}
 	prog.PolicyPlan = BuildPolicyPlan(prog.Policies, prog.Runtime)
 	if len(prog.Diagnostics) > 0 {
 		return prog, ErrorList(prog.Diagnostics)
 	}
 	return prog, nil
+}
+
+func buildDomainDecisionProgram(prog *DomainProgram, opts *Options) *DecisionProgram {
+	if prog == nil || len(prog.Files) == 0 {
+		return nil
+	}
+	doc := &Document{File: "<domain>"}
+	for _, file := range prog.Files {
+		if file.Document != nil {
+			doc.Items = append(doc.Items, file.Document.Items...)
+		}
+	}
+	if len(doc.Items) == 0 {
+		return nil
+	}
+	decisionProg := newDecisionBuilder(opts).build(doc, nil)
+	if len(decisionProg.Decisions) == 0 && len(decisionProg.Rankings) == 0 && len(decisionProg.Datasets) == 0 {
+		return nil
+	}
+	return decisionProg
+}
+
+func policiesFromDecisionProgram(prog *DecisionProgram) []PolicyIR {
+	if prog == nil {
+		return nil
+	}
+	var out []PolicyIR
+	for _, decision := range prog.Decisions {
+		for _, rule := range decision.Rules {
+			if rule.Effect != "allow" && rule.Effect != "deny" {
+				continue
+			}
+			out = append(out, PolicyIR{
+				Kind:      "policy",
+				ID:        rule.ID,
+				Effect:    rule.Effect,
+				Priority:  rule.Priority,
+				Condition: rule.Condition,
+				Reason:    rule.Reason,
+				Span:      rule.Span,
+			})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Priority == out[j].Priority {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Priority > out[j].Priority
+	})
+	return out
 }
 
 func validateDomainSchemas(prog *DomainProgram) []Diagnostic {

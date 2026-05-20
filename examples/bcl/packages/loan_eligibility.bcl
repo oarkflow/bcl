@@ -1,0 +1,84 @@
+import "./decision.schema"
+
+module "loan-eligibility" {
+  version "1"
+  environment "example"
+  const MIN_AGE 18
+  const PRIME_CREDIT 700
+  vars { review_market "NP" }
+  metadata { owner "credit-policy" domain "lending" }
+
+  decision_schema "loan-application" {
+    effects [allow, deny, require_review]
+    default deny
+    strategy deny_overrides
+  }
+
+  predicate "prime_applicant" {
+    match(applicant, case({age: age, credit_score: score, monthly_income: income} if age >= MIN_AGE and score >= PRIME_CREDIT and income >= loan.emi * 3, true), false)
+  }
+
+  policy "loan-application" {
+    default deny
+    strategy deny_overrides
+
+    allow "eligible-prime-applicant" when {
+      predicate.prime_applicant
+    } reason "prime applicant affordability requirements met"
+
+    deny "deny-blacklisted" when {
+      applicant.blacklisted == true
+    } reason "applicant is blacklisted"
+
+    require_review "review-borderline-credit" when {
+      applicant.credit_score >= 620
+      applicant.credit_score < PRIME_CREDIT
+      applicant.monthly_income >= loan.emi * 3
+    } then {
+      score += 15
+      event borderline_credit { band "620-699" }
+    } reason "borderline credit requires manual review"
+  }
+
+  rule_set "loan-application" {
+    strategy highest_priority
+    rule "risk-income-pressure" {
+      priority 10
+      when {
+        applicant.monthly_income < loan.emi * 4
+      }
+      then {
+        score += 20
+        action notify { team "credit-risk" reason "income pressure" }
+        event risk_signal { type "income_pressure" }
+      }
+      reason "income is close to repayment threshold"
+    }
+  }
+
+  action "notify" {
+    description "Notify an operational team"
+  }
+
+  governance {
+    owner "credit-policy"
+    maker "lending-ops"
+    checkers ["risk"]
+    approvers ["head-of-credit"]
+  }
+
+  test "prime applicant is allowed" {
+    decision "loan-application"
+    input {
+      applicant.age 31
+      applicant.credit_score 735
+      applicant.monthly_income 6000
+      applicant.blacklisted false
+      loan.emi 1500
+    }
+    expect {
+      effect "allow"
+      allowed true
+    }
+  }
+}

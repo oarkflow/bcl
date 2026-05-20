@@ -1,0 +1,91 @@
+import "./decision.schema"
+
+module "telecom-optimization" {
+  version "1"
+  environment "example"
+
+  decision_schema "sms-route" {
+    effects [allow, deny]
+    default allow
+    strategy deny_overrides
+  }
+
+  dataset "sms-providers" {
+    record "np-primary" {
+      provider.active true
+      provider.country "NP"
+      provider.priority 9
+      provider.cost 0.008
+      provider.traffic_weight 80
+      provider.delivery_rate 0.992
+      provider.latency_ms 120
+    }
+    record "np-backup" {
+      provider.active true
+      provider.country "NP"
+      provider.priority 6
+      provider.cost 0.006
+      provider.traffic_weight 20
+      provider.delivery_rate 0.985
+      provider.latency_ms 180
+    }
+  }
+
+  policy "sms-route" {
+    default allow
+
+    deny "deny-unchecked-campaign" when {
+      message.compliance_checked == false
+    } reason "campaign compliance check is required"
+  }
+
+  ranking "sms-route" {
+    dataset "sms-providers"
+    selection weighted
+    priority_path "provider.priority"
+    cost_path "provider.cost"
+    weight_path "provider.traffic_weight"
+    hash_key_path "recipient.phone_hash"
+
+    rule "provider-active" {
+      when { provider.active == true }
+    }
+
+    rule "country-supported" {
+      when { provider.country == recipient.country }
+    }
+
+    score "delivery-quality" {
+      metric "provider.delivery_rate"
+      weight 0.8
+      normalize 0.8 1
+    }
+
+    score "latency" {
+      metric "provider.latency_ms"
+      weight -0.2
+      normalize 50 1000
+    }
+  }
+
+  optimize "sms-provider-selection" {
+    decision "sms-route"
+    goal "maximize delivery quality while minimizing cost and latency"
+    ranking "sms-route"
+    dataset "sms-providers"
+    selection weighted
+  }
+
+  test "unchecked campaign is denied" {
+    decision "sms-route"
+    input {
+      recipient.country "NP"
+      recipient.phone_hash "stable-customer-key"
+      message.compliance_checked false
+    }
+    expect {
+      effect "deny"
+      allowed false
+    }
+  }
+}

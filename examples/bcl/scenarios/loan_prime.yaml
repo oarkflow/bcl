@@ -1,0 +1,13 @@
+name: loan prime applicant
+decision: loan-application
+input:
+  applicant:
+    age: 31
+    credit_score: 735
+    monthly_income: 6000
+    blacklisted: false
+  loan:
+    emi: 1500
+expect:
+  effect: allow
+  allowed: true

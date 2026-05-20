@@ -1,0 +1,29 @@
+{
+  "context": {
+    "customer": {
+      "blacklisted": false,
+      "country": "NP"
+    },
+    "transaction": {
+      "amount": 125000
+    }
+  },
+  "candidates": [
+    {
+      "id": "aml",
+      "facts": {
+        "active": true,
+        "priority": 9,
+        "load": 0.2
+      }
+    },
+    {
+      "id": "standard",
+      "facts": {
+        "active": true,
+        "priority": 5,
+        "load": 0.5
+      }
+    }
+  ]
+}

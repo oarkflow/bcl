@@ -1,0 +1,84 @@
+import "./decision.schema"
+
+module "procurement-workflow" {
+  version "1"
+  environment "example"
+
+  decision_schema "procurement-request" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy deny_overrides
+  }
+
+  policy "procurement-request" {
+    default require_review
+
+    deny "deny-no-budget" when {
+      budget.available < request.amount
+    } reason "budget is insufficient"
+
+    allow "auto-approve-small-request" when {
+      request.amount <= 5000
+      budget.available >= request.amount
+    } reason "small request is within budget"
+  }
+
+  workflow "procurement-approval" {
+    start at "submitted"
+
+    stage "submitted" {
+      assign role "department_head"
+      sla "8h"
+      on_timeout "finance_review"
+
+      rule "wf-small-request" {
+        when { request.amount <= 5000 }
+        then { decision "approve" }
+        reason "small request can be approved"
+      }
+
+      rule "wf-finance-review" {
+        when { request.amount > 5000 }
+        then {
+          decision "escalate"
+          action assign { role "finance_manager" }
+        }
+        reason "finance review required"
+      }
+    }
+
+    stage "finance_review" {
+      assign role "finance_manager"
+      sla "24h"
+      on_timeout "escalate"
+
+      rule "wf-finance-approve" {
+        when { budget.available >= request.amount }
+        then { decision "approve" }
+        reason "finance budget available"
+      }
+
+      rule "wf-finance-reject" {
+        when { budget.available < request.amount }
+        then { decision "reject" }
+        reason "finance budget unavailable"
+      }
+    }
+  }
+
+  action "assign" {
+    description "Assign a human approval task"
+  }
+
+  test "small funded request is allowed" {
+    decision "procurement-request"
+    input {
+      request.amount 3000
+      budget.available 10000
+    }
+    expect {
+      effect "allow"
+      allowed true
+    }
+  }
+}

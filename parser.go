@@ -344,6 +344,9 @@ func (p *parser) parseDottedAssignment(first token) Node {
 		p.next()
 		parts = append(parts, p.expect(tokIdent, "expected assignment path segment").text)
 	}
+	if p.peek().kind == tokEqual {
+		p.next()
+	}
 	v := p.parseValueUntilLine()
 	return &Assignment{Name: strings.Join(parts, "."), Value: v, Span: spanJoin(first.span, v.GetSpan())}
 }
