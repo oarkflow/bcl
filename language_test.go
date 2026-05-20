@@ -1,6 +1,8 @@
 package bcl
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -231,6 +233,57 @@ policy "base" {
 	}
 	if unknownPolicy != 1 || unknownDecision != 0 {
 		t.Fatalf("unexpected unknown reference diagnostics: policy=%d decision=%d diags=%#v", unknownPolicy, unknownDecision, diags)
+	}
+}
+
+func TestAnalyzeFileCountsImportedConstantUsedInExpression(t *testing.T) {
+	dir := t.TempDir()
+	commonPath := filepath.Join(dir, "common.bcl")
+	mainPath := filepath.Join(dir, "main.bcl")
+	if err := os.WriteFile(commonPath, []byte(`bcl {
+  version "1.0"
+}
+
+const ADMIN_ROLES = ["admin", "superadmin"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := []byte(`import "./common.bcl"
+
+policy "document-owner-or-admin" {
+  when {
+    subject.roles has_any ADMIN_ROLES
+  }
+}
+`)
+	if err := os.WriteFile(mainPath, src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, diags := AnalyzeFile(mainPath, src, &Options{ResolveImports: true, BaseDir: dir})
+	for _, d := range diags {
+		if strings.Contains(d.Message, `unused constant "ADMIN_ROLES"`) {
+			t.Fatalf("ADMIN_ROLES is used inside expression text: %#v", diags)
+		}
+	}
+}
+
+func TestLintSuppressesUnusedDeclarationsForPartialFiles(t *testing.T) {
+	doc, err := ParseFile("common.bcl", []byte(`const ADMIN_ROLES = ["admin"]
+
+set "admin-roles" {
+  admin
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	diags := Lint(doc, &Options{Partial: true})
+	for _, d := range diags {
+		if strings.Contains(d.Message, "unused constant") || strings.Contains(d.Message, "unused set") {
+			t.Fatalf("partial shared file should not report unused declarations: %#v", diags)
+		}
 	}
 }
 

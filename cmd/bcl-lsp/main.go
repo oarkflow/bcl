@@ -265,16 +265,34 @@ func (s *server) indexWorkspace() {
 }
 
 func (s *server) publishDiagnostics(uri string, diags []bcl.Diagnostic) {
-	items := make([]any, 0, len(diags))
+	byURI := map[string][]bcl.Diagnostic{uri: nil}
 	for _, d := range diags {
-		items = append(items, map[string]any{
-			"range":    lspRange(d.Span),
-			"severity": severity(d.Severity),
-			"source":   "bcl",
-			"message":  d.Message,
-		})
+		target := diagnosticURI(uri, d)
+		byURI[target] = append(byURI[target], d)
 	}
-	s.notify("textDocument/publishDiagnostics", map[string]any{"uri": uri, "diagnostics": items})
+	for target, targetDiags := range byURI {
+		items := make([]any, 0, len(targetDiags))
+		for _, d := range targetDiags {
+			items = append(items, map[string]any{
+				"range":    lspRange(d.Span),
+				"severity": severity(d.Severity),
+				"source":   "bcl",
+				"message":  d.Message,
+			})
+		}
+		s.notify("textDocument/publishDiagnostics", map[string]any{"uri": target, "diagnostics": items})
+	}
+}
+
+func diagnosticURI(baseURI string, d bcl.Diagnostic) string {
+	if d.Span.File == "" {
+		return baseURI
+	}
+	basePath := uriPath(baseURI)
+	if samePath(basePath, d.Span.File) {
+		return baseURI
+	}
+	return pathURI(d.Span.File)
 }
 
 func (s *server) completions(a *bcl.Analysis) []any {

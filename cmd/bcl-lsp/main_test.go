@@ -176,6 +176,85 @@ func TestLSPSupportsSchemaFiles(t *testing.T) {
 	}
 }
 
+func TestLSPRoutesImportedDiagnosticsToImportedFileURI(t *testing.T) {
+	dir := t.TempDir()
+	appPath := filepath.Join(dir, "app.bcl")
+	commonPath := filepath.Join(dir, "common.bcl")
+	if err := os.WriteFile(commonPath, []byte(`bcl {
+  version "1.0"
+}
+
+const ADMIN_ROLES = ["admin"]
+const ADMIN_ROLES = ["superadmin"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(appPath, []byte(`import "./common.bcl"
+
+description null
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	s := &server{out: &out, files: map[string]string{}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+	a := s.analyzeURI(pathURI(appPath))
+	var sawDuplicate bool
+	for _, d := range a.Diagnostics {
+		if strings.Contains(d.Message, `duplicate constant "ADMIN_ROLES"`) && samePath(d.Span.File, commonPath) {
+			sawDuplicate = true
+		}
+	}
+	if !sawDuplicate {
+		t.Fatalf("expected imported duplicate diagnostic with common.bcl span: %#v", a.Diagnostics)
+	}
+
+	published := publishedDiagnosticsByURI(t, out.String())
+	if got := published[pathURI(appPath)]; len(got) != 0 {
+		t.Fatalf("app.bcl should not receive imported diagnostics: %#v", got)
+	}
+	var routed bool
+	for _, d := range published[pathURI(commonPath)] {
+		if strings.Contains(d, `duplicate constant "ADMIN_ROLES"`) {
+			routed = true
+		}
+	}
+	if !routed {
+		t.Fatalf("expected duplicate diagnostic routed to common.bcl, got %#v", published)
+	}
+}
+
+func publishedDiagnosticsByURI(t *testing.T, raw string) map[string][]string {
+	t.Helper()
+	out := map[string][]string{}
+	r := bufio.NewReader(strings.NewReader(raw))
+	for {
+		msg, err := readMessage(r)
+		if err != nil {
+			break
+		}
+		if msg.Method != "textDocument/publishDiagnostics" {
+			continue
+		}
+		var params struct {
+			URI         string `json:"uri"`
+			Diagnostics []struct {
+				Message string `json:"message"`
+			} `json:"diagnostics"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range params.Diagnostics {
+			out[params.URI] = append(out[params.URI], d.Message)
+		}
+		if _, ok := out[params.URI]; !ok {
+			out[params.URI] = nil
+		}
+	}
+	return out
+}
+
 func TestLSPResolvesImportedSchemaForDiagnostics(t *testing.T) {
 	dir := t.TempDir()
 	mainPath := filepath.Join(dir, "main.bcl")

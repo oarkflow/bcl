@@ -384,6 +384,9 @@ func Lint(doc *Document, opts *Options) []Diagnostic {
 	if !hasVersion && (opts == nil || !opts.Partial) {
 		diags = append(diags, Diagnostic{Severity: "warning", Message: "missing bcl version declaration", Span: doc.Span})
 	}
+	if opts != nil && opts.Partial {
+		return diags
+	}
 	decls, uses := declarationUsage(doc)
 	for name, sp := range decls.consts {
 		if uses.consts[name] == 0 {
@@ -880,8 +883,8 @@ type usageCount struct {
 func declarationUsage(doc *Document) (usageSet, usageCount) {
 	decls := usageSet{consts: map[string]Span{}, sets: map[string]Span{}}
 	uses := usageCount{consts: map[string]int{}, sets: map[string]int{}}
-	var walk func([]Node)
-	walk = func(nodes []Node) {
+	var collectDecls func([]Node)
+	collectDecls = func(nodes []Node) {
 		for _, n := range nodes {
 			switch x := n.(type) {
 			case *ConstDecl:
@@ -890,14 +893,81 @@ func declarationUsage(doc *Document) (usageSet, usageCount) {
 				if x.Type == "set" && x.ID != "" {
 					decls.sets[x.ID] = x.Span
 				}
-				walk(x.Body)
+				collectDecls(x.Body)
 			case *Assignment:
-				validateValueAdvanced(x.Value, &[]Diagnostic{}, map[string][]Span{}, uses.consts, uses.sets)
+				if o, ok := x.Value.(*Object); ok {
+					collectDecls(o.Fields)
+				}
 			}
 		}
 	}
-	walk(doc.Items)
+	var countUses func([]Node)
+	countUses = func(nodes []Node) {
+		for _, n := range nodes {
+			switch x := n.(type) {
+			case *ConstDecl:
+				countDeclarationValueUsage(x.Value, decls, uses)
+			case *Block:
+				countUses(x.Body)
+			case *Assignment:
+				countDeclarationValueUsage(x.Value, decls, uses)
+			}
+		}
+	}
+	collectDecls(doc.Items)
+	countUses(doc.Items)
 	return decls, uses
+}
+
+func countDeclarationValueUsage(v Value, decls usageSet, uses usageCount) {
+	validateValueAdvanced(v, &[]Diagnostic{}, map[string][]Span{}, uses.consts, uses.sets)
+	countExprConstUsage(v, decls.consts, uses.consts)
+}
+
+func countExprConstUsage(v Value, consts map[string]Span, uses map[string]int) {
+	switch x := v.(type) {
+	case *Expr:
+		for _, name := range exprIdentifierNames(x.Raw) {
+			if _, ok := consts[name]; ok {
+				uses[name]++
+			}
+		}
+	case *List:
+		for _, item := range x.Items {
+			countExprConstUsage(item, consts, uses)
+		}
+	case *Object:
+		for _, item := range x.Fields {
+			if a, ok := item.(*Assignment); ok {
+				countExprConstUsage(a.Value, consts, uses)
+			}
+		}
+	case *Call:
+		for _, arg := range x.Args {
+			countExprConstUsage(arg, consts, uses)
+		}
+	case *Condition:
+		for _, child := range x.Children {
+			countExprConstUsage(child, consts, uses)
+		}
+		if x.Expr != nil {
+			countExprConstUsage(x.Expr, consts, uses)
+		}
+	}
+}
+
+func exprIdentifierNames(raw string) []string {
+	toks, err := exprTokens(raw)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, tok := range toks {
+		if tok.kind == tokIdent && !isExprOperator(tok.text) && !isKeyword(tok.text) {
+			names = append(names, tok.text)
+		}
+	}
+	return names
 }
 
 func documentStrict(doc *Document) bool {
