@@ -1,0 +1,13 @@
+{
+  "applicant": {
+    "age": 34,
+    "credit_score": 742,
+    "monthly_income": 7000,
+    "blacklisted": false
+  },
+  "loan": {
+    "emi": 1800,
+    "amount": 50000
+  }
+}
+

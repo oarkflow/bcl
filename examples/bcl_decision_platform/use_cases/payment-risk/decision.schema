@@ -1,0 +1,17 @@
+schema payment_risk {
+  required card object {
+    required stolen bool
+    required country string
+  }
+
+  required payment object {
+    required amount number min 0
+    required risk_score number min 0 max 100
+    required cross_border bool
+  }
+
+  required customer object {
+    required trusted bool
+  }
+}
+

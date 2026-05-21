@@ -1,0 +1,12 @@
+{
+  "counterparty": {
+    "sanctions_hit": false,
+    "country": "US",
+    "watchlist_score": 3
+  },
+  "shipment": {
+    "export_controlled": false,
+    "destination_country": "CA",
+    "product_code": "BOOK"
+  }
+}

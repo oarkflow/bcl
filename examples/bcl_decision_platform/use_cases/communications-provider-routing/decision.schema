@@ -1,0 +1,14 @@
+schema communications_provider_routing {
+  required user object {
+    required id string
+    required country string
+    optional tier string
+  }
+
+  required message object {
+    required channel string enum ["sms", "email"]
+    required type string enum ["otp", "marketing", "transactional"]
+    required compliance_checked bool
+    required quality_floor number min 0 max 1
+  }
+}

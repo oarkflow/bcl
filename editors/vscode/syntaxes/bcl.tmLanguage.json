@@ -100,7 +100,7 @@
       "patterns": [
         {
           "name": "keyword.control.bcl",
-          "match": "\\b(import|as|const|type|schema|required|optional|enum|default|description|doc|deprecated|sensitive|generated|min|max|pattern|format|examples|when|override|match|case|else)\\b"
+          "match": "\\b(import|as|const|type|schema|required|optional|enum|default|description|doc|deprecated|sensitive|generated|min|max|pattern|format|examples|when|override|use|match|case|else|if|then|row|record|approval|outcome|obligation|advice|event|governance)\\b"
         },
         {
           "name": "constant.language.boolean.bcl",
@@ -112,7 +112,7 @@
         },
         {
           "name": "keyword.control.block.bcl",
-          "match": "\\b(bcl|namespace|profile|module|runtime|evaluation|audit|context|session|policy|rule|set|pipeline|step|connection|http|connector|source|action|file|command|output|phase|allow|deny|all|any|not|none|then|retry|auth|headers|capture|on_status|map|field|include)\\b(?=\\s*(?:\"|[A-Za-z0-9_.-]+)?\\s*\\{)"
+          "match": "\\b(bcl|namespace|profile|module|runtime|evaluation|audit|context|session|policy|rule|set|predicate|pipeline|step|connection|http|connector|source|action|file|command|output|phase|decision_schema|decision_table|rule_set|ranking|dataset|reason_code_catalog|decision_bundle|decision_release|gate|test_matrix|rule_template|row|record|case|outcome|obligation|advice|event|approval|governance|allow|deny|require_review|all|any|not|none|then|retry|auth|headers|capture|on_status|map|field|include)\\b(?=\\s*(?:\"|[A-Za-z0-9_.-]+)?\\s*\\{)"
         }
       ]
     },
@@ -130,7 +130,7 @@
           }
         },
         {
-          "match": "\\b(schema|type|param)\\s+([A-Za-z_][A-Za-z0-9_-]*)",
+          "match": "\\b(schema|type|param|decision_schema|decision_table|dataset|test_matrix|rule_template|reason_code_catalog|decision_bundle|decision_release|gate|ranking|rule_set)\\s+([A-Za-z_][A-Za-z0-9_-]*|\"[^\"]+\")",
           "captures": {
             "1": {
               "name": "keyword.control.bcl"
@@ -146,7 +146,11 @@
       "patterns": [
         {
           "name": "entity.name.function.bcl",
-          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+          "match": "\\b[A-Za-z_][A-Za-z0-9_.]*(?=\\s*\\()"
+        },
+        {
+          "name": "support.function.pattern.bcl",
+          "match": "\\b(MISSING|NULL|EXISTS|ANY)\\b"
         }
       ]
     },
@@ -195,7 +199,7 @@
       "patterns": [
         {
           "name": "keyword.operator.bcl",
-          "match": "==|!=|<=|>=|&&|\\|\\||=>|[=<>!+*/%-]|\\b(in|not_in|contains|starts_with|ends_with|matches|has|has_any|has_all|between|exists|empty|equals|greater_than|less_than|greater_or_equal|less_or_equal|and|or|to)\\b"
+          "match": "\\+=|==|!=|<=|>=|&&|\\|\\||=>|\\.\\.|[=<>!+*/%-]|\\b(in|not_in|contains|starts_with|ends_with|matches|has|has_any|has_all|between|exists|empty|equals|greater_than|less_than|greater_or_equal|less_or_equal|and|or|to|as)\\b"
         }
       ]
     },

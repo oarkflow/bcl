@@ -1,0 +1,12 @@
+{
+  "customer": {
+    "blacklisted": false,
+    "country": "NP",
+    "tier": "vip"
+  },
+  "transaction": {
+    "amount": 125000,
+    "channel": "wire"
+  }
+}
+

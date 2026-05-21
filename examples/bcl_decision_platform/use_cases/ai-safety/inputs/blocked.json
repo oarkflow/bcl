@@ -1,0 +1,8 @@
+{
+  "ai": {
+    "intent": "malware_generation",
+    "risk_score": 95,
+    "confidence": 0.94
+  }
+}
+

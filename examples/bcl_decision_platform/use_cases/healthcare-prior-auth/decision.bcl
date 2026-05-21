@@ -1,0 +1,72 @@
+import "./decision.schema"
+
+module "healthcare-prior-auth-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "clinical-policy" domain "healthcare" }
+
+  reason_code_catalog "healthcare_prior_auth" {
+    code "COVERAGE_DENIED" { description "Member coverage is inactive" }
+    code "CLINICAL_REVIEW" { description "Procedure requires clinical review" }
+    code "MEDICALLY_NECESSARY" { description "Covered medically necessary request" }
+  }
+
+  decision_schema "healthcare_prior_auth" { effects [allow, deny, require_review] default require_review strategy first_match }
+
+  decision_table "healthcare_prior_auth" {
+    default require_review
+    hit_policy first
+    row "deny-inactive-coverage" {
+      priority 100 status active owner "clinical-policy" rationale "inactive coverage cannot authorize procedures" effective_from "2020-01-01"
+      when { member.coverage_active == false }
+      then { outcome { decision deny reason "coverage is inactive" attributes { route "decline" queue "benefits" } metadata { severity "high" } } obligation audit_log { category "prior_auth" } }
+      reason "coverage is inactive" reason_code "COVERAGE_DENIED" tags ["coverage", "block"]
+    }
+    row "review-complex-or-urgent" {
+      priority 60 status active owner "clinical-policy" rationale "complex or urgent procedures require clinician review" effective_from "2020-01-01"
+      when { any { request.urgency == "urgent" request.medical_necessity_score < 75 } }
+      then { outcome { decision require_review reason "clinical review required" attributes { route "clinical-review" queue "nurse-review" } metadata { severity "medium" } } advice collect_documents { document "clinical_notes" } }
+      reason "clinical review required" reason_code "CLINICAL_REVIEW" tags ["clinical", "manual-review"]
+    }
+    row "allow-covered-necessary-care" {
+      priority 20 status active owner "clinical-policy" rationale "active covered medically necessary care can be authorized" effective_from "2020-01-01"
+      when { member.coverage_active == true request.medical_necessity_score >= 85 request.urgency == "routine" }
+      then { outcome { decision allow reason "care is medically necessary" attributes { route "authorize" queue "none" } metadata { severity "low" } } }
+      reason "care is medically necessary" reason_code "MEDICALLY_NECESSARY" tags ["authorization"]
+    }
+  }
+
+  dataset "clinical_reviewers" {
+    record "nurse-review" { provider.active true provider.specialty "routine" provider.priority 5 provider.load 0.2 }
+    record "physician-review" { provider.active true provider.specialty "surgery" provider.priority 9 provider.load 0.35 }
+    record "urgent-md" { provider.active true provider.specialty "urgent" provider.priority 10 provider.load 0.45 }
+  }
+
+  ranking "healthcare_prior_auth" {
+    dataset "clinical_reviewers"
+    selection best
+    priority_path "provider.priority"
+    cost_path "provider.load"
+
+    rule "reviewer-active" { when { provider.active == true } }
+    rule "clinical-fit" {
+      when {
+        any {
+          provider.specialty == request.procedure
+          provider.specialty == request.urgency
+          provider.specialty == "routine"
+        }
+      }
+    }
+    score "clinical-readiness" { metric "provider.priority" weight 0.6 normalize 1 10 }
+    score "review-load" { metric "provider.load" weight -0.4 normalize 0 1 }
+  }
+
+  dataset "healthcare_prior_auth_batch" {
+    record "inactive" { member.coverage_active false member.plan "silver" request.procedure "MRI" request.urgency "routine" request.medical_necessity_score 92 }
+    record "clinical-review" { member.coverage_active true member.plan "gold" request.procedure "surgery" request.urgency "urgent" request.medical_necessity_score 82 }
+    record "authorize" { member.coverage_active true member.plan "gold" request.procedure "physical_therapy" request.urgency "routine" request.medical_necessity_score 90 }
+  }
+  gate "healthcare_prior_auth_gate" { bundle "healthcare_prior_auth_bundle" decision "healthcare_prior_auth" dataset "healthcare_prior_auth_batch" min_pass_rate 1.0 no_default_only true required_rules ["deny-inactive-coverage", "review-complex-or-urgent", "allow-covered-necessary-care"] }
+  decision_bundle "healthcare_prior_auth_bundle" { decisions ["healthcare_prior_auth"] datasets ["healthcare_prior_auth_batch"] approval { status approved approved_by "clinical-governance@example.com" approved_at "2026-05-20T00:00:00Z" } metadata { owner "clinical-policy" } }
+}

@@ -1,0 +1,17 @@
+schema dynamic_pricing {
+  required customer object {
+    required segment string
+    required loyalty_years number min 0
+  }
+
+  required cart object {
+    required subtotal number min 0
+    required requested_discount number min 0 max 100
+    required margin_after_discount number
+  }
+
+  optional inventory object {
+    optional demand string enum ["low", "normal", "high"]
+    optional stock_level number min 0
+  }
+}

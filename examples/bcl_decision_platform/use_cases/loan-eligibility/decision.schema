@@ -1,0 +1,14 @@
+schema loan_eligibility {
+  required applicant object {
+    required age number min 18 max 120
+    required credit_score number min 300 max 900
+    required monthly_income number min 0
+    required blacklisted bool
+  }
+
+  required loan object {
+    required emi number min 1
+    required amount number min 1
+  }
+}
+

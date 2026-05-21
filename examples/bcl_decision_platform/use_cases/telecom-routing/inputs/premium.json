@@ -1,0 +1,15 @@
+{
+  "recipient": {
+    "country": "US",
+    "phone_hash": "p3"
+  },
+  "message": {
+    "compliance_checked": true,
+    "priority": "high"
+  },
+  "provider": {
+    "active": true,
+    "supports_country": true,
+    "roaming": false
+  }
+}

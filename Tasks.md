@@ -61,6 +61,29 @@ Create a root-level `Tasks.md` and implement the roadmap one feature at a time. 
 - [x] Add batch and dataset decision evaluation helpers.
 - [x] Add a complete example covering patterns, lifecycle metadata, obligations/advice, phases, test matrices, and batch reports.
 
+## P5: Decision Governance Completion
+- [x] Add composed decisions through `decision("id")` expression calls.
+- [x] Add recursion protection for composed decisions.
+- [x] Add reason codes and rule tags to rules, results, outcomes, and traces.
+- [x] Add optional reason code catalogs with unknown-code warnings.
+- [x] Add decision table `hit_policy first|priority|collect|unique`.
+- [x] Add runtime diagnostics for `unique` hit policy multi-matches.
+- [x] Add batch coverage fields for hit, unhit, matched, selected, and default-only rules/cases.
+- [x] Add decision regression comparison helpers for batches and datasets.
+- [x] Add additive explain graph nodes.
+- [x] Add expected-trace assertions for matched, selected, skipped rules, reason codes, and tags.
+
+## P6: Decision Platform Operations
+- [x] Add `decision_bundle` and `decision_release` metadata blocks.
+- [x] Add approval metadata on bundles, releases, and decisions/tables.
+- [x] Warn when production releases include unapproved release, bundle, or decision metadata.
+- [x] Add dataset-driven `gate` blocks and `EvaluateDecisionGates`.
+- [x] Add parameterized decisions with `param` declarations resolved from input/context/defaults.
+- [x] Add lexical `rule_template` expansion through `use rule_template "id"`.
+- [x] Add conservative counterfactual suggestions with `CounterfactualDecision`.
+- [x] Add `DecisionResultObservation` with stable input hashing and trace-derived rule fields.
+- [x] Extend the complete decision essentials example with bundles, releases, gates, params, templates, and approval metadata.
+
 ## Implementation Order
 1. Create `Tasks.md` and keep it as the living checklist.
 2. Implement P0 pattern matching first.
@@ -69,6 +92,8 @@ Create a root-level `Tasks.md` and implement the roadmap one feature at a time. 
 5. Implement P1 diagnostics.
 6. Continue P2/P3 features one at a time.
 7. Keep P4 complete-decision features covered by tests and examples.
+8. Keep P5 governance features covered by unit tests and the complete example.
+9. Keep P6 operations features covered by unit tests and the complete example.
 
 ## Public Interfaces / Compatibility
 - Existing `match`, `ANY`, `ALL`, `SOME`, `NONE`, policies, rule sets, rankings, scenarios, and decision results remain backward compatible.
@@ -81,12 +106,19 @@ Create a root-level `Tasks.md` and implement the roadmap one feature at a time. 
 - `PATTERN as name` binds the value that matched `PATTERN`.
 - Rule lifecycle metadata is advisory except `status` and effective windows, which control rule eligibility.
 - `obligation` and `advice` are emitted alongside actions/events without changing existing outputs.
+- `decision("id")` evaluates another decision against the same input and returns a map-like result.
+- `hit_policy` is a table-friendly alias over decision strategies, with `unique` adding multi-hit diagnostics.
+- Reason code catalogs are optional; unknown reason codes warn only when a catalog exists for that decision.
+- Bundles, releases, approval metadata, gates, decision params, rule templates, counterfactuals, and observations are additive decision-platform features.
+- Approval metadata is advisory by default; production release warnings and gates provide promotion checks.
 
 ## Test Plan
 - Run `go test ./...` after each completed feature slice.
 - Add focused unit tests for `ANY(pattern)` / `EXISTS(pattern)`, rest binding, negative patterns, match fallback validation, decision tables, and conflict/coverage diagnostics.
 - Add or update examples so `examples_test.go` continues to cover the public syntax.
 - Run the complete decision essentials package and its test matrix as a public syntax fixture.
+- Add regression comparison and coverage tests for composed/governed decisions.
+- Add operations tests for bundle/release metadata, gates, params, templates, counterfactual suggestions, and observations.
 
 ## Assumptions
 - `Tasks.md` lives at `/Users/sujit/Sites/bcl/Tasks.md`.

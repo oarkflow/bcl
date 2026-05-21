@@ -1,0 +1,15 @@
+{
+  "subject": {
+    "blocked": false,
+    "role": "analyst",
+    "mfa": true
+  },
+  "resource": {
+    "sensitivity": "normal",
+    "required_role": "analyst"
+  },
+  "request": {
+    "action": "read"
+  }
+}
+

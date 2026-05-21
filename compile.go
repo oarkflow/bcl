@@ -29,6 +29,7 @@ type Options struct {
 	DisableInterpolation   bool
 	Partial                bool
 	Strict                 bool
+	Verbose                bool
 	LockfilePath           string
 	BaseDir                string
 	Redact                 bool

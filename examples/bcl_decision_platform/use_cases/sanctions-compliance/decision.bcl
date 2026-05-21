@@ -1,0 +1,69 @@
+import "./decision.schema"
+
+module "sanctions-compliance-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "compliance-platform" domain "sanctions" }
+
+  reason_code_catalog "sanctions_compliance" {
+    code "SANCTIONS_HIT" { description "Counterparty is on a sanctions list" }
+    code "EXPORT_REVIEW" { description "Export-controlled transaction requires review" }
+    code "CLEAR_COUNTERPARTY" { description "Counterparty and destination are clear" }
+  }
+
+  decision_schema "sanctions_compliance" { effects [allow, deny, require_review] default require_review strategy first_match }
+
+  decision_table "sanctions_compliance" {
+    default require_review
+    hit_policy first
+    row "deny-sanctions-hit" {
+      priority 100 status active owner "compliance" rationale "sanctions hits must be blocked" effective_from "2020-01-01"
+      when { counterparty.sanctions_hit == true }
+      then { outcome { decision deny reason "sanctions hit found" attributes { route "blocked" queue "compliance" } metadata { severity "critical" } } obligation audit_log { category "sanctions" } }
+      reason "sanctions hit found" reason_code "SANCTIONS_HIT" tags ["sanctions", "block"]
+    }
+    row "review-export-controlled" {
+      priority 60 status active owner "trade-compliance" rationale "controlled exports need compliance review" effective_from "2020-01-01"
+      when { shipment.export_controlled == true }
+      then { outcome { decision require_review reason "export control review required" attributes { route "export-review" queue "trade-compliance" } metadata { severity "high" } } advice collect_license { type "export" } }
+      reason "export control review required" reason_code "EXPORT_REVIEW" tags ["export-control", "manual-review"]
+    }
+    row "allow-clear-counterparty" {
+      priority 20 status active owner "compliance" rationale "clear counterparties and uncontrolled shipments can proceed" effective_from "2020-01-01"
+      when { counterparty.sanctions_hit == false shipment.export_controlled == false }
+      then { outcome { decision allow reason "counterparty is clear" attributes { route "clear" queue "none" } metadata { severity "low" } } }
+      reason "counterparty is clear" reason_code "CLEAR_COUNTERPARTY" tags ["clear"]
+    }
+  }
+
+  rule_set "sanctions_compliance" {
+    rule "score-watchlist-strength" {
+      phase score
+      priority 30
+      when { counterparty.watchlist_score >= 80 }
+      then { score += 40 }
+      reason "strong watchlist match"
+    }
+
+    rule "score-restricted-market" {
+      phase score
+      priority 20
+      when {
+        any {
+          counterparty.country == "RU"
+          shipment.destination_country == "AE"
+        }
+      }
+      then { score += 25 }
+      reason "restricted market risk"
+    }
+  }
+
+  dataset "sanctions_compliance_batch" {
+    record "sanctions-hit" { counterparty.sanctions_hit true counterparty.country "RU" shipment.export_controlled false shipment.destination_country "US" }
+    record "export-review" { counterparty.sanctions_hit false counterparty.country "US" shipment.export_controlled true shipment.destination_country "AE" }
+    record "clear" { counterparty.sanctions_hit false counterparty.country "US" shipment.export_controlled false shipment.destination_country "CA" }
+  }
+  gate "sanctions_compliance_gate" { bundle "sanctions_compliance_bundle" decision "sanctions_compliance" dataset "sanctions_compliance_batch" min_pass_rate 1.0 no_default_only true required_rules ["deny-sanctions-hit", "review-export-controlled", "allow-clear-counterparty"] }
+  decision_bundle "sanctions_compliance_bundle" { decisions ["sanctions_compliance"] datasets ["sanctions_compliance_batch"] approval { status approved approved_by "compliance-governance@example.com" approved_at "2026-05-20T00:00:00Z" } metadata { owner "compliance-platform" } }
+}

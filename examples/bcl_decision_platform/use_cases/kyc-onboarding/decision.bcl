@@ -1,0 +1,87 @@
+import "./decision.schema"
+
+module "kyc-onboarding-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "identity-risk" domain "kyc" }
+
+  reason_code_catalog "kyc_onboarding" {
+    code "SANCTIONS_MATCH" { description "Applicant has a sanctions match" }
+    code "DOCUMENT_REVIEW" { description "Document quality or identity score requires review" }
+    code "IDENTITY_VERIFIED" { description "Applicant passed identity checks" }
+  }
+
+  decision_schema "kyc_onboarding" { effects [allow, deny, require_review] default require_review strategy first_match }
+
+  decision_table "kyc_onboarding" {
+    default require_review
+    hit_policy first
+
+    row "deny-sanctions-match" {
+      priority 100 status active owner "compliance" rationale "sanctions matches block onboarding" effective_from "2020-01-01"
+      when { applicant.sanctions_match == true }
+      then { outcome { decision deny reason "sanctions match found" attributes { route "blocked" queue "compliance" } metadata { severity "critical" } } obligation audit_log { category "sanctions" } }
+      reason "sanctions match found"
+      reason_code "SANCTIONS_MATCH"
+      tags ["sanctions", "block"]
+    }
+
+    row "review-document-quality" {
+      priority 60 status active owner "identity-risk" rationale "weak document or identity evidence needs review" effective_from "2020-01-01"
+      when { any { applicant.identity_score < 75 applicant.document_quality < 80 } }
+      then { outcome { decision require_review reason "identity evidence needs review" attributes { route "manual-kyc" queue "identity" } metadata { severity "medium" } } advice collect_documents { document "government_id" } }
+      reason "identity evidence needs review"
+      reason_code "DOCUMENT_REVIEW"
+      tags ["manual-review", "kyc"]
+    }
+
+    row "allow-verified-identity" {
+      priority 40 status active owner "identity-risk" rationale "strong identity evidence can be approved" effective_from "2020-01-01"
+      when { applicant.sanctions_match == false applicant.identity_score >= 90 applicant.document_quality >= 90 }
+      then { outcome { decision allow reason "identity verified" attributes { route "straight-through" queue "none" } metadata { severity "low" } } }
+      reason "identity verified"
+      reason_code "IDENTITY_VERIFIED"
+      tags ["verified"]
+    }
+  }
+
+  rule_set "kyc_onboarding" {
+    rule "score-identity-assurance" {
+      phase score
+      priority 30
+      when { applicant.identity_score >= 90 }
+      then { score += 35 }
+      reason "strong identity assurance"
+    }
+
+    rule "score-document-quality" {
+      phase score
+      priority 20
+      when { applicant.document_quality >= 90 }
+      then { score += 25 }
+      reason "high quality identity document"
+    }
+
+    rule "score-cross-border-review-risk" {
+      phase score
+      priority 10
+      when {
+        any {
+          applicant.country == "NP"
+          applicant.country == "AE"
+        }
+      }
+      then { score += 10 }
+      reason "cross-border onboarding risk marker"
+    }
+  }
+
+  dataset "kyc_onboarding_batch" {
+    record "sanctions" { applicant.sanctions_match true applicant.identity_score 98 applicant.document_quality 98 applicant.country "US" }
+    record "document-review" { applicant.sanctions_match false applicant.identity_score 72 applicant.document_quality 86 applicant.country "US" }
+    record "verified" { applicant.sanctions_match false applicant.identity_score 94 applicant.document_quality 96 applicant.country "NP" }
+  }
+
+  gate "kyc_onboarding_gate" { bundle "kyc_onboarding_bundle" decision "kyc_onboarding" dataset "kyc_onboarding_batch" min_pass_rate 1.0 no_default_only true required_rules ["deny-sanctions-match", "review-document-quality", "allow-verified-identity"] }
+  decision_bundle "kyc_onboarding_bundle" { decisions ["kyc_onboarding"] datasets ["kyc_onboarding_batch"] approval { status approved approved_by "compliance@example.com" approved_at "2026-05-20T00:00:00Z" } metadata { owner "identity-risk" } }
+}

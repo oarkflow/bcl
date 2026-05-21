@@ -1,0 +1,120 @@
+import "./decision.schema"
+
+module "loan-eligibility-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "credit-policy" domain "lending" }
+
+  reason_code_catalog "loan_eligibility" {
+    code "BLACKLISTED_APPLICANT" { description "Applicant is blocked by credit policy" }
+    code "BORDERLINE_CREDIT" { description "Credit profile needs underwriter review" }
+    code "PRIME_AFFORDABLE" { description "Applicant meets prime affordability policy" }
+  }
+
+  decision_schema "loan_eligibility" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  decision_table "loan_eligibility" {
+    default require_review
+    hit_policy first
+
+    row "deny-blacklisted-applicant" {
+      priority 100
+      status active
+      owner "credit-risk"
+      rationale "blocked applicants cannot receive credit"
+      effective_from "2020-01-01"
+      when { applicant.blacklisted == true }
+      then { outcome { decision deny reason "applicant is blacklisted" attributes { route "decline" band "blocked" } metadata { queue "credit-risk" } } }
+      reason "applicant is blacklisted"
+      reason_code "BLACKLISTED_APPLICANT"
+      tags ["credit", "block"]
+    }
+
+    row "review-borderline-credit" {
+      priority 60
+      status active
+      owner "credit-policy"
+      rationale "borderline but affordable loans need manual review"
+      effective_from "2020-01-01"
+      when {
+        applicant.credit_score >= 620
+        applicant.credit_score < 700
+        applicant.monthly_income >= loan.emi * 3
+      }
+      then { outcome { decision require_review reason "borderline credit requires underwriter review" attributes { route "underwriter" band "borderline" } metadata { queue "credit-review" } } advice collect_documents { document "income_proof" } }
+      reason "borderline credit requires underwriter review"
+      reason_code "BORDERLINE_CREDIT"
+      tags ["manual-review"]
+    }
+
+    row "allow-prime-affordable" {
+      priority 50
+      status active
+      owner "credit-policy"
+      rationale "prime borrowers with enough income qualify automatically"
+      effective_from "2020-01-01"
+      when {
+        applicant.age >= 18
+        applicant.credit_score >= 700
+        applicant.monthly_income >= loan.emi * 3
+        applicant.blacklisted == false
+      }
+      then { outcome { decision allow reason "prime affordable loan" attributes { route "straight-through" band "prime" } metadata { queue "auto" } } }
+      reason "prime affordable loan"
+      reason_code "PRIME_AFFORDABLE"
+      tags ["straight-through", "credit"]
+    }
+  }
+
+  rule_set "loan_eligibility" {
+    rule "score-prime-credit" {
+      phase score
+      priority 30
+      when { applicant.credit_score >= 720 }
+      then { score += 30 }
+      reason "prime credit score"
+    }
+
+    rule "score-affordability-buffer" {
+      phase score
+      priority 20
+      when { applicant.monthly_income >= loan.emi * 4 }
+      then { score += 20 }
+      reason "monthly income has strong EMI buffer"
+    }
+
+    rule "score-large-loan-exposure" {
+      phase score
+      priority 10
+      when { loan.amount >= 50000 }
+      then { score += 10 }
+      reason "large loan exposure"
+    }
+  }
+
+  dataset "loan_eligibility_batch" {
+    record "blocked" { applicant.age 42 applicant.credit_score 760 applicant.monthly_income 9000 applicant.blacklisted true loan.emi 2000 loan.amount 70000 }
+    record "borderline" { applicant.age 29 applicant.credit_score 660 applicant.monthly_income 5000 applicant.blacklisted false loan.emi 1400 loan.amount 35000 }
+    record "prime" { applicant.age 34 applicant.credit_score 742 applicant.monthly_income 7000 applicant.blacklisted false loan.emi 1800 loan.amount 50000 }
+  }
+
+  gate "loan_eligibility_gate" {
+    bundle "loan_eligibility_bundle"
+    decision "loan_eligibility"
+    dataset "loan_eligibility_batch"
+    min_pass_rate 1.0
+    no_default_only true
+    required_rules ["deny-blacklisted-applicant", "review-borderline-credit", "allow-prime-affordable"]
+  }
+
+  decision_bundle "loan_eligibility_bundle" {
+    decisions ["loan_eligibility"]
+    datasets ["loan_eligibility_batch"]
+    approval { status approved approved_by "credit-governance@example.com" approved_at "2026-05-20T00:00:00Z" }
+    metadata { owner "credit-policy" }
+  }
+}

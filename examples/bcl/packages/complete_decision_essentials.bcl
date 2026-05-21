@@ -3,6 +3,15 @@ module "complete-decision-essentials" {
   environment "example"
   metadata { owner "risk-platform" domain "complete-decision-example" }
 
+  reason_code_catalog "complete_review" {
+    code "BLACKLISTED_CUSTOMER" { description "Customer is blocked by risk controls" }
+    code "KYC_NOT_VERIFIED" { description "Customer verification did not pass" }
+    code "LARGE_REQUEST" { description "Large requests add risk score" }
+    code "PRIME_DIGITAL_LOAN" { description "Verified prime digital loan can be approved automatically" }
+    code "CARD_REVIEW" { description "Card requests require analyst review" }
+    code "NULL_NOTE_REVIEW" { description "Explicit null note requires data quality review" }
+  }
+
   schema complete_review {
     required request object {
       required kind string enum ["loan", "card"]
@@ -29,13 +38,61 @@ module "complete-decision-essentials" {
     strategy first_match
   }
 
+  decision_schema "kyc_check" {
+    effects [allow, deny]
+    default deny
+    strategy first_match
+  }
+
+  decision_table "kyc_check" {
+    default deny
+    hit_policy first
+
+    row "kyc-verified" {
+      priority 10
+      when { customer.verified == true }
+      then { decision allow }
+      reason_code "PRIME_DIGITAL_LOAN"
+      tags ["kyc", "verification"]
+      reason "customer verification passed"
+    }
+  }
+
   predicate "prime_digital_loan" {
-    match(request, case({kind: "loan", amount: _:number as amount, tags: EXISTS("prime"), channel: not "broker", note: MISSING} if amount <= 75000, true), false)
+    match(request, case({kind: "loan", amount: _:number as amount, tags: EXISTS("prime"), channel: not "broker", note: MISSING} if amount <= param.auto_limit, true), false)
+  }
+
+  rule_template "manual_review_row" {
+    row "manual-review" {
+      phase decide
+      priority 35
+      status active
+      effective_from "2020-01-01"
+      when { request.amount < 1000 }
+      then {
+        outcome {
+          decision require_review
+          reason "small requests use analyst spot checks"
+          attributes { band "small" route "analyst" }
+          metadata { queue "spot-check" }
+        }
+      }
+      reason "small requests use analyst spot checks"
+      reason_code "CARD_REVIEW"
+      tags ["template", "manual-review"]
+    }
   }
 
   decision_table "complete_review" {
     default require_review
-    strategy first_match
+    hit_policy first
+    param auto_limit number { default 75000 }
+
+    approval {
+      status approved
+      approved_by "risk-owner@example.com"
+      approved_at "2026-05-20T00:00:00Z"
+    }
 
     row "deny-blacklisted" {
       phase guard
@@ -58,6 +115,8 @@ module "complete-decision-essentials" {
         advice appeal { channel "support" }
       }
       reason "customer is blacklisted"
+      reason_code "BLACKLISTED_CUSTOMER"
+      tags ["fraud", "guardrail"]
     }
 
     row "score-large-request" {
@@ -71,6 +130,8 @@ module "complete-decision-essentials" {
         event risk_signal { type "large_request" }
       }
       reason "large requests increase risk score"
+      reason_code "LARGE_REQUEST"
+      tags ["scoring", "amount"]
     }
 
     row "allow-prime-digital-loan" {
@@ -80,7 +141,7 @@ module "complete-decision-essentials" {
       effective_from "2020-01-01"
       when {
         predicate.prime_digital_loan
-        customer.verified == true
+        match(decision("kyc_check"), case({effect: "allow"}, true), false)
       }
       then {
         outcome {
@@ -93,6 +154,8 @@ module "complete-decision-essentials" {
         advice next_best_action { action "offer_credit_line" }
       }
       reason "verified prime digital loan"
+      reason_code "PRIME_DIGITAL_LOAN"
+      tags ["composition", "straight-through"]
     }
 
     row "review-card-request" {
@@ -110,6 +173,8 @@ module "complete-decision-essentials" {
         }
       }
       reason "card requests require analyst review"
+      reason_code "CARD_REVIEW"
+      tags ["manual-review", "card"]
     }
 
     row "review-explicit-note" {
@@ -127,6 +192,12 @@ module "complete-decision-essentials" {
         }
       }
       reason "explicit null note requires review"
+      reason_code "NULL_NOTE_REVIEW"
+      tags ["manual-review", "data-quality"]
+    }
+
+    use rule_template "manual_review_row" {
+      id "review-small-amount"
     }
   }
 
@@ -163,6 +234,40 @@ module "complete-decision-essentials" {
     }
   }
 
+  gate "complete_review_release_gate" {
+    bundle "complete_review_bundle"
+    decision "complete_review"
+    dataset "complete_review_batch"
+    min_pass_rate 1.0
+    max_diagnostics 20
+    no_default_only true
+    required_rules ["deny-blacklisted", "allow-prime-digital-loan", "review-card-request"]
+  }
+
+  decision_bundle "complete_review_bundle" {
+    decisions ["complete_review", "kyc_check"]
+    datasets ["complete_review_batch"]
+    tests ["complete review outcomes"]
+    release "complete_review_release_2026_05"
+    approval {
+      status approved
+      approved_by "risk-governance@example.com"
+      approved_at "2026-05-20T00:00:00Z"
+    }
+    metadata { environment "production" owner "risk-platform" }
+  }
+
+  decision_release "complete_review_release_2026_05" {
+    bundle "complete_review_bundle"
+    version "2026.05"
+    stage production
+    approval {
+      status approved
+      approved_by "release-manager@example.com"
+      approved_at "2026-05-20T00:00:00Z"
+    }
+  }
+
   test_matrix "complete review outcomes" {
     decision "complete_review"
 
@@ -184,6 +289,10 @@ module "complete-decision-essentials" {
         metadata.queue "auto"
         obligation "notify_customer"
         advice "next_best_action"
+        reason_code "PRIME_DIGITAL_LOAN"
+        tags ["composition", "straight-through"]
+        matched_rules ["score-large-request", "allow-prime-digital-loan"]
+        selected_rules ["allow-prime-digital-loan"]
       }
     }
 

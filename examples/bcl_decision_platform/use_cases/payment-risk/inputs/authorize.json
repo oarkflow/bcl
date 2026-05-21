@@ -1,0 +1,15 @@
+{
+  "card": {
+    "stolen": false,
+    "country": "US"
+  },
+  "payment": {
+    "amount": 35,
+    "risk_score": 12,
+    "cross_border": false
+  },
+  "customer": {
+    "trusted": true
+  }
+}
+

@@ -840,3 +840,346 @@ func TestDecisionRuleAnalysisAndSchemaPatternWarnings(t *testing.T) {
 		}
 	}
 }
+
+func TestDecisionCompositionReasonCodesTagsHitPolicyCoverageAndCompare(t *testing.T) {
+	baseDoc, err := Parse([]byte(`module "governance" {
+  reason_code_catalog "main" {
+    code "APPROVED" { description "approved request" }
+    code "REVIEW" { description "manual review" }
+  }
+
+  decision_schema "kyc" {
+    effects [allow, deny]
+    default deny
+    strategy first_match
+  }
+
+  decision_table "kyc" {
+    default deny
+    row "kyc-ok" {
+      when { customer.verified == true }
+      then { decision allow }
+      reason_code "APPROVED"
+      tags ["kyc"]
+    }
+  }
+
+  decision_schema "main" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  decision_table "main" {
+    default require_review
+    hit_policy unique
+    row "allow-composed" {
+      priority 10
+      when { match(decision("kyc"), case({effect: "allow"}, true), false) }
+      then { decision allow }
+      reason_code "APPROVED"
+      tags ["composition", "low-risk"]
+    }
+    row "review-large" {
+      priority 10
+      when { request.amount > 100 }
+      then { decision require_review }
+      reason_code "REVIEW"
+      tags ["manual"]
+    }
+    row "unused" {
+      priority 1
+      when { request.amount > 1000 }
+      then { decision deny }
+      reason_code "REVIEW"
+    }
+  }
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := CompileDecisionDocument(baseDoc, &Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := EvaluateDecision(base, "main", map[string]any{
+		"customer": map[string]any{"verified": true},
+		"request":  map[string]any{"amount": int64(20)},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Effect != "allow" || result.ReasonCode != "APPROVED" || !stringIn("composition", result.Tags) || len(result.ExplainGraph) == 0 {
+		t.Fatalf("composed result = %#v", result)
+	}
+	multi, err := EvaluateDecision(base, "main", map[string]any{
+		"customer": map[string]any{"verified": true},
+		"request":  map[string]any{"amount": int64(200)},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisionDiagnosticsContain(multi.Diagnostics, "unique hit policy") {
+		t.Fatalf("missing unique hit diagnostic: %#v", multi.Diagnostics)
+	}
+	cases := []DecisionBatchCase{
+		{ID: "allow", Input: map[string]any{"customer": map[string]any{"verified": true}, "request": map[string]any{"amount": int64(20)}}, Expect: map[string]any{"effect": "allow", "reason_code": "APPROVED", "tags": []any{"composition", "low-risk"}, "selected_rules": []any{"allow-composed"}}},
+		{ID: "review", Input: map[string]any{"customer": map[string]any{"verified": false}, "request": map[string]any{"amount": int64(200)}}, Expect: map[string]any{"effect": "require_review", "matched_rules": []any{"review-large"}}},
+	}
+	report, err := EvaluateDecisionBatch(base, "main", cases, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.RuleHitCounts["allow-composed"] == 0 || report.RuleHitCounts["review-large"] == 0 || !stringIn("unused", report.UnhitRules) || report.FailedCount != 0 {
+		t.Fatalf("batch report = %#v", report)
+	}
+
+	candidateDoc, err := Parse([]byte(`module "governance-candidate" {
+  decision_schema "kyc" {
+    effects [allow, deny]
+    default deny
+    strategy first_match
+  }
+  decision_table "kyc" {
+    default deny
+    row "kyc-ok" { when { customer.verified == true } then { decision allow } }
+  }
+  decision_schema "main" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+  decision_table "main" {
+    default require_review
+    row "allow-composed" {
+      when { match(decision("kyc"), case({effect: "allow"}, true), false) }
+      then { decision require_review }
+    }
+    row "review-large" {
+      when { request.amount > 100 }
+      then { decision require_review }
+    }
+  }
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := CompileDecisionDocument(candidateDoc, &Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compare, err := CompareDecisionBatch(base, candidate, "main", cases, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compare.ChangedCases) != 1 || compare.EffectTransitions["allow->require_review"] != 1 {
+		t.Fatalf("compare report = %#v", compare)
+	}
+}
+
+func TestDecisionCompositionRecursionAndReasonCodeCatalogWarning(t *testing.T) {
+	doc, err := Parse([]byte(`module "recursive" {
+  reason_code_catalog "loop" {
+    code "KNOWN" {}
+  }
+  decision_table "loop" {
+    default deny
+    row "self" {
+      when { match(decision("loop"), case({effect: "allow"}, true), false) }
+      then { decision allow }
+      reason_code "UNKNOWN"
+    }
+  }
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := CompileDecisionDocument(doc, &Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisionDiagnosticsContain(prog.Diagnostics, "unknown reason code") {
+		t.Fatalf("missing reason code warning: %#v", prog.Diagnostics)
+	}
+	result, err := EvaluateDecision(prog, "loop", map[string]any{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisionDiagnosticsContain(result.Diagnostics, "recursive decision call") {
+		t.Fatalf("missing recursion diagnostic: %#v", result.Diagnostics)
+	}
+}
+
+func TestDecisionOperationsBundlesGatesParamsTemplatesCounterfactualObservation(t *testing.T) {
+	doc, err := Parse([]byte(`module "ops" {
+  reason_code_catalog "ops" {
+    code "ALLOW" {}
+    code "REVIEW" {}
+  }
+
+  rule_template "review_template" {
+    row "template-review" {
+      priority 5
+      when { request.amount >= param.limit }
+      then { decision require_review }
+      reason_code "REVIEW"
+      tags ["template"]
+    }
+  }
+
+  decision_schema "ops" {
+    effects [allow, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  decision_table "ops" {
+    default require_review
+    hit_policy first
+    param limit number { default 100 }
+    approval {
+      status approved
+      approved_by "risk@example.com"
+      approved_at "2026-05-20T00:00:00Z"
+    }
+
+    row "allow-low" {
+      priority 20
+      when { request.amount < param.limit }
+      then { decision allow }
+      reason_code "ALLOW"
+      tags ["low"]
+    }
+
+    use rule_template "review_template" {
+      id "review-high"
+      priority 10
+    }
+  }
+
+  dataset "ops_cases" {
+    record "low" { request.amount 50 }
+    record "high" { request.amount 150 }
+  }
+
+  gate "ops_gate" {
+    bundle "ops_bundle"
+    decision "ops"
+    dataset "ops_cases"
+    min_pass_rate 1.0
+    max_diagnostics 10
+    no_default_only true
+    required_rules ["allow-low", "review_template.review-high"]
+  }
+
+  decision_bundle "ops_bundle" {
+    decisions ["ops"]
+    datasets ["ops_cases"]
+    release "ops_release"
+    approval { status approved approved_by "governance@example.com" approved_at "2026-05-20T00:00:00Z" }
+  }
+
+  decision_release "ops_release" {
+    bundle "ops_bundle"
+    version "2026.05"
+    stage production
+    approval { status approved approved_by "release@example.com" approved_at "2026-05-20T00:00:00Z" }
+  }
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := CompileDecisionDocument(doc, &Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle, err := CompileDecisionBundle(prog, "ops_bundle", nil); err != nil || bundle.Release != "ops_release" {
+		t.Fatalf("bundle = %#v err=%v", bundle, err)
+	}
+	if release, err := CompileDecisionRelease(prog, "ops_release", nil); err != nil || release.Stage != "production" {
+		t.Fatalf("release = %#v err=%v", release, err)
+	}
+	low, err := EvaluateDecision(prog, "ops", map[string]any{"request": map[string]any{"amount": int64(50)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if low.Effect != "allow" || low.ReasonCode != "ALLOW" || !stringIn("low", low.Tags) {
+		t.Fatalf("low = %#v", low)
+	}
+	override, err := EvaluateDecision(prog, "ops", map[string]any{
+		"params":  map[string]any{"limit": int64(200)},
+		"request": map[string]any{"amount": int64(150)},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if override.Effect != "allow" {
+		t.Fatalf("param override = %#v", override)
+	}
+	gates, err := EvaluateDecisionGates(prog, "ops_bundle", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gates.Passed || len(gates.Results) != 1 {
+		t.Fatalf("gates = %#v", gates)
+	}
+	cf, err := CounterfactualDecision(prog, "ops", map[string]any{"request": map[string]any{"amount": int64(150)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cf.Counterfactuals) == 0 || cf.Counterfactuals[0].Path != "request.amount" {
+		t.Fatalf("counterfactuals = %#v", cf.Counterfactuals)
+	}
+	obs := DecisionResultObservation(low, map[string]any{"request": map[string]any{"amount": int64(50)}}, nil)
+	if obs.DecisionID != "ops" || obs.Effect != "allow" || obs.InputHash == "" || len(obs.SelectedRules) == 0 {
+		t.Fatalf("observation = %#v", obs)
+	}
+}
+
+func TestDecisionOperationsRequiredParamAndReleaseApprovalWarnings(t *testing.T) {
+	doc, err := Parse([]byte(`module "ops-warnings" {
+  decision_table "needs_param" {
+    default deny
+    param threshold number { required true }
+    row "allow" {
+      when { request.amount >= param.threshold }
+      then { decision allow }
+    }
+  }
+  decision_bundle "draft_bundle" {
+    decisions ["needs_param"]
+    approval { status draft }
+  }
+  decision_release "draft_release" {
+    bundle "draft_bundle"
+    stage production
+    approval { status draft }
+  }
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := CompileDecisionDocument(doc, &Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisionDiagnosticsContain(prog.Diagnostics, "not approved") && !decisionDiagnosticsContain(prog.Diagnostics, "unapproved") {
+		t.Fatalf("missing approval warning: %#v", prog.Diagnostics)
+	}
+	result, err := EvaluateDecision(prog, "needs_param", map[string]any{"request": map[string]any{"amount": int64(10)}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisionDiagnosticsContain(result.Diagnostics, "param") {
+		t.Fatalf("missing param diagnostic: %#v", result.Diagnostics)
+	}
+}
+
+func decisionDiagnosticsContain(diags []Diagnostic, text string) bool {
+	for _, diag := range diags {
+		if strings.Contains(diag.Message, text) {
+			return true
+		}
+	}
+	return false
+}

@@ -51,6 +51,46 @@ type ReferenceUse struct {
 	Span Span   `json:"span"`
 }
 
+type Declaration struct {
+	CanonicalName string            `json:"canonical_name"`
+	DisplayName   string            `json:"display_name"`
+	LocalName     string            `json:"local_name,omitempty"`
+	Kind          SymbolKind        `json:"kind"`
+	File          string            `json:"file,omitempty"`
+	Span          Span              `json:"span"`
+	SelectionSpan Span              `json:"selection_span"`
+	Container     string            `json:"container,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+	RenameSafe    bool              `json:"rename_safe,omitempty"`
+}
+
+type LanguageReference struct {
+	TargetCanonicalName string            `json:"target_canonical_name"`
+	Text                string            `json:"text"`
+	Role                string            `json:"role,omitempty"`
+	File                string            `json:"file,omitempty"`
+	Span                Span              `json:"span"`
+	RenameSafe          bool              `json:"rename_safe,omitempty"`
+	Metadata            map[string]string `json:"metadata,omitempty"`
+}
+
+type CompletionContext struct {
+	File           string   `json:"file,omitempty"`
+	Line           int      `json:"line"`
+	Column         int      `json:"column"`
+	EnclosingBlock string   `json:"enclosing_block,omitempty"`
+	AssignmentName string   `json:"assignment_name,omitempty"`
+	ValuePosition  bool     `json:"value_position,omitempty"`
+	ExpectedValues []string `json:"expected_values,omitempty"`
+}
+
+type WorkspaceIndex struct {
+	Files               map[string]*Analysis `json:"-"`
+	Declarations        []Declaration        `json:"declarations"`
+	References          []LanguageReference  `json:"references"`
+	ReverseDependencies map[string][]string  `json:"reverse_dependencies,omitempty"`
+}
+
 type Completion struct {
 	Label         string `json:"label"`
 	Kind          string `json:"kind"`
@@ -78,6 +118,7 @@ type Analysis struct {
 	Constants    map[string]LanguageSymbol `json:"constants"`
 	Sets         map[string]LanguageSymbol `json:"sets"`
 	Types        map[string]LanguageSymbol `json:"types"`
+	Index        WorkspaceIndex            `json:"index"`
 	Completions  []Completion              `json:"completions"`
 	Diagnostics  []Diagnostic              `json:"diagnostics,omitempty"`
 }
@@ -122,6 +163,7 @@ func AnalyzeFile(name string, src []byte, opts *Options) (*Analysis, []Diagnosti
 		analysisDoc = resolved
 	}
 	a.Symbols = analyzeNodes(analysisDoc.Items, "", a)
+	a.Index = buildLanguageFeatureIndex(name, a)
 	a.Diagnostics = append(a.Diagnostics, Lint(analysisDoc, opts)...)
 	a.Completions = analysisCompletions(a)
 	return a, a.Diagnostics
@@ -145,10 +187,48 @@ func DefaultCompletions() []Completion {
 		{Label: "test block", Kind: "snippet", Detail: "Executable BCL test", InsertText: "test \"${1:name}\" {\n  input {\n    ${2:key} ${3:value}\n  }\n\n  expect {\n    diagnostics none\n  }\n}"},
 		{Label: "policy block", Kind: "snippet", Detail: "Policy block", InsertText: "policy \"${1:name}\" {\n  effect ${2:allow}\n}"},
 		{Label: "set block", Kind: "snippet", Detail: "Reusable set", InsertText: "set \"${1:name}\" {\n  ${2:item}\n}"},
+		{Label: "decision table block", Kind: "snippet", Detail: "Decision table", InsertText: "decision_table \"${1:name}\" {\n  default ${2:require_review}\n  hit_policy ${3:first}\n\n  row \"${4:rule-id}\" {\n    priority ${5:10}\n    when { ${6:condition} }\n    then { outcome { decision ${7:allow} reason \"${8:reason}\" } }\n  }\n}"},
+		{Label: "decision schema block", Kind: "snippet", Detail: "Decision schema", InsertText: "decision_schema \"${1:name}\" {\n  effects [${2:allow}, ${3:deny}, ${4:require_review}]\n  default ${4:require_review}\n  strategy ${5:first_match}\n}"},
+		{Label: "dataset block", Kind: "snippet", Detail: "Decision dataset", InsertText: "dataset \"${1:name}\" {\n  record \"${2:case}\" {\n    ${3:field} ${4:value}\n  }\n}"},
+		{Label: "test matrix block", Kind: "snippet", Detail: "Decision test matrix", InsertText: "test_matrix \"${1:name}\" {\n  decision \"${2:decision_name}\"\n\n  case \"${3:case}\" {\n    input {\n      ${4:field} ${5:value}\n    }\n    expect {\n      effect \"${6:allow}\"\n    }\n  }\n}"},
 	} {
 		out = append(out, snip)
 	}
 	return out
+}
+
+func CompletionsAt(a *Analysis, src []byte, line, column int) ([]Completion, CompletionContext) {
+	ctx := CompletionContext{File: a.File, Line: line, Column: column}
+	current := lineText(src, line)
+	before := current
+	if column > 0 && column <= len(current)+1 {
+		before = current[:column-1]
+	}
+	ctx.AssignmentName = leadingIdentifier(before)
+	ctx.ValuePosition = strings.TrimSpace(before) != "" && ctx.AssignmentName != "" && !strings.HasSuffix(strings.TrimSpace(before), ctx.AssignmentName)
+	ctx.EnclosingBlock = enclosingBlockName(src, line)
+	ctx.ExpectedValues = expectedValuesForContext(ctx)
+
+	out := append([]Completion(nil), a.Completions...)
+	for _, v := range ctx.ExpectedValues {
+		out = append(out, Completion{Label: v, Kind: "value", Detail: "BCL value"})
+	}
+	if strings.Contains(strings.TrimSpace(before), ".") {
+		prefix := dottedPrefix(before)
+		if prefix != "" {
+			for _, item := range runtimeValueHints {
+				if strings.HasPrefix(item.Name, prefix) {
+					out = append(out, Completion{Label: item.Name, Kind: "field", Detail: item.Signature, Documentation: item.Description})
+				}
+			}
+			for name, decl := range a.Declarations {
+				if strings.HasPrefix(name, prefix) {
+					out = append(out, Completion{Label: name, Kind: string(decl.Kind), Detail: decl.Detail})
+				}
+			}
+		}
+	}
+	return dedupeCompletions(out), ctx
 }
 
 func SymbolAt(a *Analysis, line, column int) (LanguageSymbol, bool) {
@@ -508,6 +588,15 @@ func analysisCompletions(a *Analysis) []Completion {
 	add := func(label, kind, detail string) {
 		out = append(out, Completion{Label: label, Kind: kind, Detail: detail})
 	}
+	for _, name := range decisionBlockNames {
+		add(name, "keyword", "Decision authoring block")
+	}
+	for _, name := range decisionFieldNames {
+		add(name, "field", "Decision authoring field")
+	}
+	for _, name := range patternHelperNames {
+		add(name, "function", "Pattern matching helper")
+	}
 	for name, s := range a.Constants {
 		add(name, "constant", s.Detail)
 	}
@@ -524,7 +613,203 @@ func analysisCompletions(a *Analysis) []Completion {
 		add(name, "type", s.Detail)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Label < out[j].Label })
+	return dedupeCompletions(out)
+}
+
+func buildLanguageFeatureIndex(file string, a *Analysis) WorkspaceIndex {
+	idx := WorkspaceIndex{Files: map[string]*Analysis{}, ReverseDependencies: map[string][]string{}}
+	if file != "" {
+		idx.Files[file] = a
+	}
+	for _, sym := range flattenSymbols(a.Symbols) {
+		canon := sym.Name
+		if canon == "" {
+			continue
+		}
+		decl := Declaration{
+			CanonicalName: canon,
+			DisplayName:   canon,
+			LocalName:     localSymbolName(sym),
+			Kind:          sym.Kind,
+			File:          symbolFile(file, sym.Span),
+			Span:          sym.Span,
+			SelectionSpan: sym.SelectionSpan,
+			Container:     sym.Container,
+			Metadata:      symbolMetadata(sym),
+			RenameSafe:    renameSafeSymbol(sym),
+		}
+		idx.Declarations = append(idx.Declarations, decl)
+	}
+	for _, ref := range a.References {
+		idx.References = append(idx.References, LanguageReference{
+			TargetCanonicalName: ref.Name,
+			Text:                ref.Name,
+			Role:                ref.Kind,
+			File:                symbolFile(file, ref.Span),
+			Span:                ref.Span,
+			RenameSafe:          renameSafeReference(ref),
+		})
+	}
+	sort.Slice(idx.Declarations, func(i, j int) bool {
+		return idx.Declarations[i].CanonicalName < idx.Declarations[j].CanonicalName
+	})
+	sort.Slice(idx.References, func(i, j int) bool {
+		if idx.References[i].TargetCanonicalName == idx.References[j].TargetCanonicalName {
+			return idx.References[i].Span.Start.Offset < idx.References[j].Span.Start.Offset
+		}
+		return idx.References[i].TargetCanonicalName < idx.References[j].TargetCanonicalName
+	})
+	return idx
+}
+
+func localSymbolName(s LanguageSymbol) string {
+	if s.Detail != "" && strings.HasPrefix(s.Name, s.Detail+".") {
+		return strings.TrimPrefix(s.Name, s.Detail+".")
+	}
+	return s.Name
+}
+
+func symbolFile(fallback string, sp Span) string {
+	if sp.File != "" {
+		return sp.File
+	}
+	return fallback
+}
+
+func symbolMetadata(s LanguageSymbol) map[string]string {
+	m := map[string]string{}
+	if s.Detail != "" {
+		m["detail"] = s.Detail
+	}
+	if s.ValueKind != "" {
+		m["value_kind"] = s.ValueKind
+	}
+	if s.Value != "" {
+		m["value"] = s.Value
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+func renameSafeSymbol(s LanguageSymbol) bool {
+	switch s.Kind {
+	case SymbolConst, SymbolParam, SymbolSet, SymbolType, SymbolBlock, SymbolSchema:
+		return true
+	default:
+		return false
+	}
+}
+
+func renameSafeReference(r ReferenceUse) bool {
+	return r.Kind == "reference" || r.Kind == "set"
+}
+
+func dedupeCompletions(in []Completion) []Completion {
+	seen := map[string]bool{}
+	out := make([]Completion, 0, len(in))
+	for _, c := range in {
+		key := c.Label + "\x00" + c.Kind
+		if c.Label == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, c)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Label < out[j].Label })
 	return out
+}
+
+func lineText(src []byte, line int) string {
+	if line <= 0 {
+		return ""
+	}
+	lines := strings.Split(string(src), "\n")
+	if line > len(lines) {
+		return ""
+	}
+	return lines[line-1]
+}
+
+func leadingIdentifier(s string) string {
+	fields := strings.Fields(strings.TrimSpace(s))
+	if len(fields) == 0 {
+		return ""
+	}
+	first := strings.Trim(fields[0], `"`)
+	if first == "" || strings.ContainsAny(first, "{}[](),") {
+		return ""
+	}
+	return first
+}
+
+func dottedPrefix(s string) string {
+	s = strings.TrimSpace(s)
+	for i := len(s) - 1; i >= 0; i-- {
+		c := s[i]
+		if !(c == '.' || c == '_' || c == '-' || c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z') {
+			return s[i+1:]
+		}
+	}
+	return s
+}
+
+func enclosingBlockName(src []byte, line int) string {
+	lines := strings.Split(string(src), "\n")
+	depth := 0
+	stack := []string{}
+	for i := 0; i < len(lines) && i < line; i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.Contains(trimmed, "}") {
+			for n := strings.Count(trimmed, "}"); n > 0 && len(stack) > 0; n-- {
+				stack = stack[:len(stack)-1]
+			}
+			depth -= strings.Count(trimmed, "}")
+			if depth < 0 {
+				depth = 0
+			}
+		}
+		if strings.Contains(trimmed, "{") {
+			name := leadingIdentifier(trimmed)
+			if name != "" {
+				stack = append(stack, name)
+			}
+			depth += strings.Count(trimmed, "{")
+		}
+	}
+	if len(stack) == 0 {
+		return ""
+	}
+	return stack[len(stack)-1]
+}
+
+func expectedValuesForContext(ctx CompletionContext) []string {
+	switch ctx.AssignmentName {
+	case "effect", "decision", "default":
+		return []string{"allow", "deny", "require_review"}
+	case "hit_policy":
+		return []string{"first", "priority", "collect", "unique"}
+	case "strategy":
+		return []string{"first_match", "highest_priority", "collect_all", "allow_overrides", "deny_overrides", "all_must_pass"}
+	case "phase":
+		return []string{"validate", "guard", "score", "decide", "notify"}
+	case "status":
+		return []string{"active", "inactive", "draft", "approved"}
+	case "stage":
+		return []string{"dev", "test", "staging", "production"}
+	case "diagnostics":
+		return []string{"none"}
+	case "type", "kind":
+		if ctx.EnclosingBlock == "step" {
+			return []string{"task", "decision", "action", "terminal"}
+		}
+		return []string{"http", "file", "command", "json", "form", "text", "raw"}
+	case "required":
+		return []string{"true", "false"}
+	default:
+		return nil
+	}
 }
 
 func flattenSymbols(in []LanguageSymbol) []LanguageSymbol {
@@ -631,6 +916,22 @@ var keywordHints = []hintInfo{
 	{Name: "none", Signature: `none`, Description: "Represents no diagnostics or no matches, depending on context."},
 }
 
+var decisionBlockNames = []string{
+	"decision_schema", "decision_table", "rule_set", "ranking", "dataset", "reason_code_catalog",
+	"decision_bundle", "decision_release", "gate", "test_matrix", "rule_template", "row", "record",
+	"case", "outcome", "obligation", "advice", "event", "approval", "governance",
+}
+
+var decisionFieldNames = []string{
+	"effects", "hit_policy", "strategy", "phase", "status", "effective_from", "effective_until",
+	"owner", "rationale", "reason", "reason_code", "tags", "actions", "resources", "score",
+	"attributes", "metadata", "bundle", "bundles", "decision", "decisions", "dataset", "datasets",
+	"tests", "release", "stage", "min_pass_rate", "max_diagnostics", "no_default_only", "required_rules",
+	"approved_by", "approved_at", "approved", "allowed", "matched_rules", "selected_rules",
+}
+
+var patternHelperNames = []string{"match", "case", "MISSING", "NULL", "EXISTS", "ANY"}
+
 var builtinFunctionHints = []hintInfo{
 	{Name: "env", Signature: `env(name, default?)`, Description: "Reads an environment variable. Returns the optional default when the variable is absent.", InsertText: "env($1)", Examples: []string{`env("APP_ENV", "dev")`}},
 	{Name: "env.required", Signature: `env.required(name)`, Description: "Reads an environment variable and fails validation/evaluation when it is missing.", InsertText: "env.required($1)", Examples: []string{`env.required("DATABASE_URL")`}},
@@ -659,6 +960,12 @@ var builtinFunctionHints = []hintInfo{
 	{Name: "email", Signature: `email(value)`, Description: "Treats a string as an email value.", InsertText: "email($1)"},
 	{Name: "url", Signature: `url(value)`, Description: "Treats a string as a URL value.", InsertText: "url($1)"},
 	{Name: "regex", Signature: `regex(pattern)`, Description: "Compiles a regular expression pattern for matching.", InsertText: "regex($1)"},
+	{Name: "match", Signature: `match(value, cases..., default)`, Description: "Matches a value against typed BCL patterns.", InsertText: "match($1)"},
+	{Name: "case", Signature: `case(pattern, result)`, Description: "Defines one branch inside a pattern match expression.", InsertText: "case($1)"},
+	{Name: "MISSING", Signature: `MISSING`, Description: "Pattern helper that matches a missing object field.", InsertText: "MISSING"},
+	{Name: "NULL", Signature: `NULL`, Description: "Pattern helper that matches an explicit null value.", InsertText: "NULL"},
+	{Name: "EXISTS", Signature: `EXISTS(pattern?)`, Description: "Pattern helper that requires a value or collection item to exist.", InsertText: "EXISTS($1)"},
+	{Name: "ANY", Signature: `ANY(pattern?)`, Description: "Pattern helper that matches any compatible value.", InsertText: "ANY($1)"},
 }
 
 var runtimeValueHints = []hintInfo{

@@ -1,0 +1,14 @@
+schema logistics_routing {
+  required shipment object {
+    required hazmat bool
+    required weight number min 0
+    required service string enum ["standard", "express"]
+    optional destination_zone string
+  }
+
+  required carrier object {
+    required hazmat_certified bool
+    required capacity_available bool
+    required express_enabled bool
+  }
+}

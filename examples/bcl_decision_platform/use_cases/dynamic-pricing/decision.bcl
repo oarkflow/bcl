@@ -1,0 +1,70 @@
+import "./decision.schema"
+
+module "dynamic-pricing-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "pricing-platform" domain "commerce" }
+
+  reason_code_catalog "dynamic_pricing" {
+    code "MARGIN_BLOCK" { description "Discount would violate minimum margin" }
+    code "PRICE_REVIEW" { description "Large discount requires pricing review" }
+    code "LOYALTY_DISCOUNT" { description "Loyal customer discount is approved" }
+  }
+
+  decision_schema "dynamic_pricing" { effects [allow, deny, require_review] default require_review strategy first_match }
+
+  decision_table "dynamic_pricing" {
+    default require_review
+    hit_policy first
+    row "deny-below-margin" {
+      priority 100 status active owner "pricing" rationale "pricing must protect minimum margin" effective_from "2020-01-01"
+      when { cart.margin_after_discount < 10 }
+      then { outcome { decision deny reason "discount violates margin floor" attributes { route "reject-discount" queue "pricing" } metadata { severity "high" } } obligation audit_log { category "pricing" } }
+      reason "discount violates margin floor" reason_code "MARGIN_BLOCK" tags ["margin", "block"]
+    }
+    row "review-large-discount" {
+      priority 60 status active owner "pricing" rationale "large requested discounts need review" effective_from "2020-01-01"
+      when { cart.requested_discount > 25 }
+      then { outcome { decision require_review reason "large discount needs review" attributes { route "pricing-review" queue "revenue" } metadata { severity "medium" } } advice collect_approval { role "pricing_manager" } }
+      reason "large discount needs review" reason_code "PRICE_REVIEW" tags ["manual-review"]
+    }
+    row "allow-loyalty-discount" {
+      priority 20 status active owner "pricing" rationale "loyal customers can receive moderate discounts" effective_from "2020-01-01"
+      when { customer.loyalty_years >= 2 cart.requested_discount <= 15 cart.margin_after_discount >= 20 }
+      then { outcome { decision allow reason "loyalty discount approved" attributes { route "apply-discount" queue "none" } metadata { severity "low" } } }
+      reason "loyalty discount approved" reason_code "LOYALTY_DISCOUNT" tags ["loyalty"]
+    }
+  }
+
+  rule_set "dynamic_pricing" {
+    rule "score-margin-pressure" {
+      phase score
+      priority 30
+      when { cart.margin_after_discount < 20 }
+      then { score += 30 }
+      reason "discount compresses margin"
+    }
+    rule "score-high-demand" {
+      phase score
+      priority 20
+      when { inventory.demand == "high" }
+      then { score += 25 }
+      reason "high demand reduces discount appetite"
+    }
+    rule "score-loyal-customer" {
+      phase score
+      priority 10
+      when { customer.loyalty_years >= 3 }
+      then { score += -15 }
+      reason "loyalty reduces approval friction"
+    }
+  }
+
+  dataset "dynamic_pricing_batch" {
+    record "margin-block" { customer.segment "standard" customer.loyalty_years 1 cart.subtotal 200 cart.requested_discount 20 cart.margin_after_discount 8 }
+    record "price-review" { customer.segment "enterprise" customer.loyalty_years 4 cart.subtotal 2000 cart.requested_discount 30 cart.margin_after_discount 25 }
+    record "loyalty" { customer.segment "pro" customer.loyalty_years 3 cart.subtotal 400 cart.requested_discount 12 cart.margin_after_discount 28 }
+  }
+  gate "dynamic_pricing_gate" { bundle "dynamic_pricing_bundle" decision "dynamic_pricing" dataset "dynamic_pricing_batch" min_pass_rate 1.0 no_default_only true required_rules ["deny-below-margin", "review-large-discount", "allow-loyalty-discount"] }
+  decision_bundle "dynamic_pricing_bundle" { decisions ["dynamic_pricing"] datasets ["dynamic_pricing_batch"] approval { status approved approved_by "revenue-governance@example.com" approved_at "2026-05-20T00:00:00Z" } metadata { owner "pricing-platform" } }
+}

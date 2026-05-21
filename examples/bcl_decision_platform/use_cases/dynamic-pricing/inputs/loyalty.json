@@ -1,0 +1,15 @@
+{
+  "customer": {
+    "segment": "pro",
+    "loyalty_years": 3
+  },
+  "cart": {
+    "subtotal": 400,
+    "requested_discount": 12,
+    "margin_after_discount": 28
+  },
+  "inventory": {
+    "demand": "low",
+    "stock_level": 120
+  }
+}

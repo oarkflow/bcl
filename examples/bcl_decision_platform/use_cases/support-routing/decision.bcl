@@ -1,0 +1,71 @@
+import "./decision.schema"
+
+module "support-routing-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "support-ops" domain "customer-support" }
+
+  reason_code_catalog "support_routing" {
+    code "ABUSE_BLOCK" { description "Ticket is blocked for abusive content" }
+    code "SLA_ESCALATION" { description "Ticket needs urgent support escalation" }
+    code "STANDARD_ROUTE" { description "Ticket can use normal support routing" }
+  }
+
+  decision_schema "support_routing" { effects [allow, deny, require_review] default require_review strategy first_match }
+
+  decision_table "support_routing" {
+    default require_review
+    hit_policy first
+    row "deny-abuse-ticket" {
+      priority 100 status active owner "trust-support" rationale "abusive tickets are blocked from agent queues" effective_from "2020-01-01"
+      when { ticket.abuse_flag == true }
+      then { outcome { decision deny reason "ticket violates support abuse policy" attributes { route "blocked" queue "trust" } metadata { severity "high" } } obligation audit_log { category "support_abuse" } }
+      reason "ticket violates support abuse policy" reason_code "ABUSE_BLOCK" tags ["trust", "block"]
+    }
+    row "review-critical-enterprise" {
+      priority 70 status active owner "support-ops" rationale "critical enterprise tickets need incident routing" effective_from "2020-01-01"
+      when { ticket.severity == "critical" customer.plan == "enterprise" }
+      then { outcome { decision require_review reason "critical enterprise ticket" attributes { route "incident-command" queue "priority-support" } metadata { severity "critical" } } advice page_oncall { team "support-leads" } }
+      reason "critical enterprise ticket" reason_code "SLA_ESCALATION" tags ["sla", "enterprise"]
+    }
+    row "allow-standard-ticket" {
+      priority 20 status active owner "support-ops" rationale "normal non-abusive tickets can route normally" effective_from "2020-01-01"
+      when { ticket.abuse_flag == false ticket.severity != "critical" }
+      then { outcome { decision allow reason "standard support route" attributes { route "standard" queue "general-support" } metadata { severity "normal" } } }
+      reason "standard support route" reason_code "STANDARD_ROUTE" tags ["standard-route"]
+    }
+  }
+
+  dataset "support_queues" {
+    record "database-priority" { provider.open true provider.skill "database" provider.priority 10 provider.load 0.2 }
+    record "billing-general" { provider.open true provider.skill "billing" provider.priority 6 provider.load 0.4 }
+    record "general-triage" { provider.open true provider.skill "general" provider.priority 4 provider.load 0.1 }
+  }
+
+  ranking "support_routing" {
+    dataset "support_queues"
+    selection best
+    priority_path "provider.priority"
+    cost_path "provider.load"
+
+    rule "queue-open" { when { provider.open == true } }
+    rule "skill-fit" {
+      when {
+        any {
+          provider.skill == ticket.topic
+          provider.skill == "general"
+        }
+      }
+    }
+    score "queue-priority" { metric "provider.priority" weight 0.5 normalize 1 10 }
+    score "queue-load" { metric "provider.load" weight -0.4 normalize 0 1 }
+  }
+
+  dataset "support_routing_batch" {
+    record "abuse" { ticket.severity "normal" ticket.age_hours 1 ticket.abuse_flag true ticket.topic "billing" customer.plan "pro" }
+    record "critical-enterprise" { ticket.severity "critical" ticket.age_hours 2 ticket.abuse_flag false ticket.topic "database" customer.plan "enterprise" }
+    record "standard" { ticket.severity "normal" ticket.age_hours 4 ticket.abuse_flag false ticket.topic "billing" customer.plan "free" }
+  }
+  gate "support_routing_gate" { bundle "support_routing_bundle" decision "support_routing" dataset "support_routing_batch" min_pass_rate 1.0 no_default_only true required_rules ["deny-abuse-ticket", "review-critical-enterprise", "allow-standard-ticket"] }
+  decision_bundle "support_routing_bundle" { decisions ["support_routing"] datasets ["support_routing_batch"] approval { status approved approved_by "support-governance@example.com" approved_at "2026-05-20T00:00:00Z" } metadata { owner "support-ops" } }
+}

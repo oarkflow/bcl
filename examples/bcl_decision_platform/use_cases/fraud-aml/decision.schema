@@ -1,0 +1,13 @@
+schema fraud_aml {
+  required customer object {
+    required blacklisted bool
+    required country string
+    optional tier string
+  }
+
+  required transaction object {
+    required amount number min 0
+    required channel string enum ["card", "wire", "ach"]
+  }
+}
+

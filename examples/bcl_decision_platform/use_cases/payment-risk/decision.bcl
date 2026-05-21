@@ -1,0 +1,72 @@
+import "./decision.schema"
+
+module "payment-risk-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "payments-risk" domain "payments" }
+
+  reason_code_catalog "payment_risk" {
+    code "STOLEN_CARD" { description "Card is reported stolen" }
+    code "THREEDS_STEP_UP" { description "Payment requires step-up authentication" }
+    code "LOW_RISK_PAYMENT" { description "Payment can be authorized" }
+  }
+
+  decision_schema "payment_risk" { effects [allow, deny, require_review] default require_review strategy first_match }
+
+  decision_table "payment_risk" {
+    default require_review
+    hit_policy first
+    row "deny-stolen-card" {
+      priority 100 status active owner "payments-risk" rationale "stolen cards must be blocked" effective_from "2020-01-01"
+      when { card.stolen == true }
+      then { outcome { decision deny reason "card is reported stolen" attributes { route "decline" queue "fraud" } metadata { severity "critical" } } obligation audit_log { category "payment_risk" } }
+      reason "card is reported stolen" reason_code "STOLEN_CARD" tags ["fraud", "block"]
+    }
+    row "review-step-up-authentication" {
+      priority 60 status active owner "payments-risk" rationale "risky or cross-border payments need step-up authentication" effective_from "2020-01-01"
+      when { any { payment.risk_score >= 65 payment.cross_border == true customer.trusted == false } }
+      then { outcome { decision require_review reason "step-up authentication required" attributes { route "3ds-step-up" queue "authentication" } metadata { severity "medium" } } advice require_3ds { version "2" } }
+      reason "step-up authentication required" reason_code "THREEDS_STEP_UP" tags ["3ds", "manual-review"]
+    }
+    row "allow-low-risk-payment" {
+      priority 20 status active owner "payments-risk" rationale "trusted low-risk payments can be authorized" effective_from "2020-01-01"
+      when { card.stolen == false payment.risk_score < 30 payment.cross_border == false customer.trusted == true }
+      then { outcome { decision allow reason "low-risk payment" attributes { route "authorize" queue "none" } metadata { severity "low" } } }
+      reason "low-risk payment" reason_code "LOW_RISK_PAYMENT" tags ["authorization"]
+    }
+  }
+
+  rule_set "payment_risk" {
+    rule "score-cross-border" {
+      phase score
+      priority 30
+      when { payment.cross_border == true }
+      then { score += 25 }
+      reason "cross-border payment"
+    }
+
+    rule "score-risk-model" {
+      phase score
+      priority 20
+      when { payment.risk_score >= 65 }
+      then { score += 35 }
+      reason "model risk score exceeds step-up threshold"
+    }
+
+    rule "score-trusted-customer" {
+      phase score
+      priority 10
+      when { customer.trusted == true }
+      then { score += -15 }
+      reason "trusted customer lowers payment risk"
+    }
+  }
+
+  dataset "payment_risk_batch" {
+    record "stolen" { card.stolen true card.country "US" payment.amount 40 payment.risk_score 90 payment.cross_border false customer.trusted true }
+    record "step-up" { card.stolen false card.country "US" payment.amount 800 payment.risk_score 72 payment.cross_border true customer.trusted false }
+    record "authorize" { card.stolen false card.country "US" payment.amount 35 payment.risk_score 12 payment.cross_border false customer.trusted true }
+  }
+  gate "payment_risk_gate" { bundle "payment_risk_bundle" decision "payment_risk" dataset "payment_risk_batch" min_pass_rate 1.0 no_default_only true required_rules ["deny-stolen-card", "review-step-up-authentication", "allow-low-risk-payment"] }
+  decision_bundle "payment_risk_bundle" { decisions ["payment_risk"] datasets ["payment_risk_batch"] approval { status approved approved_by "payments-governance@example.com" approved_at "2026-05-20T00:00:00Z" } metadata { owner "payments-risk" } }
+}

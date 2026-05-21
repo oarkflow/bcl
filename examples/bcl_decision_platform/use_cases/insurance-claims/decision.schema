@@ -1,0 +1,13 @@
+schema insurance_claims {
+  required policy object {
+    required active bool
+    required type string
+  }
+
+  required claim object {
+    required amount number min 0
+    required fraud_score number min 0 max 100
+    required documentation_complete bool
+    optional loss_type string
+  }
+}

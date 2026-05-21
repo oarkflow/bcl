@@ -1,0 +1,13 @@
+schema sanctions_compliance {
+  required counterparty object {
+    required sanctions_hit bool
+    required country string
+    optional watchlist_score number min 0 max 100
+  }
+
+  required shipment object {
+    required export_controlled bool
+    required destination_country string
+    optional product_code string
+  }
+}

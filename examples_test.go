@@ -216,6 +216,113 @@ func TestFeatureExampleProgramsRun(t *testing.T) {
 	}
 }
 
+func TestDecisionPlatformUseCasesCompile(t *testing.T) {
+	paths, err := filepath.Glob("examples/bcl_decision_platform/use_cases/*/decision.bcl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no decision platform use cases found")
+	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			if _, err := CompileDecisionFile(path, &Options{AllowTime: true}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestDecisionPlatformUseCaseProgramsRun(t *testing.T) {
+	paths, err := filepath.Glob("examples/bcl_decision_platform/use_cases/*/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no runnable decision platform use cases found")
+	}
+	for _, mainPath := range paths {
+		dir := filepath.Dir(mainPath)
+		if strings.Contains(dir, "/internal/") {
+			continue
+		}
+		t.Run(dir, func(t *testing.T) {
+			cmd := exec.Command("go", "run", "./"+dir)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("decision platform use case failed: %v\n%s", err, out)
+			}
+		})
+	}
+}
+
+func TestCommunicationsProviderRouting(t *testing.T) {
+	program, err := CompileDecisionFile("examples/bcl_decision_platform/use_cases/communications-provider-routing/decision.bcl", &Options{AllowTime: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewDecisionEngine(program, nil)
+
+	cases := []struct {
+		name   string
+		input  map[string]any
+		effect string
+		rankID string
+	}{
+		{
+			name:   "unchecked campaign denies before ranking",
+			effect: "deny",
+			input: map[string]any{
+				"user":    map[string]any{"id": "u-1", "country": "NP", "tier": "standard"},
+				"message": map[string]any{"channel": "sms", "type": "marketing", "compliance_checked": false, "quality_floor": 0.98},
+			},
+		},
+		{
+			name:   "sms route selects best active country provider",
+			effect: "allow",
+			rankID: "sms-np-primary",
+			input: map[string]any{
+				"user":    map[string]any{"id": "u-2", "country": "NP", "tier": "premium"},
+				"message": map[string]any{"channel": "sms", "type": "otp", "compliance_checked": true, "quality_floor": 0.98},
+			},
+		},
+		{
+			name:   "email route selects email capable provider",
+			effect: "allow",
+			rankID: "email-us-primary",
+			input: map[string]any{
+				"user":    map[string]any{"id": "u-3", "country": "US", "tier": "standard"},
+				"message": map[string]any{"channel": "email", "type": "transactional", "compliance_checked": true, "quality_floor": 0.99},
+			},
+		},
+		{
+			name:   "no eligible provider reviews fallback",
+			effect: "require_review",
+			input: map[string]any{
+				"user":    map[string]any{"id": "u-4", "country": "IR", "tier": "standard"},
+				"message": map[string]any{"channel": "sms", "type": "otp", "compliance_checked": true, "quality_floor": 0.98},
+			},
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := engine.Evaluate("communications_provider_routing", tt.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Effect != tt.effect {
+				t.Fatalf("effect = %s, want %s: %#v", result.Effect, tt.effect, result)
+			}
+			if tt.rankID != "" && (result.Rank == nil || result.Rank.ID != tt.rankID) {
+				t.Fatalf("rank = %#v, want %s", result.Rank, tt.rankID)
+			}
+			if tt.rankID == "" && result.Effect != "allow" && result.Rank != nil {
+				t.Fatalf("non-routing result should not require a selected provider: %#v", result.Rank)
+			}
+		})
+	}
+}
+
 func TestNextWaveFeatureExampleTestsRun(t *testing.T) {
 	result, err := TestFile("example/features/17-next-wave-dsl.bcl", &Options{
 		AllowEnv:       true,
@@ -264,6 +371,13 @@ func TestCompleteDecisionEssentialsExample(t *testing.T) {
 	}
 	if report.EffectCounts["allow"] != 1 || report.EffectCounts["deny"] != 1 || report.EffectCounts["require_review"] != 1 {
 		t.Fatalf("complete decision batch report = %#v", report)
+	}
+	gates, err := EvaluateDecisionGates(prog, "complete_review_bundle", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gates.Passed || len(gates.Results) != 1 {
+		t.Fatalf("complete decision gates = %#v", gates)
 	}
 	suite, err := TestFile("examples/bcl/packages/complete_decision_essentials.bcl", &Options{AllowTime: true})
 	if err != nil {

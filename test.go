@@ -215,6 +215,8 @@ func runDecisionTest(program *DecisionProgram, testBlock *Block, decisionName st
 			"effect":      decision.Effect,
 			"allowed":     decision.Allowed,
 			"policy_id":   decision.PolicyID,
+			"reason_code": decision.ReasonCode,
+			"tags":        decision.Tags,
 			"rank":        decision.Rank,
 			"score":       decision.Score,
 			"outcome":     decision.Outcome,
@@ -232,6 +234,10 @@ func runDecisionTest(program *DecisionProgram, testBlock *Block, decisionName st
 	if wantAllowed, ok := test.Expect["allowed"].(bool); ok && decision.Allowed != wantAllowed {
 		result.Passed = false
 		result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected allowed %v", test.Name, wantAllowed)})
+	}
+	if want := scalarString(test.Expect["reason_code"]); want != "" && decision.ReasonCode != want {
+		result.Passed = false
+		result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected reason_code %q", test.Name, want)})
 	}
 	if want := scalarString(test.Expect["obligation"]); want != "" && !decisionActionsContain(decision.Obligations, want) {
 		result.Passed = false
@@ -254,6 +260,26 @@ func runDecisionTest(program *DecisionProgram, testBlock *Block, decisionName st
 			if !equalLoose(lookupMapPath(decision.Metadata, path), want) {
 				result.Passed = false
 				result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected metadata.%s %#v", test.Name, path, want)})
+			}
+		case key == "matched_rules":
+			if !equalStringSet(traceRuleIDs(decision.Explain, "matched"), stringList(want)) {
+				result.Passed = false
+				result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected matched_rules", test.Name)})
+			}
+		case key == "selected_rules":
+			if !equalStringSet(traceRuleIDs(decision.Explain, "selected"), stringList(want)) {
+				result.Passed = false
+				result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected selected_rules", test.Name)})
+			}
+		case key == "skipped_rules":
+			if !equalStringSet(traceRuleIDs(decision.Explain, "skipped"), stringList(want)) {
+				result.Passed = false
+				result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected skipped_rules", test.Name)})
+			}
+		case key == "tags":
+			if !equalStringSet(decision.Tags, stringList(want)) {
+				result.Passed = false
+				result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected tags", test.Name)})
 			}
 		}
 	}

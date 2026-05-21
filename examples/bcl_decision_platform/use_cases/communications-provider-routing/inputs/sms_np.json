@@ -1,0 +1,13 @@
+{
+  "user": {
+    "id": "u-2",
+    "country": "NP",
+    "tier": "premium"
+  },
+  "message": {
+    "channel": "sms",
+    "type": "otp",
+    "compliance_checked": true,
+    "quality_floor": 0.98
+  }
+}

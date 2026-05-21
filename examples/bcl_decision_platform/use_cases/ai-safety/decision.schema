@@ -1,0 +1,8 @@
+schema ai_safety {
+  required ai object {
+    required intent string
+    required risk_score number min 0 max 100
+    required confidence number min 0 max 1
+  }
+}
+

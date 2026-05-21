@@ -1,0 +1,9 @@
+{
+  "applicant": {
+    "sanctions_match": false,
+    "identity_score": 94,
+    "document_quality": 96,
+    "country": "NP",
+    "pep_match": false
+  }
+}

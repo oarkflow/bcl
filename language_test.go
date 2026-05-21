@@ -211,6 +211,48 @@ func TestDefaultCompletionsIncludeDetailedRuntimeAndFunctionHints(t *testing.T) 
 	}
 }
 
+func TestCompletionsAtIncludesDecisionValuesAndWorkspaceSymbols(t *testing.T) {
+	src := []byte(`bcl {
+  version "1.0"
+}
+
+decision_table "fraud_aml" {
+  hit_policy first
+  row "aml-review" {
+    phase decide
+  }
+}
+`)
+	a, diags := AnalyzeFile("decision-completion.bcl", src, nil)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	comps, ctx := CompletionsAt(a, src, 6, len("  hit_policy ")+1)
+	if ctx.AssignmentName != "hit_policy" {
+		t.Fatalf("unexpected completion context: %+v", ctx)
+	}
+	if !completionLabelsContain(comps, "first", "priority", "collect", "unique", "decision_table") {
+		t.Fatalf("missing decision completions: %+v", comps)
+	}
+	comps, ctx = CompletionsAt(a, src, 8, len("    phase ")+1)
+	if ctx.AssignmentName != "phase" || !completionLabelsContain(comps, "validate", "guard", "score", "decide", "notify") {
+		t.Fatalf("missing phase completions ctx=%+v comps=%+v", ctx, comps)
+	}
+}
+
+func completionLabelsContain(comps []Completion, labels ...string) bool {
+	seen := map[string]bool{}
+	for _, c := range comps {
+		seen[c.Label] = true
+	}
+	for _, label := range labels {
+		if !seen[label] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestAnalyzeFileReportsUnknownReferenceOnlyForKnownBlockTypes(t *testing.T) {
 	src := []byte(`bcl {
   version "1.0"

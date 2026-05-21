@@ -1,0 +1,17 @@
+schema iam_access {
+  required subject object {
+    required blocked bool
+    required role string
+    required mfa bool
+  }
+
+  required resource object {
+    required sensitivity string enum ["normal", "high"]
+    required required_role string
+  }
+
+  required request object {
+    required action string
+  }
+}
+

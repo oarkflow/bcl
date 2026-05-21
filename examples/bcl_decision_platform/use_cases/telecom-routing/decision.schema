@@ -1,0 +1,17 @@
+schema telecom_routing {
+  required recipient object {
+    required country string
+    optional phone_hash string
+  }
+
+  required message object {
+    required compliance_checked bool
+    required priority string enum ["normal", "high"]
+  }
+
+  required provider object {
+    required active bool
+    required supports_country bool
+    optional roaming bool
+  }
+}

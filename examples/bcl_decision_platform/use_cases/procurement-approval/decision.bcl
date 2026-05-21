@@ -1,0 +1,72 @@
+import "./decision.schema"
+
+module "procurement-approval-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "finance-ops" domain "procurement" }
+
+  reason_code_catalog "procurement_approval" {
+    code "BUDGET_UNAVAILABLE" { description "Budget cannot cover the request" }
+    code "FINANCE_REVIEW" { description "Spend threshold requires finance review" }
+    code "SMALL_REQUEST_APPROVED" { description "Small funded request can be approved" }
+  }
+
+  decision_schema "procurement_approval" { effects [allow, deny, require_review] default require_review strategy first_match }
+
+  decision_table "procurement_approval" {
+    default require_review
+    hit_policy first
+    row "deny-budget-unavailable" {
+      priority 100 status active owner "finance-ops" rationale "unfunded requests cannot proceed" effective_from "2020-01-01"
+      when { budget.available < request.amount }
+      then { outcome { decision deny reason "budget is unavailable" attributes { route "decline" queue "finance" } metadata { severity "high" } } obligation audit_log { category "procurement" } }
+      reason "budget is unavailable" reason_code "BUDGET_UNAVAILABLE" tags ["budget", "block"]
+    }
+    row "review-large-or-new-vendor" {
+      priority 60 status active owner "procurement" rationale "large requests or unapproved vendors need finance review" effective_from "2020-01-01"
+      when { any { request.amount > 5000 vendor.approved == false } }
+      then { outcome { decision require_review reason "finance review required" attributes { route "finance-review" queue "procurement" } metadata { severity "medium" } } advice collect_documents { document "quote" } }
+      reason "finance review required" reason_code "FINANCE_REVIEW" tags ["manual-review"]
+    }
+    row "allow-small-funded-request" {
+      priority 20 status active owner "procurement" rationale "small funded requests with approved vendors can proceed" effective_from "2020-01-01"
+      when { request.amount <= 5000 budget.available >= request.amount vendor.approved == true }
+      then { outcome { decision allow reason "small funded request" attributes { route "auto-approve" queue "none" } metadata { severity "low" } } }
+      reason "small funded request" reason_code "SMALL_REQUEST_APPROVED" tags ["straight-through"]
+    }
+  }
+
+  dataset "approver_queues" {
+    record "finance-manager" { provider.active true provider.role "finance" provider.priority 8 provider.load 0.25 }
+    record "security-review" { provider.active true provider.role "security" provider.priority 7 provider.load 0.35 }
+    record "department-owner" { provider.active true provider.role "department" provider.priority 5 provider.load 0.15 }
+  }
+
+  ranking "procurement_approval" {
+    dataset "approver_queues"
+    selection best
+    priority_path "provider.priority"
+    cost_path "provider.load"
+
+    rule "approver-active" { when { provider.active == true } }
+    rule "approver-fit" {
+      when {
+        any {
+          provider.role == "finance"
+          request.category == "software"
+          vendor.risk_tier == "high"
+        }
+      }
+    }
+    score "approval-readiness" { metric "provider.priority" weight 0.5 normalize 1 10 }
+    score "queue-load" { metric "provider.load" weight -0.4 normalize 0 1 }
+  }
+
+  dataset "procurement_approval_batch" {
+    record "unfunded" { request.amount 12000 request.category "software" budget.available 3000 vendor.approved true }
+    record "finance-review" { request.amount 9000 request.category "hardware" budget.available 15000 vendor.approved true }
+    record "small" { request.amount 3000 request.category "office" budget.available 10000 vendor.approved true }
+  }
+  gate "procurement_approval_gate" { bundle "procurement_approval_bundle" decision "procurement_approval" dataset "procurement_approval_batch" min_pass_rate 1.0 no_default_only true required_rules ["deny-budget-unavailable", "review-large-or-new-vendor", "allow-small-funded-request"] }
+  decision_bundle "procurement_approval_bundle" { decisions ["procurement_approval"] datasets ["procurement_approval_batch"] approval { status approved approved_by "finance-governance@example.com" approved_at "2026-05-20T00:00:00Z" } metadata { owner "finance-ops" } }
+}

@@ -1,0 +1,72 @@
+import "./decision.schema"
+
+module "insurance-claims-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "claims-risk" domain "insurance" }
+
+  reason_code_catalog "insurance_claims" {
+    code "POLICY_INACTIVE" { description "Policy is inactive" }
+    code "FRAUD_REVIEW" { description "Claim has fraud indicators" }
+    code "AUTO_SETTLEMENT" { description "Low-risk claim can be settled automatically" }
+  }
+
+  decision_schema "insurance_claims" { effects [allow, deny, require_review] default require_review strategy first_match }
+
+  decision_table "insurance_claims" {
+    default require_review
+    hit_policy first
+    row "deny-inactive-policy" {
+      priority 100 status active owner "claims-risk" rationale "inactive policies cannot pay claims" effective_from "2020-01-01"
+      when { policy.active == false }
+      then { outcome { decision deny reason "policy is inactive" attributes { route "decline" queue "claims" } metadata { severity "high" } } obligation audit_log { category "claims" } }
+      reason "policy is inactive" reason_code "POLICY_INACTIVE" tags ["policy", "block"]
+    }
+    row "review-fraud-or-missing-docs" {
+      priority 60 status active owner "claims-risk" rationale "fraud indicators and missing documents need adjuster review" effective_from "2020-01-01"
+      when { any { claim.fraud_score >= 70 claim.documentation_complete == false claim.amount > 25000 } }
+      then { outcome { decision require_review reason "claim needs adjuster review" attributes { route "adjuster-review" queue "claims-review" } metadata { severity "medium" } } advice collect_documents { document "loss_evidence" } }
+      reason "claim needs adjuster review" reason_code "FRAUD_REVIEW" tags ["manual-review"]
+    }
+    row "allow-low-risk-settlement" {
+      priority 20 status active owner "claims-risk" rationale "complete low-risk small claims can auto-settle" effective_from "2020-01-01"
+      when { policy.active == true claim.fraud_score < 30 claim.documentation_complete == true claim.amount <= 5000 }
+      then { outcome { decision allow reason "low-risk claim can settle" attributes { route "auto-settle" queue "none" } metadata { severity "low" } } }
+      reason "low-risk claim can settle" reason_code "AUTO_SETTLEMENT" tags ["settlement"]
+    }
+  }
+
+  dataset "claims_adjusters" {
+    record "auto-fast-track" { provider.active true provider.specialty "auto" provider.priority 8 provider.load 0.15 }
+    record "property-adjuster" { provider.active true provider.specialty "home" provider.priority 7 provider.load 0.25 }
+    record "siu-investigator" { provider.active true provider.specialty "fraud" provider.priority 10 provider.load 0.4 }
+  }
+
+  ranking "insurance_claims" {
+    dataset "claims_adjusters"
+    selection best
+    priority_path "provider.priority"
+    cost_path "provider.load"
+
+    rule "adjuster-active" { when { provider.active == true } }
+    rule "adjuster-fit" {
+      when {
+        any {
+          provider.specialty == policy.type
+          provider.specialty == claim.loss_type
+          claim.fraud_score >= 70
+        }
+      }
+    }
+    score "adjuster-readiness" { metric "provider.priority" weight 0.6 normalize 1 10 }
+    score "adjuster-load" { metric "provider.load" weight -0.4 normalize 0 1 }
+  }
+
+  dataset "insurance_claims_batch" {
+    record "inactive" { policy.active false policy.type "auto" claim.amount 1000 claim.fraud_score 10 claim.documentation_complete true }
+    record "fraud-review" { policy.active true policy.type "home" claim.amount 18000 claim.fraud_score 82 claim.documentation_complete true }
+    record "settle" { policy.active true policy.type "auto" claim.amount 2500 claim.fraud_score 12 claim.documentation_complete true }
+  }
+  gate "insurance_claims_gate" { bundle "insurance_claims_bundle" decision "insurance_claims" dataset "insurance_claims_batch" min_pass_rate 1.0 no_default_only true required_rules ["deny-inactive-policy", "review-fraud-or-missing-docs", "allow-low-risk-settlement"] }
+  decision_bundle "insurance_claims_bundle" { decisions ["insurance_claims"] datasets ["insurance_claims_batch"] approval { status approved approved_by "claims-governance@example.com" approved_at "2026-05-20T00:00:00Z" } metadata { owner "claims-risk" } }
+}

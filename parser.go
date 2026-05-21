@@ -190,6 +190,12 @@ func (p *parser) parseNode() Node {
 		bodyStart := p.next()
 		return &Block{Type: "override", ID: targetType.text + "." + targetID.text, Body: p.parseNodes(tokRBrace), Span: spanJoin(name.span, bodyStart.span)}
 	}
+	if name.text == "use" && p.peek().kind == tokIdent && p.peekN(1).kind == tokString && p.peekN(2).kind == tokLBrace {
+		targetType := p.next()
+		targetID := p.next()
+		bodyStart := p.next()
+		return &Block{Type: "use", ID: targetType.text + "." + targetID.text, Body: p.parseNodes(tokRBrace), Span: spanJoin(name.span, bodyStart.span)}
+	}
 	if name.text == "when" && p.peek().kind != tokLBrace {
 		return p.parseConditionalBlock(name)
 	}

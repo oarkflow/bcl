@@ -150,10 +150,11 @@ func (s *server) handle(msg rpcMessage) {
 	case "textDocument/completion":
 		var p struct {
 			TextDocument textDocumentIdentifier `json:"textDocument"`
+			Position     position               `json:"position"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
 		a := s.analyzeURI(p.TextDocument.URI)
-		s.respond(msg.ID, s.completions(a))
+		s.respond(msg.ID, s.completions(a, p.TextDocument.URI, p.Position))
 	case "textDocument/hover":
 		if s.customHoverDetailMode {
 			s.respond(msg.ID, nil)
@@ -230,6 +231,7 @@ func (s *server) setFile(uri, text string) {
 	s.files[uri] = text
 	s.mu.Unlock()
 	s.analyzeURI(uri)
+	s.reanalyzeDependents(uri)
 }
 
 func (s *server) analyzeURI(uri string) *bcl.Analysis {
@@ -295,12 +297,13 @@ func diagnosticURI(baseURI string, d bcl.Diagnostic) string {
 	return pathURI(d.Span.File)
 }
 
-func (s *server) completions(a *bcl.Analysis) []any {
+func (s *server) completions(a *bcl.Analysis, uri string, pos position) []any {
 	rank := map[string]int{}
 	for i, name := range s.recent {
 		rank[name] = len(s.recent) - i
 	}
-	comps := append([]bcl.Completion(nil), a.Completions...)
+	comps, _ := bcl.CompletionsAt(a, []byte(s.fileText(uri)), pos.Line+1, pos.Character+1)
+	comps = append(comps, s.workspaceCompletions()...)
 	sort.SliceStable(comps, func(i, j int) bool {
 		if rank[comps[i].Label] != rank[comps[j].Label] {
 			return rank[comps[i].Label] > rank[comps[j].Label]
@@ -325,22 +328,31 @@ func (s *server) definitionLike(msg rpcMessage, refs bool) {
 	}
 	_ = json.Unmarshal(msg.Params, &p)
 	a := s.analyzeURI(p.TextDocument.URI)
-	sym, ok := bcl.SymbolAt(a, p.Position.Line+1, p.Position.Character+1)
+	target, refSpan, fromRef := s.targetAt(a, p.TextDocument.URI, p.Position)
+	sym, ok := s.declarationFor(a, target)
+	if !ok {
+		var local bcl.LanguageSymbol
+		local, ok = bcl.SymbolAt(a, p.Position.Line+1, p.Position.Character+1)
+		if ok {
+			sym = local
+			target = local.Name
+			refSpan = local.SelectionSpan
+		}
+	}
 	if !ok {
 		s.respond(msg.ID, nil)
 		return
 	}
 	s.touch(sym.Name)
 	if !refs {
-		s.respond(msg.ID, map[string]any{"uri": p.TextDocument.URI, "range": lspRange(sym.SelectionSpan)})
+		s.respond(msg.ID, locationForSymbol(p.TextDocument.URI, sym))
 		return
 	}
-	locs := []any{map[string]any{"uri": p.TextDocument.URI, "range": lspRange(sym.SelectionSpan)}}
-	for _, r := range a.References {
-		if r.Name == sym.Name {
-			locs = append(locs, map[string]any{"uri": p.TextDocument.URI, "range": lspRange(r.Span)})
-		}
+	locs := []any{locationForSymbol(p.TextDocument.URI, sym)}
+	if fromRef && refSpan.Start.Line > 0 {
+		locs = append(locs, map[string]any{"uri": p.TextDocument.URI, "range": lspRange(refSpan)})
 	}
+	locs = append(locs, s.referenceLocations(target)...)
 	s.respond(msg.ID, locs)
 }
 
@@ -352,18 +364,31 @@ func (s *server) rename(msg rpcMessage) {
 	}
 	_ = json.Unmarshal(msg.Params, &p)
 	a := s.analyzeURI(p.TextDocument.URI)
-	sym, ok := bcl.SymbolAt(a, p.Position.Line+1, p.Position.Character+1)
+	target, _, _ := s.targetAt(a, p.TextDocument.URI, p.Position)
+	sym, ok := s.declarationFor(a, target)
+	if !ok {
+		var local bcl.LanguageSymbol
+		local, ok = bcl.SymbolAt(a, p.Position.Line+1, p.Position.Character+1)
+		if ok {
+			sym = local
+			target = local.Name
+		}
+	}
 	if !ok {
 		s.respond(msg.ID, nil)
 		return
 	}
-	edits := []any{map[string]any{"range": lspRange(sym.SelectionSpan), "newText": p.NewName}}
-	for _, r := range a.References {
-		if r.Name == sym.Name {
-			edits = append(edits, map[string]any{"range": lspRange(r.Span), "newText": p.NewName})
-		}
+	changes := map[string][]any{}
+	declURI := symbolURI(p.TextDocument.URI, sym)
+	changes[declURI] = append(changes[declURI], map[string]any{"range": lspRange(sym.SelectionSpan), "newText": p.NewName})
+	for _, loc := range s.referenceEdits(target) {
+		changes[loc.uri] = append(changes[loc.uri], map[string]any{"range": lspRange(loc.span), "newText": p.NewName})
 	}
-	s.respond(msg.ID, map[string]any{"changes": map[string]any{p.TextDocument.URI: edits}})
+	out := map[string]any{}
+	for uri, edits := range changes {
+		out[uri] = edits
+	}
+	s.respond(msg.ID, map[string]any{"changes": out})
 }
 
 func (s *server) formatEdits(uri string) []any {
@@ -429,6 +454,184 @@ func (s *server) workspaceSymbols(query string) []any {
 	return out
 }
 
+func (s *server) workspaceCompletions() []bcl.Completion {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[string]bool{}
+	var out []bcl.Completion
+	for _, a := range s.index {
+		for _, decl := range a.Index.Declarations {
+			if decl.CanonicalName == "" || seen[decl.CanonicalName] {
+				continue
+			}
+			seen[decl.CanonicalName] = true
+			out = append(out, bcl.Completion{Label: decl.CanonicalName, Kind: string(decl.Kind), Detail: decl.Container})
+		}
+	}
+	return out
+}
+
+type editLocation struct {
+	uri  string
+	span bcl.Span
+}
+
+func (s *server) targetAt(a *bcl.Analysis, uri string, pos position) (string, bcl.Span, bool) {
+	line, col := pos.Line+1, pos.Character+1
+	for _, r := range a.References {
+		if lspContains(r.Span, line, col) {
+			return r.Name, r.Span, true
+		}
+	}
+	if sym, ok := bcl.SymbolAt(a, line, col); ok {
+		return sym.Name, sym.SelectionSpan, false
+	}
+	return "", bcl.Span{}, false
+}
+
+func (s *server) declarationFor(a *bcl.Analysis, target string) (bcl.LanguageSymbol, bool) {
+	if target == "" {
+		return bcl.LanguageSymbol{}, false
+	}
+	if decl, ok := a.Declarations[target]; ok {
+		return decl, true
+	}
+	if decl, ok := a.Declarations[canonicalTarget(target)]; ok {
+		return decl, true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, indexed := range s.index {
+		if decl, ok := indexed.Declarations[target]; ok {
+			return decl, true
+		}
+		if decl, ok := indexed.Declarations[canonicalTarget(target)]; ok {
+			return decl, true
+		}
+	}
+	return bcl.LanguageSymbol{}, false
+}
+
+func (s *server) referenceLocations(target string) []any {
+	if target == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []any
+	for uri, a := range s.index {
+		for _, r := range a.References {
+			if referenceMatchesTarget(r.Name, target) {
+				out = append(out, map[string]any{"uri": uriForSpan(uri, r.Span), "range": lspRange(r.Span)})
+			}
+		}
+	}
+	return out
+}
+
+func (s *server) referenceEdits(target string) []editLocation {
+	if target == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []editLocation
+	for uri, a := range s.index {
+		for _, r := range a.References {
+			if referenceMatchesTarget(r.Name, target) && (r.Kind == "reference" || r.Kind == "set") {
+				out = append(out, editLocation{uri: uriForSpan(uri, r.Span), span: r.Span})
+			}
+		}
+	}
+	return out
+}
+
+func referenceMatchesTarget(ref, target string) bool {
+	return ref == target || canonicalTarget(ref) == target || ref == canonicalTarget(target)
+}
+
+func canonicalTarget(s string) string {
+	if strings.Count(s, ".") == 0 {
+		return s
+	}
+	parts := strings.Split(s, ".")
+	return parts[len(parts)-1]
+}
+
+func locationForSymbol(defaultURI string, sym bcl.LanguageSymbol) map[string]any {
+	return map[string]any{"uri": symbolURI(defaultURI, sym), "range": lspRange(symbolDefinitionSpan(sym))}
+}
+
+func symbolDefinitionSpan(sym bcl.LanguageSymbol) bcl.Span {
+	if sym.SelectionSpan.Start.Line > 0 {
+		// References returned by SymbolAt carry the reference selection, but the declaration
+		// span remains on Span. Prefer the declaration span when it points at another file.
+		if sym.Span.File != "" && sym.Span.File != sym.SelectionSpan.File {
+			return sym.Span
+		}
+		return sym.SelectionSpan
+	}
+	return sym.Span
+}
+
+func symbolURI(defaultURI string, sym bcl.LanguageSymbol) string {
+	return uriForSpan(defaultURI, sym.Span)
+}
+
+func uriForSpan(defaultURI string, sp bcl.Span) string {
+	if sp.File == "" {
+		return defaultURI
+	}
+	return pathURI(sp.File)
+}
+
+func lspContains(sp bcl.Span, line, col int) bool {
+	if sp.Start.Line == 0 {
+		return false
+	}
+	if line < sp.Start.Line || line > sp.End.Line {
+		return false
+	}
+	if line == sp.Start.Line && col < sp.Start.Column {
+		return false
+	}
+	if line == sp.End.Line && col > sp.End.Column {
+		return false
+	}
+	return true
+}
+
+func (s *server) reanalyzeDependents(changedURI string) {
+	changed := uriPath(changedURI)
+	s.mu.Lock()
+	uris := make([]string, 0, len(s.index))
+	for uri := range s.index {
+		if uri != changedURI {
+			uris = append(uris, uri)
+		}
+	}
+	s.mu.Unlock()
+	for _, uri := range uris {
+		path := uriPath(uri)
+		doc, err := bcl.ParsePath(path)
+		if err != nil {
+			continue
+		}
+		base := filepath.Dir(path)
+		for _, dep := range append(importedPaths(doc.Items, base), moduleSourceDirs(doc.Items, base)...) {
+			if samePath(changed, dep) || pathWithin(changed, dep) {
+				s.analyzeURI(uri)
+				break
+			}
+		}
+	}
+}
+
+func pathWithin(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func (s *server) codeActions(raw json.RawMessage) []any {
 	var p struct {
 		TextDocument textDocumentIdentifier `json:"textDocument"`
@@ -442,10 +645,53 @@ func (s *server) codeActions(raw json.RawMessage) []any {
 	_ = json.Unmarshal(raw, &p)
 	actions := []any{
 		map[string]any{"title": "Format BCL document", "kind": "source.format", "command": map[string]any{"title": "Format BCL document", "command": "editor.action.formatDocument"}},
-		map[string]any{"title": "Wrap value with sensitive(...)", "kind": "quickfix"},
-		map[string]any{"title": "Add missing required module input", "kind": "quickfix"},
-		map[string]any{"title": "Create predicate or test stub", "kind": "quickfix"},
 		map[string]any{"title": "Restart BCL language server", "kind": "quickfix", "command": map[string]any{"title": "Restart BCL language server", "command": "bcl.restartLanguageServer"}},
+	}
+	appendLine := strings.Count(s.fileText(p.TextDocument.URI), "\n") + 1
+	for _, d := range p.Context.Diagnostics {
+		if strings.Contains(d.Message, "missing required input") {
+			if input := quotedTail(d.Message); input != "" {
+				actions = append(actions, map[string]any{
+					"title":       fmt.Sprintf("Add module input %q", input),
+					"kind":        "quickfix",
+					"diagnostics": []any{d},
+					"edit":        lineInsertEdit(p.TextDocument.URI, d.Range.End.Line+1, fmt.Sprintf("  inputs {\n    %s value\n  }\n", input)),
+				})
+			}
+		}
+		if strings.Contains(d.Message, "unknown reference") {
+			if ref := quotedTail(d.Message); ref != "" {
+				actions = append(actions, createReferenceAction(p.TextDocument.URI, ref, d, appendLine))
+			}
+		}
+		if strings.Contains(d.Message, "unknown action") {
+			if name := quotedTail(d.Message); name != "" {
+				actions = append(actions, appendBlockAction(p.TextDocument.URI, fmt.Sprintf("Create action %q", name), fmt.Sprintf("\naction %q {\n  type http\n}\n", name), d, appendLine))
+			}
+		}
+		if strings.Contains(d.Message, "unknown reason code") {
+			if code := quotedTail(d.Message); code != "" {
+				actions = append(actions, appendBlockAction(p.TextDocument.URI, fmt.Sprintf("Create reason code %q", code), fmt.Sprintf("\nreason_code_catalog \"default\" {\n  code %q { description \"description\" }\n}\n", code), d, appendLine))
+			}
+		}
+		if strings.Contains(d.Message, "missing required field") {
+			if field := quotedTail(d.Message); field != "" {
+				actions = append(actions, map[string]any{
+					"title":       fmt.Sprintf("Insert required field %q", field),
+					"kind":        "quickfix",
+					"diagnostics": []any{d},
+					"edit":        lineInsertEdit(p.TextDocument.URI, d.Range.End.Line+1, fmt.Sprintf("  %s value\n", field)),
+				})
+			}
+		}
+		if strings.Contains(d.Message, "sensitive") {
+			actions = append(actions, map[string]any{
+				"title":       "Wrap value with sensitive(...)",
+				"kind":        "quickfix",
+				"diagnostics": []any{d},
+				"edit":        wrapRangeEdit(p.TextDocument.URI, d.Range, "sensitive(", ")"),
+			})
+		}
 	}
 	if hasDiagnostic(p.Context.Diagnostics, "missing bcl version declaration") {
 		edit := map[string]any{
@@ -466,6 +712,57 @@ func (s *server) codeActions(raw json.RawMessage) []any {
 		}}, actions...)
 	}
 	return actions
+}
+
+func createReferenceAction(uri, ref string, diag any, line int) map[string]any {
+	typ, id, ok := strings.Cut(ref, ".")
+	if !ok || typ == "" || id == "" {
+		return appendBlockAction(uri, fmt.Sprintf("Create constant %q", ref), fmt.Sprintf("\nconst %s = value\n", ref), diag, line)
+	}
+	return appendBlockAction(uri, fmt.Sprintf("Create %s %q", typ, id), fmt.Sprintf("\n%s %q {\n  field value\n}\n", typ, id), diag, line)
+}
+
+func appendBlockAction(uri, title, text string, diag any, line int) map[string]any {
+	return map[string]any{
+		"title":       title,
+		"kind":        "quickfix",
+		"diagnostics": []any{diag},
+		"edit": map[string]any{"changes": map[string]any{
+			uri: []any{map[string]any{"range": rangeLSP{Start: position{Line: line, Character: 0}, End: position{Line: line, Character: 0}}, "newText": text}},
+		}},
+	}
+}
+
+func lineInsertEdit(uri string, line int, text string) map[string]any {
+	return map[string]any{"changes": map[string]any{
+		uri: []any{map[string]any{"range": rangeLSP{Start: position{Line: line, Character: 0}, End: position{Line: line, Character: 0}}, "newText": text}},
+	}}
+}
+
+func wrapRangeEdit(uri string, r rangeLSP, prefix, suffix string) map[string]any {
+	return map[string]any{"changes": map[string]any{
+		uri: []any{
+			map[string]any{"range": rangeLSP{Start: r.Start, End: r.Start}, "newText": prefix},
+			map[string]any{"range": rangeLSP{Start: r.End, End: r.End}, "newText": suffix},
+		},
+	}}
+}
+
+func quotedTail(s string) string {
+	last := ""
+	for {
+		start := strings.Index(s, `"`)
+		if start < 0 {
+			return last
+		}
+		s = s[start+1:]
+		end := strings.Index(s, `"`)
+		if end < 0 {
+			return last
+		}
+		last = s[:end]
+		s = s[end+1:]
+	}
 }
 
 func hasDiagnostic(diags []struct {

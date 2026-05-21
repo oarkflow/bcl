@@ -1,0 +1,16 @@
+schema procurement_approval {
+  required request object {
+    required amount number min 0
+    required category string
+    optional department string
+  }
+
+  required budget object {
+    required available number min 0
+  }
+
+  required vendor object {
+    required approved bool
+    optional risk_tier string enum ["low", "medium", "high"]
+  }
+}

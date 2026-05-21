@@ -1,0 +1,187 @@
+import "./decision.schema"
+
+module "fraud-aml-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "risk-platform" domain "fraud-aml" }
+
+  reason_code_catalog "fraud_aml" {
+    code "BLACKLISTED_CUSTOMER" { description "Customer appears on an internal blacklist" }
+    code "HIGH_VALUE_AML_REVIEW" { description "High-value transaction in an AML-sensitive corridor" }
+    code "LOW_RISK_APPROVED" { description "Transaction is low risk and can proceed" }
+  }
+
+  decision_schema "fraud_aml" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  decision_table "fraud_aml" {
+    default require_review
+    hit_policy first
+
+    row "deny-blacklisted-customer" {
+      priority 100
+      status active
+      owner "fraud-ops"
+      rationale "blacklisted customers are blocked before AML routing"
+      effective_from "2020-01-01"
+      when { customer.blacklisted == true }
+      then {
+        outcome {
+          decision deny
+          reason "customer is blacklisted"
+          attributes { route "blocked" queue "fraud" }
+          metadata { severity "critical" }
+        }
+        obligation audit_log { category "fraud" }
+      }
+      reason "customer is blacklisted"
+      reason_code "BLACKLISTED_CUSTOMER"
+      tags ["fraud", "block"]
+    }
+
+    row "review-high-value-aml-market" {
+      priority 70
+      status active
+      owner "aml-ops"
+      rationale "high-value wires from review markets need analyst review"
+      effective_from "2020-01-01"
+      when {
+        transaction.amount >= 100000
+        transaction.channel == "wire"
+        any {
+          customer.country == "NP"
+          customer.country == "AE"
+        }
+      }
+      then {
+        outcome {
+          decision require_review
+          reason "high-value transaction needs AML review"
+          attributes { route "aml-review" queue "aml" }
+          metadata { severity "high" }
+        }
+        advice collect_documents { document "source_of_funds" }
+      }
+      reason "high-value transaction needs AML review"
+      reason_code "HIGH_VALUE_AML_REVIEW"
+      tags ["aml", "manual-review"]
+    }
+
+    row "allow-low-risk-card" {
+      priority 20
+      status active
+      owner "fraud-ops"
+      rationale "low-value card transactions can be approved"
+      effective_from "2020-01-01"
+      when {
+        customer.blacklisted == false
+        transaction.amount < 10000
+        transaction.channel == "card"
+      }
+      then {
+        outcome {
+          decision allow
+          reason "low-risk transaction"
+          attributes { route "straight-through" queue "none" }
+          metadata { severity "low" }
+        }
+      }
+      reason "low-risk transaction"
+      reason_code "LOW_RISK_APPROVED"
+      tags ["straight-through"]
+    }
+  }
+
+  rule_set "fraud_aml" {
+    rule "score-high-value-wire" {
+      phase score
+      priority 30
+      when { transaction.amount >= 100000 transaction.channel == "wire" }
+      then {
+        score += 40
+        event fraud_signal { type "high_value_wire" }
+      }
+      reason "high value wire transfer"
+    }
+
+    rule "score-vip-review-corridor" {
+      phase score
+      priority 20
+      when {
+        any {
+          customer.country == "NP"
+          customer.country == "AE"
+          customer.tier == "vip"
+        }
+      }
+      then { score += 20 }
+      reason "AML corridor or VIP profile"
+    }
+  }
+
+  dataset "fraud_review_queues" {
+    record "aml" { provider.active true provider.skill "aml" provider.priority 9 provider.load 0.2 }
+    record "fraud" { provider.active true provider.skill "fraud" provider.priority 7 provider.load 0.3 }
+    record "standard" { provider.active true provider.skill "standard" provider.priority 4 provider.load 0.1 }
+  }
+
+  ranking "fraud_aml" {
+    dataset "fraud_review_queues"
+    selection best
+    priority_path "provider.priority"
+    cost_path "provider.load"
+
+    rule "queue-active" { when { provider.active == true } }
+    rule "queue-skill-fit" {
+      when {
+        any {
+          provider.skill == "aml"
+          transaction.channel == "card"
+        }
+      }
+    }
+    score "readiness" { metric "provider.priority" weight 0.7 normalize 1 10 }
+    score "load" { metric "provider.load" weight -0.5 normalize 0 1 }
+  }
+
+  dataset "fraud_aml_batch" {
+    record "blocked" {
+      customer.blacklisted true
+      customer.country "US"
+      transaction.amount 200
+      transaction.channel "card"
+    }
+    record "aml-review" {
+      customer.blacklisted false
+      customer.country "NP"
+      customer.tier "vip"
+      transaction.amount 125000
+      transaction.channel "wire"
+    }
+    record "low-risk" {
+      customer.blacklisted false
+      customer.country "US"
+      transaction.amount 500
+      transaction.channel "card"
+    }
+  }
+
+  gate "fraud_aml_gate" {
+    bundle "fraud_aml_bundle"
+    decision "fraud_aml"
+    dataset "fraud_aml_batch"
+    min_pass_rate 1.0
+    no_default_only true
+    required_rules ["deny-blacklisted-customer", "review-high-value-aml-market", "allow-low-risk-card"]
+  }
+
+  decision_bundle "fraud_aml_bundle" {
+    decisions ["fraud_aml"]
+    datasets ["fraud_aml_batch"]
+    approval { status approved approved_by "risk-governance@example.com" approved_at "2026-05-20T00:00:00Z" }
+    metadata { owner "risk-platform" }
+  }
+}

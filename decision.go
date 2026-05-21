@@ -1,6 +1,7 @@
 package bcl
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -14,28 +15,34 @@ import (
 )
 
 type DecisionProgram struct {
-	Modules     []string                       `json:"modules,omitempty"`
-	Constants   map[string]any                 `json:"constants,omitempty"`
-	Decisions   map[string]*DecisionDefinition `json:"decisions,omitempty"`
-	Contracts   map[string]*DecisionContract   `json:"contracts,omitempty"`
-	Rankings    map[string]*RankingDefinition  `json:"rankings,omitempty"`
-	Datasets    map[string]*DatasetDefinition  `json:"datasets,omitempty"`
-	Actions     map[string]map[string]any      `json:"actions,omitempty"`
-	Schemas     map[string]any                 `json:"schemas,omitempty"`
-	Governance  map[string]any                 `json:"governance,omitempty"`
-	Tests       []DecisionTest                 `json:"tests,omitempty"`
-	Diagnostics []Diagnostic                   `json:"diagnostics,omitempty"`
-	Normalized  *Normalized                    `json:"normalized,omitempty"`
+	Modules            []string                             `json:"modules,omitempty"`
+	Constants          map[string]any                       `json:"constants,omitempty"`
+	Decisions          map[string]*DecisionDefinition       `json:"decisions,omitempty"`
+	Contracts          map[string]*DecisionContract         `json:"contracts,omitempty"`
+	Rankings           map[string]*RankingDefinition        `json:"rankings,omitempty"`
+	Datasets           map[string]*DatasetDefinition        `json:"datasets,omitempty"`
+	Actions            map[string]map[string]any            `json:"actions,omitempty"`
+	Schemas            map[string]any                       `json:"schemas,omitempty"`
+	ReasonCodeCatalogs map[string]map[string]map[string]any `json:"reason_code_catalogs,omitempty"`
+	Bundles            map[string]*DecisionBundle           `json:"bundles,omitempty"`
+	Releases           map[string]*DecisionRelease          `json:"releases,omitempty"`
+	Gates              map[string]*DecisionGateDefinition   `json:"gates,omitempty"`
+	RuleTemplates      map[string]map[string]any            `json:"rule_templates,omitempty"`
+	Governance         map[string]any                       `json:"governance,omitempty"`
+	Tests              []DecisionTest                       `json:"tests,omitempty"`
+	Diagnostics        []Diagnostic                         `json:"diagnostics,omitempty"`
+	Normalized         *Normalized                          `json:"normalized,omitempty"`
 }
 
 type DecisionDefinition struct {
-	ID       string         `json:"id"`
-	Module   string         `json:"module,omitempty"`
-	Default  string         `json:"default,omitempty"`
-	Strategy string         `json:"strategy,omitempty"`
-	Rules    []DecisionRule `json:"rules,omitempty"`
-	Metadata map[string]any `json:"metadata,omitempty"`
-	Span     Span           `json:"span,omitempty"`
+	ID       string          `json:"id"`
+	Module   string          `json:"module,omitempty"`
+	Default  string          `json:"default,omitempty"`
+	Strategy string          `json:"strategy,omitempty"`
+	Rules    []DecisionRule  `json:"rules,omitempty"`
+	Params   []DecisionParam `json:"params,omitempty"`
+	Metadata map[string]any  `json:"metadata,omitempty"`
+	Span     Span            `json:"span,omitempty"`
 }
 
 type DecisionContract struct {
@@ -47,17 +54,19 @@ type DecisionContract struct {
 }
 
 type DecisionRule struct {
-	ID        string         `json:"id"`
-	Effect    string         `json:"effect,omitempty"`
-	Priority  int64          `json:"priority,omitempty"`
-	Phase     string         `json:"phase,omitempty"`
-	Condition map[string]any `json:"condition,omitempty"`
-	Then      map[string]any `json:"then,omitempty"`
-	Reason    string         `json:"reason,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
-	Source    string         `json:"source,omitempty"`
-	Order     int            `json:"-"`
-	Span      Span           `json:"span,omitempty"`
+	ID         string         `json:"id"`
+	Effect     string         `json:"effect,omitempty"`
+	Priority   int64          `json:"priority,omitempty"`
+	Phase      string         `json:"phase,omitempty"`
+	Condition  map[string]any `json:"condition,omitempty"`
+	Then       map[string]any `json:"then,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
+	ReasonCode string         `json:"reason_code,omitempty"`
+	Tags       []string       `json:"tags,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	Source     string         `json:"source,omitempty"`
+	Order      int            `json:"-"`
+	Span       Span           `json:"span,omitempty"`
 }
 
 type RankingDefinition struct {
@@ -97,25 +106,145 @@ type DecisionTest struct {
 	Expect   map[string]any `json:"expect,omitempty"`
 }
 
+type DecisionParam struct {
+	Name     string `json:"name"`
+	Type     string `json:"type,omitempty"`
+	Required bool   `json:"required,omitempty"`
+	Default  any    `json:"default,omitempty"`
+}
+
+type DecisionBundle struct {
+	ID        string         `json:"id"`
+	Decisions []string       `json:"decisions,omitempty"`
+	Datasets  []string       `json:"datasets,omitempty"`
+	Tests     []string       `json:"tests,omitempty"`
+	Release   string         `json:"release,omitempty"`
+	Approval  map[string]any `json:"approval,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+	Span      Span           `json:"span,omitempty"`
+}
+
+type DecisionRelease struct {
+	ID       string         `json:"id"`
+	Bundle   string         `json:"bundle,omitempty"`
+	Version  string         `json:"version,omitempty"`
+	Stage    string         `json:"stage,omitempty"`
+	Approval map[string]any `json:"approval,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+	Span     Span           `json:"span,omitempty"`
+}
+
+type DecisionGateDefinition struct {
+	ID                string         `json:"id"`
+	Bundle            string         `json:"bundle,omitempty"`
+	Decision          string         `json:"decision,omitempty"`
+	Dataset           string         `json:"dataset,omitempty"`
+	MinPassRate       float64        `json:"min_pass_rate,omitempty"`
+	MaxDiagnostics    int64          `json:"max_diagnostics,omitempty"`
+	NoDefaultOnly     bool           `json:"no_default_only,omitempty"`
+	RequiredRules     []string       `json:"required_rules,omitempty"`
+	ForbidTransitions []string       `json:"forbid_transitions,omitempty"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
+	Span              Span           `json:"span,omitempty"`
+}
+
+type DecisionGateResult struct {
+	ID          string               `json:"id"`
+	Passed      bool                 `json:"passed"`
+	Diagnostics []Diagnostic         `json:"diagnostics,omitempty"`
+	Batch       *DecisionBatchReport `json:"batch,omitempty"`
+}
+
+type DecisionGateReport struct {
+	BundleID    string               `json:"bundle_id,omitempty"`
+	Passed      bool                 `json:"passed"`
+	Results     []DecisionGateResult `json:"results,omitempty"`
+	Diagnostics []Diagnostic         `json:"diagnostics,omitempty"`
+}
+
+type DecisionCounterfactual struct {
+	Path    string `json:"path,omitempty"`
+	Current any    `json:"current,omitempty"`
+	Target  any    `json:"target,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	RuleID  string `json:"rule_id,omitempty"`
+}
+
+type DecisionObservation struct {
+	DecisionID       string   `json:"decision_id,omitempty"`
+	Effect           string   `json:"effect,omitempty"`
+	PolicyID         string   `json:"policy_id,omitempty"`
+	ReasonCode       string   `json:"reason_code,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	MatchedRules     []string `json:"matched_rules,omitempty"`
+	SelectedRules    []string `json:"selected_rules,omitempty"`
+	Score            float64  `json:"score,omitempty"`
+	DiagnosticsCount int      `json:"diagnostics_count,omitempty"`
+	InputHash        string   `json:"input_hash,omitempty"`
+	LatencyMS        int64    `json:"latency_ms,omitempty"`
+}
+
 type DecisionResult struct {
-	DecisionID  string           `json:"decision_id,omitempty"`
-	Effect      string           `json:"effect"`
-	Allowed     bool             `json:"allowed"`
-	PolicyID    string           `json:"policy_id,omitempty"`
-	Reason      string           `json:"reason,omitempty"`
-	Score       float64          `json:"score,omitempty"`
-	Outcome     *DecisionOutcome `json:"outcome,omitempty"`
-	Attributes  map[string]any   `json:"attributes,omitempty"`
-	Metadata    map[string]any   `json:"metadata,omitempty"`
-	Actions     []DecisionAction `json:"actions,omitempty"`
-	Events      []DecisionAction `json:"events,omitempty"`
-	Obligations []DecisionAction `json:"obligations,omitempty"`
-	Advice      []DecisionAction `json:"advice,omitempty"`
-	Rank        *DecisionRank    `json:"rank,omitempty"`
-	Evaluated   int              `json:"evaluated"`
-	Trace       []string         `json:"trace,omitempty"`
-	Explain     []DecisionTrace  `json:"explain,omitempty"`
-	Diagnostics []Diagnostic     `json:"diagnostics,omitempty"`
+	DecisionID      string                   `json:"decision_id,omitempty"`
+	Effect          string                   `json:"effect"`
+	Allowed         bool                     `json:"allowed"`
+	PolicyID        string                   `json:"policy_id,omitempty"`
+	Reason          string                   `json:"reason,omitempty"`
+	ReasonCode      string                   `json:"reason_code,omitempty"`
+	Tags            []string                 `json:"tags,omitempty"`
+	Score           float64                  `json:"score,omitempty"`
+	Outcome         *DecisionOutcome         `json:"outcome,omitempty"`
+	Attributes      map[string]any           `json:"attributes,omitempty"`
+	Metadata        map[string]any           `json:"metadata,omitempty"`
+	Actions         []DecisionAction         `json:"actions,omitempty"`
+	Events          []DecisionAction         `json:"events,omitempty"`
+	Obligations     []DecisionAction         `json:"obligations,omitempty"`
+	Advice          []DecisionAction         `json:"advice,omitempty"`
+	Rank            *DecisionRank            `json:"rank,omitempty"`
+	Counterfactuals []DecisionCounterfactual `json:"counterfactuals,omitempty"`
+	Evaluated       int                      `json:"evaluated"`
+	Trace           []string                 `json:"trace,omitempty"`
+	Explain         []DecisionTrace          `json:"explain,omitempty"`
+	ExplainGraph    []DecisionExplainNode    `json:"explain_graph,omitempty"`
+	Diagnostics     []Diagnostic             `json:"diagnostics,omitempty"`
+}
+
+type DecisionAnswer struct {
+	DecisionID  string         `json:"decision_id,omitempty"`
+	Effect      string         `json:"effect"`
+	Allowed     bool           `json:"allowed"`
+	Reason      string         `json:"reason,omitempty"`
+	ReasonCode  string         `json:"reason_code,omitempty"`
+	Tags        []string       `json:"tags,omitempty"`
+	Score       float64        `json:"score,omitempty"`
+	Attributes  map[string]any `json:"attributes,omitempty"`
+	Rank        *DecisionRank  `json:"rank,omitempty"`
+	Diagnostics []Diagnostic   `json:"diagnostics,omitempty"`
+}
+
+func (r *DecisionResult) Answer() DecisionAnswer {
+	if r == nil {
+		return DecisionAnswer{}
+	}
+	return DecisionAnswer{
+		DecisionID:  r.DecisionID,
+		Effect:      r.Effect,
+		Allowed:     r.Allowed,
+		Reason:      r.Reason,
+		ReasonCode:  r.ReasonCode,
+		Tags:        r.Tags,
+		Score:       r.Score,
+		Attributes:  r.Attributes,
+		Rank:        r.Rank,
+		Diagnostics: r.Diagnostics,
+	}
+}
+
+func DecisionResultAnswer(result *DecisionResult) DecisionAnswer {
+	if result == nil {
+		return DecisionAnswer{}
+	}
+	return result.Answer()
 }
 
 type DecisionTrace struct {
@@ -125,6 +254,8 @@ type DecisionTrace struct {
 	Status          string   `json:"status"`
 	Effect          string   `json:"effect,omitempty"`
 	Reason          string   `json:"reason,omitempty"`
+	ReasonCode      string   `json:"reason_code,omitempty"`
+	Tags            []string `json:"tags,omitempty"`
 	Message         string   `json:"message,omitempty"`
 	Candidate       string   `json:"candidate,omitempty"`
 	Priority        int64    `json:"priority,omitempty"`
@@ -135,11 +266,23 @@ type DecisionTrace struct {
 	CandidateScore  *float64 `json:"candidate_score,omitempty"`
 }
 
+type DecisionExplainNode struct {
+	ID      string         `json:"id,omitempty"`
+	Kind    string         `json:"kind"`
+	Label   string         `json:"label,omitempty"`
+	RuleID  string         `json:"rule_id,omitempty"`
+	Status  string         `json:"status,omitempty"`
+	Parent  string         `json:"parent,omitempty"`
+	Details map[string]any `json:"details,omitempty"`
+}
+
 type DecisionOutcome struct {
 	Effect      string           `json:"effect"`
 	Allowed     bool             `json:"allowed"`
 	PolicyID    string           `json:"policy_id,omitempty"`
 	Reason      string           `json:"reason,omitempty"`
+	ReasonCode  string           `json:"reason_code,omitempty"`
+	Tags        []string         `json:"tags,omitempty"`
 	Score       float64          `json:"score,omitempty"`
 	Attributes  map[string]any   `json:"attributes,omitempty"`
 	Metadata    map[string]any   `json:"metadata,omitempty"`
@@ -156,6 +299,8 @@ func (r *DecisionResult) Reset() {
 	r.Allowed = false
 	r.PolicyID = ""
 	r.Reason = ""
+	r.ReasonCode = ""
+	r.Tags = r.Tags[:0]
 	r.Score = 0
 	r.Rank = nil
 	r.Evaluated = 0
@@ -163,8 +308,10 @@ func (r *DecisionResult) Reset() {
 	r.Events = r.Events[:0]
 	r.Obligations = r.Obligations[:0]
 	r.Advice = r.Advice[:0]
+	r.Counterfactuals = r.Counterfactuals[:0]
 	r.Trace = r.Trace[:0]
 	r.Explain = r.Explain[:0]
+	r.ExplainGraph = r.ExplainGraph[:0]
 	r.Diagnostics = r.Diagnostics[:0]
 	clear(r.Attributes)
 	clear(r.Metadata)
@@ -173,6 +320,8 @@ func (r *DecisionResult) Reset() {
 		r.Outcome.Allowed = false
 		r.Outcome.PolicyID = ""
 		r.Outcome.Reason = ""
+		r.Outcome.ReasonCode = ""
+		r.Outcome.Tags = nil
 		r.Outcome.Score = 0
 		r.Outcome.Attributes = nil
 		r.Outcome.Metadata = nil
@@ -200,6 +349,7 @@ type DecisionEvaluateOptions struct {
 	Explain       bool
 	ValidateInput bool
 	Strict        bool
+	Verbose       bool
 }
 
 type DecisionEngine struct {
@@ -238,22 +388,51 @@ type DecisionBatchCaseResult struct {
 }
 
 type DecisionBatchReport struct {
-	DecisionID       string                    `json:"decision_id"`
-	Cases            []DecisionBatchCaseResult `json:"cases,omitempty"`
-	EffectCounts     map[string]int            `json:"effect_counts,omitempty"`
-	RuleHitCounts    map[string]int            `json:"rule_hit_counts,omitempty"`
-	DefaultOnlyCount int                       `json:"default_only_count,omitempty"`
-	FailedCount      int                       `json:"failed_count,omitempty"`
-	Diagnostics      []Diagnostic              `json:"diagnostics,omitempty"`
+	DecisionID         string                    `json:"decision_id"`
+	Cases              []DecisionBatchCaseResult `json:"cases,omitempty"`
+	EffectCounts       map[string]int            `json:"effect_counts,omitempty"`
+	RuleHitCounts      map[string]int            `json:"rule_hit_counts,omitempty"`
+	MatchedRuleCounts  map[string]int            `json:"matched_rule_counts,omitempty"`
+	SelectedRuleCounts map[string]int            `json:"selected_rule_counts,omitempty"`
+	HitRules           []string                  `json:"hit_rules,omitempty"`
+	UnhitRules         []string                  `json:"unhit_rules,omitempty"`
+	DefaultOnlyCases   []string                  `json:"default_only_cases,omitempty"`
+	DefaultOnlyCount   int                       `json:"default_only_count,omitempty"`
+	FailedCount        int                       `json:"failed_count,omitempty"`
+	Diagnostics        []Diagnostic              `json:"diagnostics,omitempty"`
+}
+
+type DecisionCompareCase struct {
+	ID               string          `json:"id,omitempty"`
+	Base             *DecisionResult `json:"base,omitempty"`
+	Candidate        *DecisionResult `json:"candidate,omitempty"`
+	Changed          bool            `json:"changed"`
+	EffectTransition string          `json:"effect_transition,omitempty"`
+	PolicyChanged    bool            `json:"policy_changed,omitempty"`
+	DiagnosticsDelta int             `json:"diagnostics_delta,omitempty"`
+	Diagnostics      []Diagnostic    `json:"diagnostics,omitempty"`
+}
+
+type DecisionCompareReport struct {
+	DecisionID        string                `json:"decision_id"`
+	Cases             []DecisionCompareCase `json:"cases,omitempty"`
+	ChangedCases      []string              `json:"changed_cases,omitempty"`
+	EffectTransitions map[string]int        `json:"effect_transitions,omitempty"`
+	PolicyChanges     int                   `json:"policy_changes,omitempty"`
+	BaseReport        *DecisionBatchReport  `json:"base_report,omitempty"`
+	CandidateReport   *DecisionBatchReport  `json:"candidate_report,omitempty"`
+	Diagnostics       []Diagnostic          `json:"diagnostics,omitempty"`
 }
 
 func NewDecisionEngine(program *DecisionProgram, opts *Options) *DecisionEngine {
+	verbose := opts != nil && opts.Verbose
 	return &DecisionEngine{
 		Program: program,
 		Options: opts,
 		EvaluateOptions: DecisionEvaluateOptions{
 			Explain:       true,
 			ValidateInput: true,
+			Verbose:       verbose,
 		},
 	}
 }
@@ -324,6 +503,47 @@ func CompileDecisionDir(dir string, opts *Options) (*DecisionProgram, error) {
 	return &DecisionProgram{Constants: map[string]any{}, Decisions: map[string]*DecisionDefinition{}, Contracts: map[string]*DecisionContract{}, Rankings: map[string]*RankingDefinition{}, Datasets: map[string]*DatasetDefinition{}, Actions: map[string]map[string]any{}, Schemas: map[string]any{}}, nil
 }
 
+func CompileDecisionBundle(programOrDoc any, bundleID string, opts *Options) (*DecisionBundle, error) {
+	prog, err := decisionProgramFromAny(programOrDoc, opts)
+	if err != nil {
+		return nil, err
+	}
+	if prog == nil {
+		return nil, fmt.Errorf("nil decision program")
+	}
+	bundle := prog.Bundles[bundleID]
+	if bundle == nil {
+		return nil, fmt.Errorf("unknown decision bundle %q", bundleID)
+	}
+	return bundle, nil
+}
+
+func CompileDecisionRelease(programOrDoc any, releaseID string, opts *Options) (*DecisionRelease, error) {
+	prog, err := decisionProgramFromAny(programOrDoc, opts)
+	if err != nil {
+		return nil, err
+	}
+	if prog == nil {
+		return nil, fmt.Errorf("nil decision program")
+	}
+	release := prog.Releases[releaseID]
+	if release == nil {
+		return nil, fmt.Errorf("unknown decision release %q", releaseID)
+	}
+	return release, nil
+}
+
+func decisionProgramFromAny(programOrDoc any, opts *Options) (*DecisionProgram, error) {
+	switch x := programOrDoc.(type) {
+	case *DecisionProgram:
+		return x, nil
+	case *Document:
+		return CompileDecisionDocument(x, opts)
+	default:
+		return nil, fmt.Errorf("expected *DecisionProgram or *Document")
+	}
+}
+
 func CompileDecisionDocument(doc *Document, opts *Options) (*DecisionProgram, error) {
 	if opts == nil {
 		opts = &Options{}
@@ -347,6 +567,7 @@ type decisionBuilder struct {
 	opts       *Options
 	consts     map[string]Value
 	constVals  map[string]any
+	templates  map[string]*Block
 	compiler   *compiler
 	moduleSeen map[string]bool
 	order      int
@@ -356,7 +577,7 @@ func newDecisionBuilder(opts *Options) *decisionBuilder {
 	if opts == nil {
 		opts = &Options{}
 	}
-	b := &decisionBuilder{opts: opts, consts: map[string]Value{}, constVals: map[string]any{}, moduleSeen: map[string]bool{}}
+	b := &decisionBuilder{opts: opts, consts: map[string]Value{}, constVals: map[string]any{}, templates: map[string]*Block{}, moduleSeen: map[string]bool{}}
 	b.compiler = &compiler{
 		opts:        opts,
 		out:         &Normalized{Body: map[string]any{}, Constants: map[string]any{}, Params: map[string]any{}, Predicates: map[string]any{}, Sets: map[string][]any{}, Types: map[string]string{}, Schemas: map[string]any{}, Namespaces: map[string]any{}},
@@ -372,17 +593,23 @@ func newDecisionBuilder(opts *Options) *decisionBuilder {
 
 func (b *decisionBuilder) build(doc *Document, n *Normalized) *DecisionProgram {
 	prog := &DecisionProgram{
-		Constants:  map[string]any{},
-		Decisions:  map[string]*DecisionDefinition{},
-		Contracts:  map[string]*DecisionContract{},
-		Rankings:   map[string]*RankingDefinition{},
-		Datasets:   map[string]*DatasetDefinition{},
-		Actions:    map[string]map[string]any{},
-		Schemas:    map[string]any{},
-		Governance: map[string]any{},
-		Normalized: n,
+		Constants:          map[string]any{},
+		Decisions:          map[string]*DecisionDefinition{},
+		Contracts:          map[string]*DecisionContract{},
+		Rankings:           map[string]*RankingDefinition{},
+		Datasets:           map[string]*DatasetDefinition{},
+		Actions:            map[string]map[string]any{},
+		Schemas:            map[string]any{},
+		ReasonCodeCatalogs: map[string]map[string]map[string]any{},
+		Bundles:            map[string]*DecisionBundle{},
+		Releases:           map[string]*DecisionRelease{},
+		Gates:              map[string]*DecisionGateDefinition{},
+		RuleTemplates:      map[string]map[string]any{},
+		Governance:         map[string]any{},
+		Normalized:         n,
 	}
 	b.collectConsts(doc.Items)
+	b.collectRuleTemplates(doc.Items)
 	if n != nil {
 		for k, v := range n.Constants {
 			prog.Constants[k] = v
@@ -403,6 +630,19 @@ func (b *decisionBuilder) build(doc *Document, n *Normalized) *DecisionProgram {
 	b.applyContracts(prog)
 	sort.Strings(prog.Modules)
 	return prog
+}
+
+func (b *decisionBuilder) collectRuleTemplates(nodes []Node) {
+	for _, n := range nodes {
+		block, ok := n.(*Block)
+		if !ok {
+			continue
+		}
+		if block.Type == "rule_template" && block.ID != "" {
+			b.templates[block.ID] = block
+		}
+		b.collectRuleTemplates(block.Body)
+	}
 }
 
 func (b *decisionBuilder) collectConsts(nodes []Node) {
@@ -520,6 +760,26 @@ func (b *decisionBuilder) walk(prog *DecisionProgram, nodes []Node, module strin
 			if d := b.datasetFromBlock(block, module); d != nil {
 				prog.Datasets[d.ID] = d
 			}
+		case "reason_code_catalog":
+			if block.ID != "" {
+				prog.ReasonCodeCatalogs[block.ID] = b.reasonCodeCatalogFromBlock(block)
+			}
+		case "decision_bundle":
+			if bundle := b.bundleFromBlock(block); bundle != nil {
+				prog.Bundles[bundle.ID] = bundle
+			}
+		case "decision_release":
+			if release := b.releaseFromBlock(block); release != nil {
+				prog.Releases[release.ID] = release
+			}
+		case "gate":
+			if gate := b.gateFromBlock(block); gate != nil {
+				prog.Gates[gate.ID] = gate
+			}
+		case "rule_template":
+			if block.ID != "" {
+				prog.RuleTemplates[block.ID] = b.ruleTemplateBodyFromBlock(block)
+			}
 		case "action":
 			if block.ID != "" {
 				prog.Actions[block.ID] = b.nodesToBody(block.Body)
@@ -543,6 +803,10 @@ func (b *decisionBuilder) decisionFromPolicy(block *Block, module string) *Decis
 		return nil
 	}
 	d := &DecisionDefinition{ID: block.ID, Module: module, Default: "deny", Strategy: "deny_overrides", Span: block.Span, Metadata: map[string]any{}}
+	d.Params = append(d.Params, b.decisionParamsFromNodes(block.Body)...)
+	if approval := b.approvalFromNodes(block.Body); len(approval) > 0 {
+		d.Metadata["approval"] = approval
+	}
 	for i := 0; i < len(block.Body); i++ {
 		a, ok := block.Body[i].(*Assignment)
 		if !ok {
@@ -630,6 +894,10 @@ func (b *decisionBuilder) mergeDecisionTable(prog *DecisionProgram, block *Block
 	if d.Metadata == nil {
 		d.Metadata = map[string]any{}
 	}
+	d.Params = appendDecisionParams(d.Params, b.decisionParamsFromNodes(block.Body)...)
+	if approval := b.approvalFromNodes(block.Body); len(approval) > 0 {
+		d.Metadata["approval"] = approval
+	}
 	for _, n := range block.Body {
 		a, ok := n.(*Assignment)
 		if !ok {
@@ -646,37 +914,15 @@ func (b *decisionBuilder) mergeDecisionTable(prog *DecisionProgram, block *Block
 			if strategy := scalarString(b.compiler.value(a.Value)); strategy != "" {
 				d.Strategy = strategy
 			}
+		case "hit_policy":
+			if policy := scalarString(b.compiler.value(a.Value)); policy != "" {
+				d.Metadata["hit_policy"] = policy
+				d.Strategy = strategyForHitPolicy(policy)
+			}
 		}
 	}
-	for _, n := range block.Body {
-		row, ok := n.(*Block)
-		if !ok || row.Type != "row" {
-			continue
-		}
-		r := DecisionRule{ID: row.ID, Source: "decision_table", Order: b.nextOrder(), Span: row.Span}
-		for _, item := range row.Body {
-			a, ok := item.(*Assignment)
-			if !ok {
-				continue
-			}
-			switch a.Name {
-			case "priority":
-				r.Priority = intValue(b.compiler.value(a.Value))
-			case "phase":
-				r.Phase = scalarString(b.compiler.value(a.Value))
-			case "when":
-				r.Condition = b.conditionValue(a.Value)
-			case "then":
-				r.Then = b.valueObject(a.Value)
-				r.Effect = decisionEffectFromThen(r.Then)
-			case "effect", "decision":
-				r.Effect = scalarString(b.compiler.value(a.Value))
-			case "reason":
-				r.Reason = scalarString(b.compiler.value(a.Value))
-			default:
-				b.applyDecisionRuleMetadata(&r, a)
-			}
-		}
+	for _, row := range b.decisionRuleBlocks(block.Body, "row") {
+		r := b.decisionRuleFromBlock(row, "decision_table")
 		if r.ID == "" {
 			r.ID = fmt.Sprintf("row-%d", r.Order)
 		}
@@ -694,6 +940,13 @@ func (b *decisionBuilder) mergeRuleSet(prog *DecisionProgram, block *Block, modu
 		d = &DecisionDefinition{ID: block.ID, Module: module, Default: "deny", Strategy: "deny_overrides", Metadata: map[string]any{}, Span: block.Span}
 		prog.Decisions[d.ID] = d
 	}
+	if d.Metadata == nil {
+		d.Metadata = map[string]any{}
+	}
+	d.Params = appendDecisionParams(d.Params, b.decisionParamsFromNodes(block.Body)...)
+	if approval := b.approvalFromNodes(block.Body); len(approval) > 0 {
+		d.Metadata["approval"] = approval
+	}
 	for _, n := range block.Body {
 		a, ok := n.(*Assignment)
 		if !ok {
@@ -706,33 +959,8 @@ func (b *decisionBuilder) mergeRuleSet(prog *DecisionProgram, block *Block, modu
 			}
 		}
 	}
-	for _, n := range block.Body {
-		child, ok := n.(*Block)
-		if !ok || child.Type != "rule" {
-			continue
-		}
-		r := DecisionRule{ID: child.ID, Source: "rule_set", Order: b.nextOrder(), Span: child.Span}
-		for _, item := range child.Body {
-			a, ok := item.(*Assignment)
-			if !ok {
-				continue
-			}
-			switch a.Name {
-			case "priority":
-				r.Priority = intValue(b.compiler.value(a.Value))
-			case "phase":
-				r.Phase = scalarString(b.compiler.value(a.Value))
-			case "when":
-				r.Condition = b.conditionValue(a.Value)
-			case "then":
-				r.Then = b.valueObject(a.Value)
-				r.Effect = decisionEffectFromThen(r.Then)
-			case "reason":
-				r.Reason = scalarString(b.compiler.value(a.Value))
-			default:
-				b.applyDecisionRuleMetadata(&r, a)
-			}
-		}
+	for _, child := range b.decisionRuleBlocks(block.Body, "rule") {
+		r := b.decisionRuleFromBlock(child, "rule_set")
 		d.Rules = append(d.Rules, r)
 	}
 	sortDecisionRules(d.Rules)
@@ -762,6 +990,12 @@ func (b *decisionBuilder) inlineRuleFrom(nodes []Node, i int, a *Assignment, sou
 		case "reason":
 			rule.Reason = scalarString(b.compiler.value(aa.Value))
 			next = j
+		case "reason_code":
+			rule.ReasonCode = scalarString(b.compiler.value(aa.Value))
+			next = j
+		case "tags":
+			rule.Tags = stringList(b.compiler.value(aa.Value))
+			next = j
 		case "priority":
 			rule.Priority = intValue(b.compiler.value(aa.Value))
 			next = j
@@ -776,6 +1010,225 @@ func (b *decisionBuilder) inlineRuleFrom(nodes []Node, i int, a *Assignment, sou
 		}
 	}
 	return rule, next
+}
+
+func (b *decisionBuilder) decisionRuleBlocks(nodes []Node, want string) []*Block {
+	var out []*Block
+	for _, n := range nodes {
+		child, ok := n.(*Block)
+		if !ok {
+			continue
+		}
+		if child.Type == want {
+			out = append(out, child)
+			continue
+		}
+		if child.Type == "use" && strings.HasPrefix(child.ID, "rule_template.") {
+			out = append(out, b.expandRuleTemplateUse(child, want)...)
+		}
+	}
+	return out
+}
+
+func (b *decisionBuilder) expandRuleTemplateUse(use *Block, want string) []*Block {
+	templateID := strings.TrimPrefix(use.ID, "rule_template.")
+	template := b.templates[templateID]
+	if template == nil {
+		return nil
+	}
+	var out []*Block
+	for _, n := range template.Body {
+		child, ok := n.(*Block)
+		if !ok || child.Type != want {
+			continue
+		}
+		copyBody := make([]Node, 0, len(child.Body)+len(use.Body))
+		copyBody = append(copyBody, child.Body...)
+		copyBody = append(copyBody, use.Body...)
+		id := child.ID
+		if override := scalarString(b.nodesToBody(use.Body)["id"]); override != "" {
+			id = override
+		}
+		if id == "" {
+			id = templateID + "-" + want
+		}
+		out = append(out, &Block{Type: want, ID: templateID + "." + id, Body: copyBody, Span: use.Span})
+	}
+	return out
+}
+
+func (b *decisionBuilder) decisionRuleFromBlock(block *Block, source string) DecisionRule {
+	r := DecisionRule{ID: block.ID, Source: source, Order: b.nextOrder(), Span: block.Span}
+	for _, item := range block.Body {
+		a, ok := item.(*Assignment)
+		if !ok {
+			continue
+		}
+		switch a.Name {
+		case "id":
+			if id := scalarString(b.compiler.value(a.Value)); id != "" && strings.Contains(r.ID, ".") {
+				prefix, _, _ := strings.Cut(r.ID, ".")
+				r.ID = prefix + "." + id
+			}
+		case "priority":
+			r.Priority = intValue(b.compiler.value(a.Value))
+		case "phase":
+			r.Phase = scalarString(b.compiler.value(a.Value))
+		case "when":
+			r.Condition = b.conditionValue(a.Value)
+		case "then":
+			r.Then = b.valueObject(a.Value)
+			r.Effect = decisionEffectFromThen(r.Then)
+		case "effect", "decision":
+			r.Effect = scalarString(b.compiler.value(a.Value))
+		case "reason":
+			r.Reason = scalarString(b.compiler.value(a.Value))
+		case "reason_code":
+			r.ReasonCode = scalarString(b.compiler.value(a.Value))
+		case "tags":
+			r.Tags = stringList(b.compiler.value(a.Value))
+		default:
+			b.applyDecisionRuleMetadata(&r, a)
+		}
+	}
+	return r
+}
+
+func (b *decisionBuilder) reasonCodeCatalogFromBlock(block *Block) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for _, n := range block.Body {
+		child, ok := n.(*Block)
+		if !ok || child.Type != "code" || child.ID == "" {
+			continue
+		}
+		out[child.ID] = b.nodesToBody(child.Body)
+	}
+	return out
+}
+
+func (b *decisionBuilder) bundleFromBlock(block *Block) *DecisionBundle {
+	if block.ID == "" {
+		return nil
+	}
+	body := b.nodesToBody(block.Body)
+	return &DecisionBundle{
+		ID:        block.ID,
+		Decisions: stringList(body["decisions"]),
+		Datasets:  stringList(body["datasets"]),
+		Tests:     stringList(body["tests"]),
+		Release:   scalarString(body["release"]),
+		Approval:  b.approvalFromNodes(block.Body),
+		Metadata:  blockBodyMap(body["metadata"]),
+		Span:      block.Span,
+	}
+}
+
+func (b *decisionBuilder) releaseFromBlock(block *Block) *DecisionRelease {
+	if block.ID == "" {
+		return nil
+	}
+	body := b.nodesToBody(block.Body)
+	return &DecisionRelease{
+		ID:       block.ID,
+		Bundle:   scalarString(body["bundle"]),
+		Version:  scalarString(body["version"]),
+		Stage:    scalarString(body["stage"]),
+		Approval: b.approvalFromNodes(block.Body),
+		Metadata: blockBodyMap(body["metadata"]),
+		Span:     block.Span,
+	}
+}
+
+func (b *decisionBuilder) gateFromBlock(block *Block) *DecisionGateDefinition {
+	if block.ID == "" {
+		return nil
+	}
+	body := b.nodesToBody(block.Body)
+	minPass, _ := numericFloat(body["min_pass_rate"])
+	gate := &DecisionGateDefinition{
+		ID:                block.ID,
+		Bundle:            scalarString(body["bundle"]),
+		Decision:          scalarString(body["decision"]),
+		Dataset:           scalarString(body["dataset"]),
+		MinPassRate:       minPass,
+		MaxDiagnostics:    intValue(body["max_diagnostics"]),
+		NoDefaultOnly:     boolValue(body["no_default_only"]),
+		RequiredRules:     stringList(body["required_rule"]),
+		ForbidTransitions: stringList(body["forbid_transition"]),
+		Metadata:          blockBodyMap(body["metadata"]),
+		Span:              block.Span,
+	}
+	if xs := stringList(body["required_rules"]); len(xs) > 0 {
+		gate.RequiredRules = xs
+	}
+	if xs := stringList(body["forbid_transitions"]); len(xs) > 0 {
+		gate.ForbidTransitions = xs
+	}
+	return gate
+}
+
+func (b *decisionBuilder) ruleTemplateBodyFromBlock(block *Block) map[string]any {
+	body := b.nodesToBody(block.Body)
+	if params := b.decisionParamsFromNodes(block.Body); len(params) > 0 {
+		items := make([]any, 0, len(params))
+		for _, p := range params {
+			items = append(items, map[string]any{"name": p.Name, "type": p.Type, "required": p.Required, "default": p.Default})
+		}
+		body["params"] = items
+	}
+	return body
+}
+
+func (b *decisionBuilder) approvalFromNodes(nodes []Node) map[string]any {
+	for _, n := range nodes {
+		switch x := n.(type) {
+		case *Block:
+			if x.Type == "approval" {
+				return b.nodesToBody(x.Body)
+			}
+		case *Assignment:
+			if x.Name == "approval" {
+				return b.valueObject(x.Value)
+			}
+		}
+	}
+	return nil
+}
+
+func (b *decisionBuilder) decisionParamsFromNodes(nodes []Node) []DecisionParam {
+	var out []DecisionParam
+	for _, n := range nodes {
+		p, ok := n.(*ParamDecl)
+		if !ok {
+			continue
+		}
+		out = append(out, DecisionParam{
+			Name:     p.Name,
+			Type:     p.Type,
+			Required: p.Required,
+			Default:  b.compiler.value(p.Default),
+		})
+	}
+	return out
+}
+
+func appendDecisionParams(base []DecisionParam, extra ...DecisionParam) []DecisionParam {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := map[string]int{}
+	for i, p := range base {
+		seen[p.Name] = i
+	}
+	for _, p := range extra {
+		if idx, ok := seen[p.Name]; ok {
+			base[idx] = p
+			continue
+		}
+		seen[p.Name] = len(base)
+		base = append(base, p)
+	}
+	return base
 }
 
 func (b *decisionBuilder) applyDecisionRuleMetadata(rule *DecisionRule, a *Assignment) {
@@ -936,10 +1389,25 @@ func isInlineDecisionEffect(a *Assignment, b *decisionBuilder) bool {
 		return false
 	}
 	switch a.Name {
-	case "default", "effect", "priority", "phase", "when", "then", "reason", "version", "status", "effective_from", "effective_until", "owner", "rationale", "match", "tenant", "actions", "resources":
+	case "default", "effect", "priority", "phase", "when", "then", "reason", "reason_code", "tags", "hit_policy", "version", "status", "effective_from", "effective_until", "owner", "rationale", "match", "tenant", "actions", "resources":
 		return false
 	}
 	return scalarString(b.compiler.value(a.Value)) != ""
+}
+
+func strategyForHitPolicy(policy string) string {
+	switch policy {
+	case "first":
+		return "first_match"
+	case "priority":
+		return "highest_priority"
+	case "collect":
+		return "collect_all"
+	case "unique":
+		return "first_match"
+	default:
+		return policy
+	}
 }
 
 func conditionAfter(nodes []Node, i int, b *decisionBuilder) map[string]any {
@@ -984,18 +1452,27 @@ func decisionRulesHavePhase(rules []DecisionRule) bool {
 }
 
 func EvaluateDecision(program *DecisionProgram, decision string, input map[string]any, opts *Options) (*DecisionResult, error) {
-	return evaluateDecisionInternal(program, decision, input, opts, DecisionEvaluateOptions{Explain: true, ValidateInput: true})
+	verbose := opts != nil && opts.Verbose
+	return evaluateDecisionInternal(program, decision, input, opts, DecisionEvaluateOptions{Explain: true, ValidateInput: true, Verbose: verbose})
 }
 
 func evaluateDecisionInternal(program *DecisionProgram, decision string, input map[string]any, opts *Options, evalOpts DecisionEvaluateOptions) (*DecisionResult, error) {
+	return evaluateDecisionInternalWithStack(program, decision, input, opts, evalOpts, nil)
+}
+
+func evaluateDecisionInternalWithStack(program *DecisionProgram, decision string, input map[string]any, opts *Options, evalOpts DecisionEvaluateOptions, stack map[string]bool) (*DecisionResult, error) {
 	result := &DecisionResult{}
-	if err := evaluateDecisionIntoInternal(program, decision, input, opts, evalOpts, result); err != nil {
+	if err := evaluateDecisionIntoInternalWithStack(program, decision, input, opts, evalOpts, result, stack); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
 func evaluateDecisionIntoInternal(program *DecisionProgram, decision string, input map[string]any, opts *Options, evalOpts DecisionEvaluateOptions, result *DecisionResult) error {
+	return evaluateDecisionIntoInternalWithStack(program, decision, input, opts, evalOpts, result, nil)
+}
+
+func evaluateDecisionIntoInternalWithStack(program *DecisionProgram, decision string, input map[string]any, opts *Options, evalOpts DecisionEvaluateOptions, result *DecisionResult, stack map[string]bool) error {
 	if result == nil {
 		return fmt.Errorf("nil decision result")
 	}
@@ -1007,9 +1484,28 @@ func evaluateDecisionIntoInternal(program *DecisionProgram, decision string, inp
 	if def == nil {
 		return fmt.Errorf("unknown decision %q", decision)
 	}
+	if stack == nil {
+		stack = map[string]bool{}
+	}
+	if stack[decision] {
+		return fmt.Errorf("recursive decision call %q", decision)
+	}
+	stack[decision] = true
+	defer delete(stack, decision)
 	vars := decisionVars(program, input)
 	result.DecisionID = decision
 	result.Effect = firstNonEmpty(def.Default, "deny")
+	if len(def.Params) > 0 {
+		params, paramDiags := resolveDecisionParams(def.Params, input)
+		if len(params) > 0 {
+			vars["param"] = params
+		}
+		result.Diagnostics = append(result.Diagnostics, paramDiags...)
+		if len(result.Diagnostics) > 0 && evalOpts.Strict {
+			result.Allowed = result.Effect == "allow"
+			return nil
+		}
+	}
 	if evalOpts.ValidateInput {
 		result.Diagnostics = append(result.Diagnostics, validateDecisionInput(program, decision, input, opts)...)
 		if len(result.Diagnostics) > 0 && evalOpts.Strict {
@@ -1020,10 +1516,12 @@ func evaluateDecisionIntoInternal(program *DecisionProgram, decision string, inp
 	strategy := firstNonEmpty(def.Strategy, "deny_overrides")
 	explain := evalOpts.Explain
 	evalTime := decisionEvaluationTime(input)
+	conditionOpts := decisionEvalOptions(opts, program, input, evalOpts, stack, result)
 	directSelect := strategy == "first_match" || strategy == "highest_priority"
 	var selectedDirect DecisionRule
 	hasSelectedDirect := false
 	var matchedPolicies []DecisionRule
+	var matchedSelectable []DecisionRule
 	for _, rule := range def.Rules {
 		if ok, msg := decisionRuleActive(rule, evalTime); !ok {
 			if explain {
@@ -1035,7 +1533,7 @@ func evaluateDecisionIntoInternal(program *DecisionProgram, decision string, inp
 		ok := true
 		if rule.Condition != nil {
 			var err error
-			ok, err = evalNormalizedCondition(rule.Condition, vars, opts)
+			ok, err = evalNormalizedCondition(rule.Condition, vars, conditionOpts)
 			if err != nil {
 				result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: err.Error(), Span: rule.Span})
 				if explain {
@@ -1055,7 +1553,7 @@ func evaluateDecisionIntoInternal(program *DecisionProgram, decision string, inp
 		}
 		if explain {
 			result.Trace = append(result.Trace, rule.ID+": matched")
-			result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Phase: rule.Phase, Status: "matched", Effect: rule.Effect, Reason: rule.Reason, Priority: rule.Priority, ConditionResult: boolPtr(true)})
+			result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Phase: rule.Phase, Status: "matched", Effect: rule.Effect, Reason: rule.Reason, ReasonCode: rule.ReasonCode, Tags: rule.Tags, Priority: rule.Priority, ConditionResult: boolPtr(true)})
 		}
 		if rule.Source == "rule_set" || rule.Effect == "" && rule.Then != nil {
 			summary := applyDecisionRule(result, rule, opts)
@@ -1065,6 +1563,7 @@ func evaluateDecisionIntoInternal(program *DecisionProgram, decision string, inp
 			continue
 		}
 		if rule.Effect != "" {
+			matchedSelectable = append(matchedSelectable, rule)
 			if directSelect {
 				if !hasSelectedDirect {
 					selectedDirect = rule
@@ -1075,18 +1574,25 @@ func evaluateDecisionIntoInternal(program *DecisionProgram, decision string, inp
 			}
 		}
 	}
+	if scalarString(def.Metadata["hit_policy"]) == "unique" && len(matchedSelectable) > 1 {
+		ids := make([]string, 0, len(matchedSelectable))
+		for _, rule := range matchedSelectable {
+			ids = append(ids, rule.ID)
+		}
+		result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q unique hit policy matched multiple rules: %s", decision, strings.Join(ids, ", "))})
+	}
 	if directSelect && hasSelectedDirect {
 		summary := applyDecisionRule(result, selectedDirect, opts)
 		if explain {
 			appendApplyTrace(result, selectedDirect, summary)
-			result.Explain = append(result.Explain, DecisionTrace{RuleID: selectedDirect.ID, Source: selectedDirect.Source, Phase: selectedDirect.Phase, Status: "selected", Effect: selectedDirect.Effect, Reason: selectedDirect.Reason, Priority: selectedDirect.Priority})
+			result.Explain = append(result.Explain, DecisionTrace{RuleID: selectedDirect.ID, Source: selectedDirect.Source, Phase: selectedDirect.Phase, Status: "selected", Effect: selectedDirect.Effect, Reason: selectedDirect.Reason, ReasonCode: selectedDirect.ReasonCode, Tags: selectedDirect.Tags, Priority: selectedDirect.Priority})
 		}
 	} else {
 		for _, selected := range chooseDecisionPolicies(strategy, matchedPolicies) {
 			summary := applyDecisionRule(result, selected, opts)
 			if explain {
 				appendApplyTrace(result, selected, summary)
-				result.Explain = append(result.Explain, DecisionTrace{RuleID: selected.ID, Source: selected.Source, Phase: selected.Phase, Status: "selected", Effect: selected.Effect, Reason: selected.Reason, Priority: selected.Priority})
+				result.Explain = append(result.Explain, DecisionTrace{RuleID: selected.ID, Source: selected.Source, Phase: selected.Phase, Status: "selected", Effect: selected.Effect, Reason: selected.Reason, ReasonCode: selected.ReasonCode, Tags: selected.Tags, Priority: selected.Priority})
 			}
 		}
 	}
@@ -1098,6 +1604,7 @@ func evaluateDecisionIntoInternal(program *DecisionProgram, decision string, inp
 	if !evalOpts.Explain {
 		result.Explain = nil
 	}
+	result.ExplainGraph = decisionExplainGraph(result)
 	return nil
 }
 
@@ -1238,6 +1745,96 @@ func decisionVars(program *DecisionProgram, input map[string]any) map[string]any
 	return vars
 }
 
+func resolveDecisionParams(params []DecisionParam, input map[string]any) (map[string]any, []Diagnostic) {
+	out := map[string]any{}
+	var diags []Diagnostic
+	for _, p := range params {
+		if p.Name == "" {
+			continue
+		}
+		value := lookup(input, "params."+p.Name)
+		if value == nil {
+			value = lookup(input, "context.params."+p.Name)
+		}
+		if value == nil {
+			value = p.Default
+		}
+		if value == nil {
+			if p.Required {
+				diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("decision param %q is required", p.Name)})
+			}
+			continue
+		}
+		if p.Type != "" && !runtimeTypeMatches(p.Type, value) {
+			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("decision param %q should be %s", p.Name, p.Type)})
+			continue
+		}
+		out[p.Name] = value
+	}
+	return out, diags
+}
+
+func decisionEvalOptions(opts *Options, program *DecisionProgram, input map[string]any, evalOpts DecisionEvaluateOptions, stack map[string]bool, current *DecisionResult) *Options {
+	cp := &Options{}
+	if opts != nil {
+		*cp = *opts
+	}
+	funcs := map[string]EvalFunction{}
+	if opts != nil {
+		for k, v := range opts.EvalFunctions {
+			funcs[k] = v
+		}
+	}
+	funcs["decision"] = func(args []any, _ *EvalOptions) (any, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("decision requires 1 argument")
+		}
+		id := scalarString(args[0])
+		if id == "" {
+			id = fmt.Sprint(args[0])
+		}
+		res, err := evaluateDecisionInternalWithStack(program, id, input, cp, evalOpts, cloneBoolMap(stack))
+		if err != nil {
+			if current != nil {
+				current.Diagnostics = append(current.Diagnostics, Diagnostic{Severity: "error", Message: err.Error()})
+			}
+			return nil, err
+		}
+		if current != nil && evalOpts.Explain {
+			current.Explain = append(current.Explain, DecisionTrace{Source: "decision_call", Status: "decision_call", Message: id, Effect: res.Effect, Reason: res.Reason, ReasonCode: res.ReasonCode, Tags: res.Tags})
+		}
+		return decisionResultMap(res), nil
+	}
+	cp.EvalFunctions = funcs
+	return cp
+}
+
+func cloneBoolMap(in map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func decisionResultMap(result *DecisionResult) map[string]any {
+	if result == nil {
+		return nil
+	}
+	return map[string]any{
+		"decision_id": result.DecisionID,
+		"effect":      result.Effect,
+		"allowed":     result.Allowed,
+		"policy_id":   result.PolicyID,
+		"reason":      result.Reason,
+		"reason_code": result.ReasonCode,
+		"tags":        append([]string(nil), result.Tags...),
+		"score":       result.Score,
+		"attributes":  result.Attributes,
+		"metadata":    result.Metadata,
+	}
+}
+
 func decisionEvaluationTime(input map[string]any) time.Time {
 	for _, path := range []string{"time.now", "context.time.now"} {
 		if t, ok := parseDecisionTime(lookup(input, path)); ok {
@@ -1302,6 +1899,8 @@ func applyDecisionRule(result *DecisionResult, rule DecisionRule, opts *Options)
 		result.Effect = rule.Effect
 		result.PolicyID = rule.ID
 		result.Reason = rule.Reason
+		result.ReasonCode = rule.ReasonCode
+		result.Tags = append([]string(nil), rule.Tags...)
 	}
 	if rule.Then != nil {
 		if effect := scalarString(lookup(rule.Then, "decision")); effect != "" {
@@ -1351,6 +1950,45 @@ func appendApplyTrace(result *DecisionResult, rule DecisionRule, summary decisio
 	}
 }
 
+func decisionExplainGraph(result *DecisionResult) []DecisionExplainNode {
+	if result == nil || len(result.Explain) == 0 {
+		return nil
+	}
+	nodes := make([]DecisionExplainNode, 0, len(result.Explain)+1)
+	root := "decision:" + result.DecisionID
+	nodes = append(nodes, DecisionExplainNode{ID: root, Kind: "decision", Label: result.DecisionID, Status: result.Effect, Details: map[string]any{"effect": result.Effect, "policy_id": result.PolicyID}})
+	for i, step := range result.Explain {
+		kind := "trace"
+		switch step.Status {
+		case "matched", "selected", "skipped", "error", "skipped_effective_window":
+			kind = "rule"
+		case "score":
+			kind = "score"
+		case "action", "event", "obligation", "advice":
+			kind = step.Status
+		case "decision_call":
+			kind = "decision_call"
+		}
+		id := fmt.Sprintf("%s:%d", kind, i)
+		label := firstNonEmpty(step.RuleID, step.Action, step.Event, step.Message, step.Status)
+		details := map[string]any{"status": step.Status}
+		if step.Effect != "" {
+			details["effect"] = step.Effect
+		}
+		if step.ReasonCode != "" {
+			details["reason_code"] = step.ReasonCode
+		}
+		if len(step.Tags) > 0 {
+			details["tags"] = step.Tags
+		}
+		if step.ScoreDelta != 0 {
+			details["score_delta"] = step.ScoreDelta
+		}
+		nodes = append(nodes, DecisionExplainNode{ID: id, Kind: kind, Label: label, RuleID: step.RuleID, Status: step.Status, Parent: root, Details: details})
+	}
+	return nodes
+}
+
 func applyDecisionOutcome(result *DecisionResult, rule DecisionRule) {
 	then := rule.Then
 	outcome := blockBodyMap(then["outcome"])
@@ -1360,6 +1998,12 @@ func applyDecisionOutcome(result *DecisionResult, rule DecisionRule) {
 	}
 	if reason := scalarString(outcome["reason"]); reason != "" {
 		result.Reason = reason
+	}
+	if reasonCode := firstNonEmpty(scalarString(outcome["reason_code"]), rule.ReasonCode); reasonCode != "" {
+		result.ReasonCode = reasonCode
+	}
+	if len(rule.Tags) > 0 {
+		result.Tags = append([]string(nil), rule.Tags...)
 	}
 	if attrs := firstNonEmptyDecisionMap(decisionMapValue(outcome["attributes"]), blockBodyMap(outcome["attributes"]), blockBodyMap(then["attributes"])); len(attrs) > 0 {
 		if result.Attributes == nil {
@@ -1394,6 +2038,8 @@ func normalizedDecisionOutcome(result *DecisionResult) *DecisionOutcome {
 	result.Outcome.Allowed = result.Allowed
 	result.Outcome.PolicyID = result.PolicyID
 	result.Outcome.Reason = result.Reason
+	result.Outcome.ReasonCode = result.ReasonCode
+	result.Outcome.Tags = append([]string(nil), result.Tags...)
 	result.Outcome.Score = result.Score
 	result.Outcome.Attributes = result.Attributes
 	result.Outcome.Metadata = result.Metadata
@@ -1808,6 +2454,17 @@ func scalarString(v any) string {
 	return ""
 }
 
+func boolValue(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case string:
+		return strings.EqualFold(x, "true") || strings.EqualFold(x, "yes")
+	default:
+		return false
+	}
+}
+
 func asAnySlice(v any) []any {
 	switch x := v.(type) {
 	case nil:
@@ -1933,6 +2590,11 @@ func validateDecisionProgram(prog *DecisionProgram) []Diagnostic {
 				}
 			}
 			diags = append(diags, validateDecisionActionPayloads(id, rule)...)
+			if rule.ReasonCode != "" {
+				if catalog := prog.ReasonCodeCatalogs[id]; len(catalog) > 0 && catalog[rule.ReasonCode] == nil {
+					diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q rule %q references unknown reason code %q", id, rule.ID, rule.ReasonCode), Span: rule.Span})
+				}
+			}
 		}
 		diags = append(diags, validateDecisionRuleAnalysis(id, d, prog)...)
 	}
@@ -1969,7 +2631,129 @@ func validateDecisionProgram(prog *DecisionProgram) []Diagnostic {
 			}
 		}
 	}
+	diags = append(diags, validateDecisionBundlesAndReleases(prog)...)
+	diags = append(diags, validateDecisionDependencyCycles(prog)...)
 	return diags
+}
+
+func validateDecisionBundlesAndReleases(prog *DecisionProgram) []Diagnostic {
+	var diags []Diagnostic
+	for id, bundle := range prog.Bundles {
+		if bundle == nil {
+			continue
+		}
+		for _, decisionID := range bundle.Decisions {
+			if prog.Decisions[decisionID] == nil {
+				diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("decision bundle %q references unknown decision %q", id, decisionID), Span: bundle.Span})
+			}
+		}
+		for _, datasetID := range bundle.Datasets {
+			if prog.Datasets[datasetID] == nil {
+				diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("decision bundle %q references unknown dataset %q", id, datasetID), Span: bundle.Span})
+			}
+		}
+	}
+	for id, release := range prog.Releases {
+		if release == nil {
+			continue
+		}
+		if release.Bundle != "" && prog.Bundles[release.Bundle] == nil {
+			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("decision release %q references unknown bundle %q", id, release.Bundle), Span: release.Span})
+		}
+		stage := strings.ToLower(release.Stage)
+		if stage == "prod" || stage == "production" {
+			if approvalStatus(release.Approval) != "approved" {
+				diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("production release %q is not approved", id), Span: release.Span})
+			}
+			if bundle := prog.Bundles[release.Bundle]; bundle != nil {
+				if approvalStatus(bundle.Approval) != "approved" {
+					diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("production release %q uses unapproved bundle %q", id, release.Bundle), Span: bundle.Span})
+				}
+				for _, decisionID := range bundle.Decisions {
+					if d := prog.Decisions[decisionID]; d != nil && approvalStatus(blockBodyMap(d.Metadata["approval"])) != "approved" {
+						diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("production release %q includes unapproved decision %q", id, decisionID), Span: d.Span})
+					}
+				}
+			}
+		}
+	}
+	for id, catalog := range prog.ReasonCodeCatalogs {
+		used := map[string]bool{}
+		if d := prog.Decisions[id]; d != nil {
+			for _, rule := range d.Rules {
+				if rule.ReasonCode != "" {
+					used[rule.ReasonCode] = true
+				}
+			}
+		}
+		for code := range catalog {
+			if !used[code] {
+				diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q reason code %q is unused", id, code)})
+			}
+		}
+	}
+	return diags
+}
+
+func approvalStatus(approval map[string]any) string {
+	return strings.ToLower(scalarString(approval["status"]))
+}
+
+func validateDecisionDependencyCycles(prog *DecisionProgram) []Diagnostic {
+	graph := map[string][]string{}
+	for id, d := range prog.Decisions {
+		for _, rule := range d.Rules {
+			for _, expr := range conditionExprs(rule.Condition) {
+				graph[id] = append(graph[id], decisionCallRefsFromExpr(expr)...)
+			}
+		}
+	}
+	var diags []Diagnostic
+	visiting := map[string]bool{}
+	visited := map[string]bool{}
+	var dfs func(string, []string)
+	dfs = func(id string, path []string) {
+		if visiting[id] {
+			diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision dependency cycle detected: %s -> %s", strings.Join(path, " -> "), id)})
+			return
+		}
+		if visited[id] {
+			return
+		}
+		visiting[id] = true
+		for _, next := range graph[id] {
+			dfs(next, append(path, id))
+		}
+		visiting[id] = false
+		visited[id] = true
+	}
+	for id := range graph {
+		dfs(id, nil)
+	}
+	return diags
+}
+
+func decisionCallRefsFromExpr(expr string) []string {
+	var out []string
+	for {
+		idx := strings.Index(expr, `decision("`)
+		quote := `"`
+		if idx < 0 {
+			idx = strings.Index(expr, `decision('`)
+			quote = `'`
+		}
+		if idx < 0 {
+			break
+		}
+		rest := expr[idx+len(`decision(`)+1:]
+		end := strings.Index(rest, quote)
+		if end < 0 {
+			break
+		}
+		out = append(out, rest[:end])
+		expr = rest[end+1:]
+	}
+	return out
 }
 
 func validateDecisionRuleAnalysis(id string, d *DecisionDefinition, prog *DecisionProgram) []Diagnostic {
@@ -1983,6 +2767,15 @@ func validateDecisionRuleAnalysis(id string, d *DecisionDefinition, prog *Decisi
 				a, b := d.Rules[i], d.Rules[j]
 				if a.Priority == b.Priority && a.Effect != "" && b.Effect != "" && a.Effect != b.Effect && rulesMayOverlap(a, b) {
 					diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q has ambiguous same-priority rules %q/%q", id, a.ID, b.ID), Span: b.Span})
+				}
+			}
+		}
+	}
+	if scalarString(d.Metadata["hit_policy"]) == "unique" {
+		for i := 0; i < len(d.Rules); i++ {
+			for j := i + 1; j < len(d.Rules); j++ {
+				if d.Rules[i].Effect != "" && d.Rules[j].Effect != "" && rulesMayOverlap(d.Rules[i], d.Rules[j]) {
+					diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q unique hit policy may match multiple rules %q/%q", id, d.Rules[i].ID, d.Rules[j].ID), Span: d.Rules[j].Span})
 				}
 			}
 		}
@@ -2373,7 +3166,7 @@ func validateDecisionActionPayloads(decisionID string, rule DecisionRule) []Diag
 		return nil
 	}
 	var diags []Diagnostic
-	for _, key := range []string{"action", "event"} {
+	for _, key := range []string{"action", "event", "obligation", "advice"} {
 		for _, item := range asAnySlice(rule.Then[key]) {
 			if scalarString(item) != "" {
 				continue
@@ -2415,7 +3208,8 @@ func ReadDecisionScenarioFile(path string) (*DecisionScenario, error) {
 }
 
 func EvaluateDecisionScenario(program *DecisionProgram, scenario *DecisionScenario, opts *Options) (*DecisionScenarioResult, error) {
-	return evaluateDecisionScenarioInternal(program, scenario, opts, DecisionEvaluateOptions{Explain: true, ValidateInput: true})
+	verbose := opts != nil && opts.Verbose
+	return evaluateDecisionScenarioInternal(program, scenario, opts, DecisionEvaluateOptions{Explain: true, ValidateInput: true, Verbose: verbose})
 }
 
 func EvaluateDecisionBatch(program *DecisionProgram, decisionID string, cases []DecisionBatchCase, opts *Options) (*DecisionBatchReport, error) {
@@ -2426,16 +3220,19 @@ func EvaluateDecisionBatch(program *DecisionProgram, decisionID string, cases []
 		return nil, fmt.Errorf("missing decision id")
 	}
 	report := &DecisionBatchReport{
-		DecisionID:    decisionID,
-		EffectCounts:  map[string]int{},
-		RuleHitCounts: map[string]int{},
+		DecisionID:         decisionID,
+		EffectCounts:       map[string]int{},
+		RuleHitCounts:      map[string]int{},
+		MatchedRuleCounts:  map[string]int{},
+		SelectedRuleCounts: map[string]int{},
 	}
 	for i, c := range cases {
 		id := c.ID
 		if id == "" {
 			id = fmt.Sprintf("case-%d", i+1)
 		}
-		result, err := EvaluateDecision(program, decisionID, c.Input, opts)
+		verbose := opts != nil && opts.Verbose
+		result, err := evaluateDecisionInternal(program, decisionID, c.Input, opts, DecisionEvaluateOptions{Explain: true, ValidateInput: true, Verbose: verbose})
 		cr := DecisionBatchCaseResult{ID: id, Result: result, Passed: true}
 		if err != nil {
 			cr.Passed = false
@@ -2447,22 +3244,38 @@ func EvaluateDecisionBatch(program *DecisionProgram, decisionID string, cases []
 		}
 		report.EffectCounts[result.Effect]++
 		for _, step := range result.Explain {
-			if step.RuleID != "" && (step.Status == "matched" || step.Status == "selected") {
+			if step.RuleID == "" {
+				continue
+			}
+			switch step.Status {
+			case "matched":
+				report.MatchedRuleCounts[step.RuleID]++
+				report.RuleHitCounts[step.RuleID]++
+			case "selected":
+				report.SelectedRuleCounts[step.RuleID]++
 				report.RuleHitCounts[step.RuleID]++
 			}
 		}
 		cr.DefaultOnly = result.PolicyID == ""
 		if cr.DefaultOnly {
 			report.DefaultOnlyCount++
+			report.DefaultOnlyCases = append(report.DefaultOnlyCases, id)
 		}
 		cr.Diagnostics = append(cr.Diagnostics, result.Diagnostics...)
 		if !decisionBatchExpectationPassed(result, c.Expect, &cr.Diagnostics) || len(result.Diagnostics) > 0 {
 			cr.Passed = false
 			report.FailedCount++
 		}
+		if !verbose {
+			result.Trace = nil
+			result.Explain = nil
+			result.ExplainGraph = nil
+		}
 		report.Diagnostics = append(report.Diagnostics, cr.Diagnostics...)
 		report.Cases = append(report.Cases, cr)
 	}
+	report.HitRules = sortedMapKeys(report.RuleHitCounts)
+	report.UnhitRules = decisionUnhitRules(program, decisionID, report.RuleHitCounts)
 	return report, nil
 }
 
@@ -2481,6 +3294,310 @@ func EvaluateDecisionDataset(program *DecisionProgram, decisionID, datasetID str
 	return EvaluateDecisionBatch(program, decisionID, cases, opts)
 }
 
+func decisionUnhitRules(program *DecisionProgram, decisionID string, hits map[string]int) []string {
+	if program == nil || program.Decisions == nil {
+		return nil
+	}
+	def := program.Decisions[decisionID]
+	if def == nil {
+		return nil
+	}
+	var out []string
+	for _, rule := range def.Rules {
+		if rule.ID != "" && hits[rule.ID] == 0 {
+			out = append(out, rule.ID)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedMapKeys(m map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for k, v := range m {
+		if v > 0 {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func CompareDecisionBatch(base, candidate *DecisionProgram, decisionID string, cases []DecisionBatchCase, opts *Options) (*DecisionCompareReport, error) {
+	compareCases := make([]DecisionBatchCase, 0, len(cases))
+	for _, c := range cases {
+		compareCases = append(compareCases, DecisionBatchCase{ID: c.ID, Input: c.Input})
+	}
+	baseReport, err := EvaluateDecisionBatch(base, decisionID, compareCases, opts)
+	if err != nil {
+		return nil, err
+	}
+	candidateReport, err := EvaluateDecisionBatch(candidate, decisionID, compareCases, opts)
+	if err != nil {
+		return nil, err
+	}
+	report := &DecisionCompareReport{
+		DecisionID:        decisionID,
+		EffectTransitions: map[string]int{},
+		BaseReport:        baseReport,
+		CandidateReport:   candidateReport,
+	}
+	max := len(baseReport.Cases)
+	if len(candidateReport.Cases) > max {
+		max = len(candidateReport.Cases)
+	}
+	for i := 0; i < max; i++ {
+		var baseCase, candCase DecisionBatchCaseResult
+		if i < len(baseReport.Cases) {
+			baseCase = baseReport.Cases[i]
+		}
+		if i < len(candidateReport.Cases) {
+			candCase = candidateReport.Cases[i]
+		}
+		id := firstNonEmpty(baseCase.ID, candCase.ID, fmt.Sprintf("case-%d", i+1))
+		cc := DecisionCompareCase{ID: id, Base: baseCase.Result, Candidate: candCase.Result}
+		if baseCase.Result != nil && candCase.Result != nil {
+			cc.EffectTransition = baseCase.Result.Effect + "->" + candCase.Result.Effect
+			cc.PolicyChanged = baseCase.Result.PolicyID != candCase.Result.PolicyID
+			cc.DiagnosticsDelta = len(candCase.Result.Diagnostics) - len(baseCase.Result.Diagnostics)
+			cc.Changed = baseCase.Result.Effect != candCase.Result.Effect || cc.PolicyChanged || cc.DiagnosticsDelta != 0
+			if cc.Changed {
+				report.ChangedCases = append(report.ChangedCases, id)
+				report.EffectTransitions[cc.EffectTransition]++
+			}
+			if cc.PolicyChanged {
+				report.PolicyChanges++
+			}
+		} else {
+			cc.Changed = true
+			report.ChangedCases = append(report.ChangedCases, id)
+		}
+		cc.Diagnostics = append(cc.Diagnostics, baseCase.Diagnostics...)
+		cc.Diagnostics = append(cc.Diagnostics, candCase.Diagnostics...)
+		report.Diagnostics = append(report.Diagnostics, cc.Diagnostics...)
+		report.Cases = append(report.Cases, cc)
+	}
+	return report, nil
+}
+
+func CompareDecisionDataset(base, candidate *DecisionProgram, decisionID, datasetID string, opts *Options) (*DecisionCompareReport, error) {
+	if base == nil {
+		return nil, fmt.Errorf("nil base decision program")
+	}
+	dataset := base.Datasets[datasetID]
+	if dataset == nil && candidate != nil {
+		dataset = candidate.Datasets[datasetID]
+	}
+	if dataset == nil {
+		return nil, fmt.Errorf("unknown dataset %q", datasetID)
+	}
+	cases := make([]DecisionBatchCase, 0, len(dataset.Records))
+	for _, record := range dataset.Records {
+		cases = append(cases, DecisionBatchCase{ID: record.ID, Input: record.Facts})
+	}
+	return CompareDecisionBatch(base, candidate, decisionID, cases, opts)
+}
+
+func EvaluateDecisionGates(program *DecisionProgram, bundleID string, opts *Options) (*DecisionGateReport, error) {
+	if program == nil {
+		return nil, fmt.Errorf("nil decision program")
+	}
+	report := &DecisionGateReport{BundleID: bundleID, Passed: true}
+	for _, gate := range program.Gates {
+		if gate == nil {
+			continue
+		}
+		if bundleID != "" && gate.Bundle != "" && gate.Bundle != bundleID {
+			continue
+		}
+		if bundleID != "" && gate.Bundle == "" {
+			if bundle := program.Bundles[bundleID]; bundle == nil || !stringIn(gate.Decision, bundle.Decisions) {
+				continue
+			}
+		}
+		result := DecisionGateResult{ID: gate.ID, Passed: true}
+		if gate.Decision == "" || gate.Dataset == "" {
+			result.Passed = false
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("gate %q requires decision and dataset", gate.ID), Span: gate.Span})
+		} else {
+			batch, err := EvaluateDecisionDataset(program, gate.Decision, gate.Dataset, opts)
+			result.Batch = batch
+			if err != nil {
+				result.Passed = false
+				result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: err.Error(), Span: gate.Span})
+			} else {
+				passedCases := len(batch.Cases) - batch.FailedCount
+				passRate := 1.0
+				if len(batch.Cases) > 0 {
+					passRate = float64(passedCases) / float64(len(batch.Cases))
+				}
+				if gate.MinPassRate > 0 && passRate < gate.MinPassRate {
+					result.Passed = false
+					result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("gate %q pass rate %.2f below %.2f", gate.ID, passRate, gate.MinPassRate), Span: gate.Span})
+				}
+				if gate.MaxDiagnostics > 0 && int64(len(batch.Diagnostics)) > gate.MaxDiagnostics {
+					result.Passed = false
+					result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("gate %q diagnostics count %d above %d", gate.ID, len(batch.Diagnostics), gate.MaxDiagnostics), Span: gate.Span})
+				}
+				if gate.NoDefaultOnly && batch.DefaultOnlyCount > 0 {
+					result.Passed = false
+					result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("gate %q has default-only cases", gate.ID), Span: gate.Span})
+				}
+				for _, ruleID := range gate.RequiredRules {
+					if batch.RuleHitCounts[ruleID] == 0 {
+						result.Passed = false
+						result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("gate %q required rule %q was not hit", gate.ID, ruleID), Span: gate.Span})
+					}
+				}
+			}
+		}
+		if !result.Passed {
+			report.Passed = false
+		}
+		report.Diagnostics = append(report.Diagnostics, result.Diagnostics...)
+		report.Results = append(report.Results, result)
+	}
+	if bundleID != "" && len(report.Results) == 0 {
+		report.Diagnostics = append(report.Diagnostics, Diagnostic{Severity: "warning", Message: fmt.Sprintf("bundle %q has no decision gates", bundleID)})
+	}
+	return report, nil
+}
+
+func CounterfactualDecision(program *DecisionProgram, decisionID string, input map[string]any, opts *Options) (*DecisionResult, error) {
+	result, err := EvaluateDecision(program, decisionID, input, opts)
+	if err != nil {
+		return result, err
+	}
+	def := program.Decisions[decisionID]
+	if def == nil {
+		return result, nil
+	}
+	vars := decisionVars(program, input)
+	if params, _ := resolveDecisionParams(def.Params, input); len(params) > 0 {
+		vars["param"] = params
+	}
+	for _, rule := range def.Rules {
+		if traceHasRuleStatus(result.Explain, rule.ID, "matched") {
+			continue
+		}
+		for _, expr := range conditionExprs(rule.Condition) {
+			if suggestion, ok := counterfactualFromExpr(rule.ID, expr, vars); ok {
+				result.Counterfactuals = append(result.Counterfactuals, suggestion)
+				break
+			}
+		}
+		if len(result.Counterfactuals) >= 3 {
+			break
+		}
+	}
+	return result, nil
+}
+
+func DecisionResultObservation(result *DecisionResult, input map[string]any, opts *Options) DecisionObservation {
+	if result == nil {
+		return DecisionObservation{}
+	}
+	payload, _ := json.Marshal(input)
+	sum := sha256.Sum256(payload)
+	obs := DecisionObservation{
+		DecisionID:       result.DecisionID,
+		Effect:           result.Effect,
+		PolicyID:         result.PolicyID,
+		ReasonCode:       result.ReasonCode,
+		Tags:             append([]string(nil), result.Tags...),
+		MatchedRules:     traceRuleIDs(result.Explain, "matched"),
+		SelectedRules:    traceRuleIDs(result.Explain, "selected"),
+		Score:            result.Score,
+		DiagnosticsCount: len(result.Diagnostics),
+		InputHash:        fmt.Sprintf("%x", sum[:]),
+	}
+	if n, ok := intScalarValue(lookup(result.Metadata, "latency_ms")); ok {
+		obs.LatencyMS = int64(n)
+	}
+	return obs
+}
+
+func traceHasRuleStatus(trace []DecisionTrace, ruleID, status string) bool {
+	for _, step := range trace {
+		if step.RuleID == ruleID && step.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func counterfactualFromExpr(ruleID, expr string, vars map[string]any) (DecisionCounterfactual, bool) {
+	for _, op := range []string{" >= ", " <= ", " == ", " != ", " > ", " < "} {
+		idx := strings.Index(expr, op)
+		if idx < 0 {
+			continue
+		}
+		left := strings.TrimSpace(expr[:idx])
+		right := strings.TrimSpace(expr[idx+len(op):])
+		if left == "" || strings.ContainsAny(left, " ()[]{}+-*/%,") {
+			return DecisionCounterfactual{}, false
+		}
+		expected, ok := parsePatternLiteral(right)
+		if !ok {
+			expected = lookup(vars, right)
+			if expected == nil {
+				expected = parseInlineNumber(strings.Trim(right, `"`))
+			}
+		}
+		current := lookup(vars, left)
+		if compareSimple(current, expected, strings.TrimSpace(op)) {
+			return DecisionCounterfactual{}, false
+		}
+		target := expected
+		switch strings.TrimSpace(op) {
+		case "!=":
+			target = fmt.Sprintf("not %v", expected)
+		case ">":
+			if n, ok := numericFloat(expected); ok {
+				target = n + 1
+			}
+		case "<":
+			if n, ok := numericFloat(expected); ok {
+				target = n - 1
+			}
+		}
+		return DecisionCounterfactual{
+			Path:    left,
+			Current: current,
+			Target:  target,
+			Reason:  fmt.Sprintf("make %s satisfy %s", left, strings.TrimSpace(op)),
+			RuleID:  ruleID,
+		}, true
+	}
+	return DecisionCounterfactual{}, false
+}
+
+func compareSimple(left, right any, op string) bool {
+	switch op {
+	case "==":
+		return equalLoose(left, right)
+	case "!=":
+		return !equalLoose(left, right)
+	case ">=", ">", "<=", "<":
+		lf, lok := numericFloat(left)
+		rf, rok := numericFloat(right)
+		if !lok || !rok {
+			return false
+		}
+		switch op {
+		case ">=":
+			return lf >= rf
+		case ">":
+			return lf > rf
+		case "<=":
+			return lf <= rf
+		case "<":
+			return lf < rf
+		}
+	}
+	return false
+}
+
 func decisionBatchExpectationPassed(result *DecisionResult, expect map[string]any, diags *[]Diagnostic) bool {
 	if len(expect) == 0 {
 		return true
@@ -2495,6 +3612,8 @@ func decisionBatchExpectationPassed(result *DecisionResult, expect map[string]an
 			got = result.Allowed
 		case key == "policy_id":
 			got = result.PolicyID
+		case key == "reason_code":
+			got = result.ReasonCode
 		case key == "score":
 			got = result.Score
 		case key == "action":
@@ -2505,6 +3624,14 @@ func decisionBatchExpectationPassed(result *DecisionResult, expect map[string]an
 			got = decisionActionsContain(result.Obligations, scalarString(want))
 		case key == "advice":
 			got = decisionActionsContain(result.Advice, scalarString(want))
+		case key == "matched_rules":
+			got = traceRuleIDs(result.Explain, "matched")
+		case key == "selected_rules":
+			got = traceRuleIDs(result.Explain, "selected")
+		case key == "skipped_rules":
+			got = traceRuleIDs(result.Explain, "skipped")
+		case key == "tags":
+			got = result.Tags
 		case strings.HasPrefix(key, "attributes."):
 			got = lookupMapPath(result.Attributes, strings.TrimPrefix(key, "attributes."))
 		case strings.HasPrefix(key, "metadata."):
@@ -2556,6 +3683,10 @@ func evaluateDecisionScenarioInternal(program *DecisionProgram, scenario *Decisi
 		out.Passed = false
 		out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("expected reason %q", want)})
 	}
+	if want := scalarString(scenario.Expect["reason_code"]); want != "" && result.ReasonCode != want {
+		out.Passed = false
+		out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("expected reason_code %q", want)})
+	}
 	if want, ok := numericFloat(scenario.Expect["score"]); ok && result.Score != want {
 		out.Passed = false
 		out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("expected score %.4f", want)})
@@ -2602,6 +3733,26 @@ func evaluateDecisionScenarioInternal(program *DecisionProgram, scenario *Decisi
 				out.Passed = false
 				out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("expected outcome.metadata.%s %#v", path, want)})
 			}
+		case key == "matched_rules":
+			if !equalStringSet(traceRuleIDs(result.Explain, "matched"), stringList(want)) {
+				out.Passed = false
+				out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: "expected matched_rules"})
+			}
+		case key == "selected_rules":
+			if !equalStringSet(traceRuleIDs(result.Explain, "selected"), stringList(want)) {
+				out.Passed = false
+				out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: "expected selected_rules"})
+			}
+		case key == "skipped_rules":
+			if !equalStringSet(traceRuleIDs(result.Explain, "skipped"), stringList(want)) {
+				out.Passed = false
+				out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: "expected skipped_rules"})
+			}
+		case key == "tags":
+			if !equalStringSet(result.Tags, stringList(want)) {
+				out.Passed = false
+				out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: "expected tags"})
+			}
 		}
 	}
 	if want, ok := scenario.Expect["diagnostics"].(string); ok && want == "none" && len(result.Diagnostics) > 0 {
@@ -2622,6 +3773,35 @@ func decisionActionsContain(actions []DecisionAction, name string) bool {
 		}
 	}
 	return false
+}
+
+func traceRuleIDs(trace []DecisionTrace, status string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, step := range trace {
+		if step.Status == status && step.RuleID != "" && !seen[step.RuleID] {
+			seen[step.RuleID] = true
+			out = append(out, step.RuleID)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func equalStringSet(a, b []string) bool {
+	a = append([]string(nil), a...)
+	b = append([]string(nil), b...)
+	sort.Strings(a)
+	sort.Strings(b)
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func lookupMapPath(m map[string]any, path string) any {

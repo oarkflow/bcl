@@ -1,0 +1,12 @@
+{
+  "member": {
+    "coverage_active": true,
+    "plan": "gold"
+  },
+  "request": {
+    "procedure": "physical_therapy",
+    "urgency": "routine",
+    "medical_necessity_score": 90,
+    "prior_denial": false
+  }
+}

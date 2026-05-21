@@ -1,0 +1,13 @@
+schema healthcare_prior_auth {
+  required member object {
+    required coverage_active bool
+    required plan string
+  }
+
+  required request object {
+    required procedure string
+    required urgency string enum ["routine", "urgent"]
+    required medical_necessity_score number min 0 max 100
+    optional prior_denial bool
+  }
+}

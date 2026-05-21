@@ -1,0 +1,12 @@
+{
+  "policy": {
+    "active": true,
+    "type": "auto"
+  },
+  "claim": {
+    "amount": 2500,
+    "fraud_score": 12,
+    "documentation_complete": true,
+    "loss_type": "auto"
+  }
+}

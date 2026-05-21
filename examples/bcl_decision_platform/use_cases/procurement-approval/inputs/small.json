@@ -1,0 +1,14 @@
+{
+  "request": {
+    "amount": 3000,
+    "category": "office",
+    "department": "people"
+  },
+  "budget": {
+    "available": 10000
+  },
+  "vendor": {
+    "approved": true,
+    "risk_tier": "low"
+  }
+}

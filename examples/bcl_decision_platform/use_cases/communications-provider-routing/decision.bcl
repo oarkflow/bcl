@@ -1,0 +1,212 @@
+import "./decision.schema"
+
+module "communications-provider-routing-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "messaging-platform" domain "communications" }
+
+  reason_code_catalog "communications_provider_routing" {
+    code "COMPLIANCE_REQUIRED" { description "Campaign or transactional message has not passed compliance checks" }
+    code "NO_PROVIDER_REVIEW" { description "No eligible provider can satisfy country, channel, and quality constraints" }
+    code "COMPLIANT_ROUTE_ELIGIBLE" { description "Message passed compliance and is eligible for ranked provider routing" }
+  }
+
+  decision_schema "communications_provider_routing" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  decision_table "communications_provider_routing" {
+    default require_review
+    hit_policy first
+
+    row "deny-unchecked-message" {
+      priority 100
+      status active
+      owner "communications-compliance"
+      rationale "provider routing must not run before message compliance checks"
+      effective_from "2020-01-01"
+      when { message.compliance_checked == false }
+      then {
+        outcome {
+          decision deny
+          reason "message compliance check is required"
+          attributes { route "blocked" queue "compliance" }
+          metadata { severity "high" }
+        }
+        obligation audit_log { category "communications_provider_routing" }
+      }
+      reason "message compliance check is required"
+      reason_code "COMPLIANCE_REQUIRED"
+      tags ["compliance", "block"]
+    }
+
+    row "review-no-provider-market" {
+      priority 60
+      status active
+      owner "messaging-platform"
+      rationale "unsupported markets need network-ops fallback handling"
+      effective_from "2020-01-01"
+      when {
+        any {
+          user.country == "IR"
+          user.country == "KP"
+          message.quality_floor > 0.99
+        }
+      }
+      then {
+        outcome {
+          decision require_review
+          reason "provider fallback review required"
+          attributes { route "fallback-review" queue "network-ops" }
+          metadata { severity "medium" }
+        }
+        advice open_provider_review { team "network-ops" }
+      }
+      reason "provider fallback review required"
+      reason_code "NO_PROVIDER_REVIEW"
+      tags ["fallback", "manual-review"]
+    }
+
+    row "allow-provider-routing" {
+      priority 20
+      status active
+      owner "messaging-platform"
+      rationale "eligible compliant messages can be routed through ranked providers"
+      effective_from "2020-01-01"
+      when { message.compliance_checked == true }
+      then {
+        outcome {
+          decision allow
+          reason "message is compliant and eligible for ranked provider selection"
+          attributes { route "ranked-provider" queue "none" }
+          metadata { severity "low" }
+        }
+      }
+      reason "message is compliant and eligible for ranked provider selection"
+      reason_code "COMPLIANT_ROUTE_ELIGIBLE"
+      tags ["ranking", "provider-selection"]
+    }
+  }
+
+  dataset "communications_providers" {
+    record "sms-np-primary" {
+      provider.active true
+      provider.channel "sms"
+      provider.country "NP"
+      provider.kind "direct-carrier"
+      provider.priority 9
+      provider.cost 0.008
+      provider.quality 0.992
+      provider.latency_penalty 0.12
+    }
+    record "sms-np-economy" {
+      provider.active true
+      provider.channel "sms"
+      provider.country "NP"
+      provider.kind "aggregator"
+      provider.priority 6
+      provider.cost 0.004
+      provider.quality 0.981
+      provider.latency_penalty 0.28
+    }
+    record "email-us-primary" {
+      provider.active true
+      provider.channel "email"
+      provider.country "US"
+      provider.kind "email-api"
+      provider.priority 8
+      provider.cost 0.001
+      provider.quality 0.997
+      provider.latency_penalty 0.05
+    }
+    record "email-global-backup" {
+      provider.active true
+      provider.channel "email"
+      provider.country "GLOBAL"
+      provider.kind "email-api"
+      provider.priority 5
+      provider.cost 0.0005
+      provider.quality 0.985
+      provider.latency_penalty 0.16
+    }
+    record "sms-us-paused" {
+      provider.active false
+      provider.channel "sms"
+      provider.country "US"
+      provider.kind "direct-carrier"
+      provider.priority 10
+      provider.cost 0.007
+      provider.quality 0.999
+      provider.latency_penalty 0.04
+    }
+  }
+
+  ranking "communications_provider_routing" {
+    dataset "communications_providers"
+    selection best
+    priority_path "provider.priority"
+    cost_path "provider.cost"
+
+    rule "provider-active" {
+      when { provider.active == true }
+    }
+
+    rule "message-compliant" {
+      when { message.compliance_checked == true }
+    }
+
+    rule "channel-supported" {
+      when { provider.channel == message.channel }
+    }
+
+    rule "country-supported" {
+      when {
+        any {
+          provider.country == user.country
+          provider.country == "GLOBAL"
+        }
+      }
+    }
+
+    rule "quality-floor" {
+      when { provider.quality >= message.quality_floor }
+    }
+
+    score "delivery-quality" {
+      metric "provider.quality"
+      weight 4
+      normalize 0.9 1
+    }
+
+    score "latency" {
+      metric "provider.latency_penalty"
+      weight -2
+      normalize 0 1
+    }
+  }
+
+  dataset "communications_provider_routing_batch" {
+    record "unchecked" { user.id "u-1" user.country "NP" user.tier "standard" message.channel "sms" message.type "marketing" message.compliance_checked false message.quality_floor 0.98 }
+    record "sms-np" { user.id "u-2" user.country "NP" user.tier "premium" message.channel "sms" message.type "otp" message.compliance_checked true message.quality_floor 0.98 }
+    record "email-us" { user.id "u-3" user.country "US" user.tier "standard" message.channel "email" message.type "transactional" message.compliance_checked true message.quality_floor 0.99 }
+    record "no-provider" { user.id "u-4" user.country "IR" user.tier "standard" message.channel "sms" message.type "otp" message.compliance_checked true message.quality_floor 0.98 }
+  }
+
+  gate "communications_provider_routing_gate" {
+    bundle "communications_provider_routing_bundle"
+    decision "communications_provider_routing"
+    dataset "communications_provider_routing_batch"
+    min_pass_rate 1.0
+    no_default_only true
+    required_rules ["deny-unchecked-message", "review-no-provider-market", "allow-provider-routing"]
+  }
+
+  decision_bundle "communications_provider_routing_bundle" {
+    decisions ["communications_provider_routing"]
+    datasets ["communications_provider_routing_batch", "communications_providers"]
+    approval { status approved approved_by "messaging-governance@example.com" approved_at "2026-05-20T00:00:00Z" }
+    metadata { owner "messaging-platform" }
+  }
+}

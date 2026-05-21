@@ -1,0 +1,72 @@
+import "./decision.schema"
+
+module "iam-access-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "security-platform" domain "iam" }
+
+  reason_code_catalog "iam_access" {
+    code "IDENTITY_BLOCKED" { description "Subject is blocked" }
+    code "PRIVILEGED_REVIEW" { description "Privileged access requires approval" }
+    code "ROLE_ALLOWED" { description "Subject has required role" }
+  }
+
+  decision_schema "iam_access" { effects [allow, deny, require_review] default require_review strategy first_match }
+
+  decision_table "iam_access" {
+    default require_review
+    hit_policy first
+    row "deny-blocked-identity" {
+      priority 100 status active owner "security-platform" rationale "blocked identities cannot access resources" effective_from "2020-01-01"
+      when { subject.blocked == true }
+      then { outcome { decision deny reason "subject is blocked" attributes { route "deny" queue "security" } metadata { severity "critical" } } obligation audit_log { category "iam" } }
+      reason "subject is blocked" reason_code "IDENTITY_BLOCKED" tags ["security", "block"]
+    }
+    row "review-privileged-access" {
+      priority 60 status active owner "security-platform" rationale "privileged access requires approval and MFA" effective_from "2020-01-01"
+      when { any { resource.sensitivity == "high" subject.mfa == false request.action == "admin" } }
+      then { outcome { decision require_review reason "privileged access requires review" attributes { route "access-review" queue "security-approvals" } metadata { severity "high" } } advice require_mfa { method "webauthn" } }
+      reason "privileged access requires review" reason_code "PRIVILEGED_REVIEW" tags ["privileged", "manual-review"]
+    }
+    row "allow-role-access" {
+      priority 20 status active owner "security-platform" rationale "matching role with MFA can access normal resources" effective_from "2020-01-01"
+      when { subject.blocked == false subject.role == resource.required_role subject.mfa == true resource.sensitivity != "high" }
+      then { outcome { decision allow reason "role access allowed" attributes { route "grant" queue "none" } metadata { severity "low" } } }
+      reason "role access allowed" reason_code "ROLE_ALLOWED" tags ["access"]
+    }
+  }
+
+  rule_set "iam_access" {
+    rule "score-privileged-action" {
+      phase score
+      priority 30
+      when { request.action == "admin" }
+      then { score += 30 }
+      reason "privileged action requested"
+    }
+
+    rule "score-high-sensitivity-resource" {
+      phase score
+      priority 20
+      when { resource.sensitivity == "high" }
+      then { score += 25 }
+      reason "high sensitivity resource"
+    }
+
+    rule "score-mfa-present" {
+      phase score
+      priority 10
+      when { subject.mfa == true }
+      then { score += -10 }
+      reason "MFA reduces access risk"
+    }
+  }
+
+  dataset "iam_access_batch" {
+    record "blocked" { subject.blocked true subject.role "analyst" subject.mfa true resource.sensitivity "normal" resource.required_role "analyst" request.action "read" }
+    record "privileged" { subject.blocked false subject.role "admin" subject.mfa false resource.sensitivity "high" resource.required_role "admin" request.action "admin" }
+    record "allowed" { subject.blocked false subject.role "analyst" subject.mfa true resource.sensitivity "normal" resource.required_role "analyst" request.action "read" }
+  }
+  gate "iam_access_gate" { bundle "iam_access_bundle" decision "iam_access" dataset "iam_access_batch" min_pass_rate 1.0 no_default_only true required_rules ["deny-blocked-identity", "review-privileged-access", "allow-role-access"] }
+  decision_bundle "iam_access_bundle" { decisions ["iam_access"] datasets ["iam_access_batch"] approval { status approved approved_by "security-governance@example.com" approved_at "2026-05-20T00:00:00Z" } metadata { owner "security-platform" } }
+}

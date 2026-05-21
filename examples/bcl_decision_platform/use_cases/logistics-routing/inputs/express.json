@@ -1,0 +1,13 @@
+{
+  "shipment": {
+    "hazmat": false,
+    "weight": 20,
+    "service": "express",
+    "destination_zone": "urban"
+  },
+  "carrier": {
+    "hazmat_certified": true,
+    "capacity_available": true,
+    "express_enabled": true
+  }
+}

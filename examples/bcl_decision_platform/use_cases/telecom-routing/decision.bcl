@@ -1,0 +1,64 @@
+import "./decision.schema"
+
+module "telecom-routing-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "messaging-platform" domain "telecom" }
+
+  reason_code_catalog "telecom_routing" {
+    code "COMPLIANCE_BLOCK" { description "Message is not compliance checked" }
+    code "FALLBACK_REVIEW" { description "Destination requires fallback review" }
+    code "PREMIUM_ROUTE" { description "Message can use premium route" }
+  }
+
+  decision_schema "telecom_routing" { effects [allow, deny, require_review] default require_review strategy first_match }
+
+  decision_table "telecom_routing" {
+    default require_review
+    hit_policy first
+    row "deny-unchecked-message" {
+      priority 100 status active owner "telecom-compliance" rationale "messages must pass compliance checks before routing" effective_from "2020-01-01"
+      when { message.compliance_checked == false }
+      then { outcome { decision deny reason "message is not compliance checked" attributes { route "blocked" queue "compliance" } metadata { severity "high" } } obligation audit_log { category "telecom" } }
+      reason "message is not compliance checked" reason_code "COMPLIANCE_BLOCK" tags ["compliance", "block"]
+    }
+    row "review-provider-fallback" {
+      priority 60 status active owner "messaging-platform" rationale "unsupported countries or inactive providers need routing review" effective_from "2020-01-01"
+      when { any { provider.supports_country == false provider.active == false } }
+      then { outcome { decision require_review reason "provider fallback required" attributes { route "fallback-review" queue "network-ops" } metadata { severity "medium" } } advice try_backup_provider { tier "standard" } }
+      reason "provider fallback required" reason_code "FALLBACK_REVIEW" tags ["routing", "manual-review"]
+    }
+    row "allow-premium-route" {
+      priority 20 status active owner "messaging-platform" rationale "priority compliant messages can use premium route" effective_from "2020-01-01"
+      when { message.compliance_checked == true message.priority == "high" provider.active == true provider.supports_country == true }
+      then { outcome { decision allow reason "premium route selected" attributes { route "premium" queue "none" } metadata { severity "low" } } }
+      reason "premium route selected" reason_code "PREMIUM_ROUTE" tags ["routing", "premium"]
+    }
+  }
+
+  dataset "telecom_carrier_paths" {
+    record "np-direct" { provider.active true provider.country "NP" provider.path "direct" provider.priority 9 provider.cost 0.009 provider.delivery_rate 0.992 provider.latency_penalty 0.12 }
+    record "np-roaming" { provider.active true provider.country "NP" provider.path "roaming" provider.priority 6 provider.cost 0.006 provider.delivery_rate 0.982 provider.latency_penalty 0.24 }
+    record "us-direct" { provider.active true provider.country "US" provider.path "direct" provider.priority 8 provider.cost 0.005 provider.delivery_rate 0.995 provider.latency_penalty 0.08 }
+  }
+
+  ranking "telecom_routing" {
+    dataset "telecom_carrier_paths"
+    selection best
+    priority_path "provider.priority"
+    cost_path "provider.cost"
+
+    rule "carrier-active" { when { provider.active == true } }
+    rule "country-path-supported" { when { provider.country == recipient.country } }
+    score "delivery-rate" { metric "provider.delivery_rate" weight 3 normalize 0.8 1 }
+    score "latency" { metric "provider.latency_penalty" weight -1 normalize 0 1 }
+  }
+
+  dataset "telecom_routing_batch" {
+    record "unchecked" { recipient.country "NP" recipient.phone_hash "p1" message.compliance_checked false message.priority "high" provider.active true provider.supports_country true }
+    record "fallback" { recipient.country "BR" recipient.phone_hash "p2" message.compliance_checked true message.priority "normal" provider.active true provider.supports_country false }
+    record "premium" { recipient.country "US" recipient.phone_hash "p3" message.compliance_checked true message.priority "high" provider.active true provider.supports_country true }
+  }
+  gate "telecom_routing_gate" { bundle "telecom_routing_bundle" decision "telecom_routing" dataset "telecom_routing_batch" min_pass_rate 1.0 no_default_only true required_rules ["deny-unchecked-message", "review-provider-fallback", "allow-premium-route"] }
+  decision_bundle "telecom_routing_bundle" { decisions ["telecom_routing"] datasets ["telecom_routing_batch"] approval { status approved approved_by "network-governance@example.com" approved_at "2026-05-20T00:00:00Z" } metadata { owner "messaging-platform" } }
+}

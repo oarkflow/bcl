@@ -1,0 +1,13 @@
+schema support_routing {
+  required ticket object {
+    required severity string enum ["low", "normal", "critical"]
+    required age_hours number min 0
+    required abuse_flag bool
+    optional topic string
+  }
+
+  required customer object {
+    required plan string enum ["free", "pro", "enterprise"]
+  }
+}
+

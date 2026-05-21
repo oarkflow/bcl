@@ -1,0 +1,12 @@
+{
+  "ticket": {
+    "severity": "critical",
+    "age_hours": 2,
+    "abuse_flag": false,
+    "topic": "database"
+  },
+  "customer": {
+    "plan": "enterprise"
+  }
+}
+

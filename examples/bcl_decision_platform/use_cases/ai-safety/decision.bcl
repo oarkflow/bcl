@@ -1,0 +1,72 @@
+import "./decision.schema"
+
+module "ai-safety-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "ai-safety" domain "guardrails" }
+
+  reason_code_catalog "ai_safety" {
+    code "BLOCKED_INTENT" { description "Intent is disallowed by safety policy" }
+    code "HIGH_RISK_REVIEW" { description "High-risk request needs safety review" }
+    code "SAFE_RESPONSE" { description "Request is safe to answer" }
+  }
+
+  decision_schema "ai_safety" { effects [allow, deny, require_review] default require_review strategy first_match }
+
+  decision_table "ai_safety" {
+    default require_review
+    hit_policy first
+    row "deny-blocked-intent" {
+      priority 100 status active owner "ai-safety" rationale "disallowed intents must not be answered" effective_from "2020-01-01"
+      when { any { ai.intent == "malware_generation" ai.intent == "credential_theft" ai.intent == "self_harm_instruction" } }
+      then { outcome { decision deny reason "blocked AI intent" attributes { route "refusal" queue "none" } metadata { severity "critical" } } obligation audit_log { category "ai_safety" } }
+      reason "blocked AI intent" reason_code "BLOCKED_INTENT" tags ["safety", "block"]
+    }
+    row "review-high-risk-request" {
+      priority 60 status active owner "ai-safety" rationale "high-risk uncertain requests need human review" effective_from "2020-01-01"
+      when { ai.risk_score >= 70 ai.confidence < 0.9 }
+      then { outcome { decision require_review reason "high-risk request needs review" attributes { route "safety-review" queue "policy" } metadata { severity "high" } } advice ask_clarifying_question { style "safe_completion" } }
+      reason "high-risk request needs review" reason_code "HIGH_RISK_REVIEW" tags ["manual-review"]
+    }
+    row "allow-safe-request" {
+      priority 20 status active owner "ai-safety" rationale "low-risk requests can be answered" effective_from "2020-01-01"
+      when { ai.risk_score < 40 ai.confidence >= 0.8 }
+      then { outcome { decision allow reason "request is safe to answer" attributes { route "answer" queue "none" } metadata { severity "low" } } }
+      reason "request is safe to answer" reason_code "SAFE_RESPONSE" tags ["safe"]
+    }
+  }
+
+  rule_set "ai_safety" {
+    rule "score-disallowed-intent" {
+      phase score
+      priority 30
+      when { ai.intent == "malware_generation" }
+      then { score += 50 }
+      reason "disallowed model intent"
+    }
+
+    rule "score-high-risk-classifier" {
+      phase score
+      priority 20
+      when { ai.risk_score >= 70 }
+      then { score += 30 }
+      reason "high classifier risk"
+    }
+
+    rule "score-low-confidence" {
+      phase score
+      priority 10
+      when { ai.confidence < 0.8 }
+      then { score += 20 }
+      reason "low safety classifier confidence"
+    }
+  }
+
+  dataset "ai_safety_batch" {
+    record "blocked" { ai.intent "malware_generation" ai.risk_score 95 ai.confidence 0.94 }
+    record "review" { ai.intent "dual_use_security" ai.risk_score 78 ai.confidence 0.72 }
+    record "safe" { ai.intent "benign_help" ai.risk_score 12 ai.confidence 0.95 }
+  }
+  gate "ai_safety_gate" { bundle "ai_safety_bundle" decision "ai_safety" dataset "ai_safety_batch" min_pass_rate 1.0 no_default_only true required_rules ["deny-blocked-intent", "review-high-risk-request", "allow-safe-request"] }
+  decision_bundle "ai_safety_bundle" { decisions ["ai_safety"] datasets ["ai_safety_batch"] approval { status approved approved_by "ai-governance@example.com" approved_at "2026-05-20T00:00:00Z" } metadata { owner "ai-safety" } }
+}

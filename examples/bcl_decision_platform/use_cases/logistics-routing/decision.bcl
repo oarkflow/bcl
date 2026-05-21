@@ -1,0 +1,78 @@
+import "./decision.schema"
+
+module "logistics-routing-catalog" {
+  version "1"
+  environment "example"
+  metadata { owner "logistics-platform" domain "fulfillment" }
+
+  reason_code_catalog "logistics_routing" {
+    code "HAZMAT_BLOCK" { description "Carrier cannot handle hazardous goods" }
+    code "CAPACITY_REVIEW" { description "Shipment needs capacity review" }
+    code "EXPRESS_ROUTE" { description "Shipment can use express route" }
+  }
+
+  decision_schema "logistics_routing" { effects [allow, deny, require_review] default require_review strategy first_match }
+
+  decision_table "logistics_routing" {
+    default require_review
+    hit_policy first
+    row "deny-hazmat-uncertified" {
+      priority 100 status active owner "logistics-risk" rationale "hazmat shipments need certified carriers" effective_from "2020-01-01"
+      when { shipment.hazmat == true carrier.hazmat_certified == false }
+      then { outcome { decision deny reason "carrier is not hazmat certified" attributes { route "blocked" queue "carrier-risk" } metadata { severity "high" } } obligation audit_log { category "logistics" } }
+      reason "carrier is not hazmat certified" reason_code "HAZMAT_BLOCK" tags ["hazmat", "block"]
+    }
+    row "review-capacity-or-heavy" {
+      priority 60 status active owner "logistics-platform" rationale "capacity or heavy shipments require planning review" effective_from "2020-01-01"
+      when { any { shipment.weight > 1000 carrier.capacity_available == false } }
+      then { outcome { decision require_review reason "capacity planning required" attributes { route "capacity-review" queue "dispatch" } metadata { severity "medium" } } advice find_alternate_carrier { mode "ground" } }
+      reason "capacity planning required" reason_code "CAPACITY_REVIEW" tags ["manual-review"]
+    }
+    row "allow-express-route" {
+      priority 20 status active owner "logistics-platform" rationale "express shipments with available capacity can be routed" effective_from "2020-01-01"
+      when { shipment.service == "express" carrier.capacity_available == true carrier.express_enabled == true }
+      then { outcome { decision allow reason "express route selected" attributes { route "express" queue "none" } metadata { severity "low" } } }
+      reason "express route selected" reason_code "EXPRESS_ROUTE" tags ["express"]
+    }
+  }
+
+  dataset "carrier_routes" {
+    record "express-air" { provider.active true provider.mode "air" provider.service "express" provider.hazmat_certified false provider.capacity_available true provider.priority 9 provider.cost 4.5 provider.delivery_score 0.98 }
+    record "certified-ground" { provider.active true provider.mode "ground" provider.service "standard" provider.hazmat_certified true provider.capacity_available true provider.priority 7 provider.cost 2.2 provider.delivery_score 0.93 }
+    record "regional-ground" { provider.active true provider.mode "ground" provider.service "standard" provider.hazmat_certified false provider.capacity_available true provider.priority 5 provider.cost 1.4 provider.delivery_score 0.89 }
+  }
+
+  ranking "logistics_routing" {
+    dataset "carrier_routes"
+    selection best
+    priority_path "provider.priority"
+    cost_path "provider.cost"
+
+    rule "route-active" { when { provider.active == true } }
+    rule "service-fit" {
+      when {
+        any {
+          provider.service == shipment.service
+          shipment.service == "standard"
+        }
+      }
+    }
+    rule "hazmat-fit" {
+      when {
+        any {
+          shipment.hazmat == false
+          provider.hazmat_certified == true
+        }
+      }
+    }
+    score "delivery-score" { metric "provider.delivery_score" weight 3 normalize 0.8 1 }
+  }
+
+  dataset "logistics_routing_batch" {
+    record "hazmat-block" { shipment.hazmat true shipment.weight 50 shipment.service "standard" carrier.hazmat_certified false carrier.capacity_available true carrier.express_enabled true }
+    record "capacity-review" { shipment.hazmat false shipment.weight 1200 shipment.service "standard" carrier.hazmat_certified true carrier.capacity_available true carrier.express_enabled true }
+    record "express" { shipment.hazmat false shipment.weight 20 shipment.service "express" carrier.hazmat_certified true carrier.capacity_available true carrier.express_enabled true }
+  }
+  gate "logistics_routing_gate" { bundle "logistics_routing_bundle" decision "logistics_routing" dataset "logistics_routing_batch" min_pass_rate 1.0 no_default_only true required_rules ["deny-hazmat-uncertified", "review-capacity-or-heavy", "allow-express-route"] }
+  decision_bundle "logistics_routing_bundle" { decisions ["logistics_routing"] datasets ["logistics_routing_batch"] approval { status approved approved_by "logistics-governance@example.com" approved_at "2026-05-20T00:00:00Z" } metadata { owner "logistics-platform" } }
+}

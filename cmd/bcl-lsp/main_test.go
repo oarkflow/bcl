@@ -176,6 +176,68 @@ func TestLSPSupportsSchemaFiles(t *testing.T) {
 	}
 }
 
+func TestLSPResolvesImportedDefinitionAndWorkspaceRename(t *testing.T) {
+	dir := t.TempDir()
+	commonPath := filepath.Join(dir, "common.bcl")
+	appPath := filepath.Join(dir, "app.bcl")
+	if err := os.WriteFile(commonPath, []byte(`bcl {
+  version "1.0"
+}
+
+const LIMIT = 10
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := `import "./common.bcl"
+
+policy "p" {
+  max LIMIT
+}
+`
+	if err := os.WriteFile(appPath, []byte(app), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{out: ioDiscard{}, files: map[string]string{}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+	a := s.analyzeURI(pathURI(appPath))
+	target, _, fromRef := s.targetAt(a, pathURI(appPath), position{Line: 3, Character: 7})
+	if !fromRef || target != "LIMIT" {
+		t.Fatalf("expected LIMIT reference target, got target=%q fromRef=%v", target, fromRef)
+	}
+	decl, ok := s.declarationFor(a, target)
+	if !ok {
+		t.Fatal("expected imported declaration")
+	}
+	if !samePath(decl.Span.File, commonPath) {
+		t.Fatalf("definition should point to imported file, got %+v", decl.Span)
+	}
+	edits := s.referenceEdits("LIMIT")
+	if len(edits) != 1 || edits[0].uri != pathURI(appPath) {
+		t.Fatalf("expected workspace reference edit in app file, got %+v", edits)
+	}
+}
+
+func TestLSPCompletionUsesPositionContext(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "decision.bcl")
+	src := `bcl {
+  version "1.0"
+}
+
+decision_table "fraud_aml" {
+  hit_policy first
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{out: ioDiscard{}, files: map[string]string{}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+	a := s.analyzeURI(pathURI(path))
+	items := s.completions(a, pathURI(path), position{Line: 5, Character: len("  hit_policy ")})
+	if !lspCompletionLabelsContain(items, "first", "priority", "collect", "unique") {
+		t.Fatalf("missing hit_policy completions: %+v", items)
+	}
+}
+
 func TestLSPRoutesImportedDiagnosticsToImportedFileURI(t *testing.T) {
 	dir := t.TempDir()
 	appPath := filepath.Join(dir, "app.bcl")
@@ -305,6 +367,25 @@ Migration "b" {
 			t.Fatalf("LSP should resolve imported schemas before validation: %#v", a.Diagnostics)
 		}
 	}
+}
+
+func lspCompletionLabelsContain(items []any, labels ...string) bool {
+	seen := map[string]bool{}
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if label, ok := m["label"].(string); ok {
+			seen[label] = true
+		}
+	}
+	for _, label := range labels {
+		if !seen[label] {
+			return false
+		}
+	}
+	return true
 }
 
 type ioDiscard struct{}
