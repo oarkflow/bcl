@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -525,11 +527,86 @@ func evalOptionsFrom(opts *Options, vars map[string]any) *EvalOptions {
 }
 
 func evalExprBool(expr string, input map[string]any, opts *Options) (bool, error) {
-	v, err := EvalExpr(expr, evalOptionsFrom(opts, input))
+	if ok, handled, err := evalSimpleExprBool(expr, input); handled {
+		return ok, err
+	}
+	eopts := EvalOptions{Variables: input}
+	if opts != nil {
+		eopts.AllowHash = opts.AllowHash
+		eopts.AllowEncoding = opts.AllowEncoding
+		eopts.AllowTime = opts.AllowTime
+		eopts.Functions = opts.EvalFunctions
+	}
+	v, err := EvalExpr(expr, &eopts)
 	if err != nil {
 		return false, err
 	}
 	return truthy(v), nil
+}
+
+func evalSimpleExprBool(expr string, input map[string]any) (bool, bool, error) {
+	if strings.HasPrefix(expr, "match ") || strings.HasPrefix(expr, "match(") {
+		return false, false, nil
+	}
+	for _, op := range []string{" not_in ", " starts_with ", " ends_with ", " contains ", " has_any ", " has_all ", " == ", " != ", " >= ", " <= ", " > ", " < ", " in ", " has "} {
+		idx := strings.Index(expr, op)
+		if idx < 0 {
+			continue
+		}
+		left, ok := simpleExprOperand(strings.TrimSpace(expr[:idx]), input)
+		if !ok {
+			return false, false, nil
+		}
+		right, ok := simpleExprOperand(strings.TrimSpace(expr[idx+len(op):]), input)
+		if !ok {
+			return false, false, nil
+		}
+		v, err := evalOp(strings.TrimSpace(op), left, right)
+		if err != nil {
+			return false, true, err
+		}
+		return truthy(v), true, nil
+	}
+	return false, false, nil
+}
+
+func simpleExprOperand(raw string, input map[string]any) (any, bool) {
+	if raw == "" || strings.ContainsAny(raw, " ()[]{}+-*/%,") {
+		return nil, false
+	}
+	if v, ok := parseSimpleOperandLiteral(raw); ok {
+		return v, true
+	}
+	return lookup(input, raw), true
+}
+
+func parseSimpleOperandLiteral(raw string) (any, bool) {
+	switch raw {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	case "null":
+		return nil, true
+	}
+	if len(raw) >= 2 {
+		q := raw[0]
+		if (q == '"' || q == '\'') && raw[len(raw)-1] == q {
+			if q == '"' {
+				s, err := strconv.Unquote(raw)
+				if err == nil {
+					return s, true
+				}
+			}
+			return raw[1 : len(raw)-1], true
+		}
+	}
+	if strings.Contains(raw, ".") {
+		f, err := strconv.ParseFloat(raw, 64)
+		return f, err == nil
+	}
+	i, err := strconv.ParseInt(raw, 10, 64)
+	return i, err == nil
 }
 
 func blockID(block map[string]any) string {

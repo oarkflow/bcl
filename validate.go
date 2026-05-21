@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -482,26 +483,42 @@ func validateMatchExpressionSyntax(raw string, sp Span, diags *[]Diagnostic) {
 			*diags = append(*diags, Diagnostic{Severity: "error", Message: "invalid match expression", Span: sp})
 			return
 		}
+		hasCatchAll := false
+		catchAllSeen := false
+		literals := map[string]bool{}
 		for _, rawCase := range splitMatchCases(raw[open+1 : close]) {
 			pat, guard, _, err := parseRawCase(rawCase)
 			if err != nil {
 				*diags = append(*diags, Diagnostic{Severity: "error", Message: "invalid match case: " + err.Error(), Span: sp})
 				continue
 			}
-			validatePatternBindings(pat, sp, diags)
+			validateMatchPatternCase(pat, guard, catchAllSeen, literals, sp, diags)
+			if guard == "" && patternIsCatchAll(pat) {
+				catchAllSeen = true
+			}
+			if guard == "" && patternIsCatchAll(pat) {
+				hasCatchAll = true
+			}
 			if guard != "" {
 				if _, err := CompileExpression(guard); err != nil {
 					*diags = append(*diags, Diagnostic{Severity: "error", Message: "invalid match guard: " + err.Error(), Span: sp})
 				}
 			}
 		}
+		if !hasCatchAll {
+			*diags = append(*diags, Diagnostic{Severity: "warning", Message: "match expression has no catch-all case", Span: sp})
+		}
 		return
 	}
 	if strings.HasPrefix(raw, "match(") && strings.HasSuffix(raw, ")") {
 		args := splitTopLevel(raw[len("match("):len(raw)-1], ',')
+		hasCatchAll := false
+		catchAllSeen := false
+		literals := map[string]bool{}
 		for _, arg := range args[1:] {
 			arg = strings.TrimSpace(arg)
 			if !strings.HasPrefix(arg, "case(") || !strings.HasSuffix(arg, ")") {
+				hasCatchAll = true
 				continue
 			}
 			parts := splitTopLevel(arg[len("case("):len(arg)-1], ',')
@@ -510,14 +527,66 @@ func validateMatchExpressionSyntax(raw string, sp Span, diags *[]Diagnostic) {
 				continue
 			}
 			pat, guard := splitPatternGuard(parts[0])
-			validatePatternBindings(pat, sp, diags)
+			validateMatchPatternCase(pat, guard, catchAllSeen, literals, sp, diags)
+			if guard == "" && patternIsCatchAll(pat) {
+				catchAllSeen = true
+			}
+			if guard == "" && patternIsCatchAll(pat) {
+				hasCatchAll = true
+			}
 			if guard != "" {
 				if _, err := CompileExpression(guard); err != nil {
 					*diags = append(*diags, Diagnostic{Severity: "error", Message: "invalid match guard: " + err.Error(), Span: sp})
 				}
 			}
 		}
+		if !hasCatchAll {
+			*diags = append(*diags, Diagnostic{Severity: "warning", Message: "match expression has no catch-all case", Span: sp})
+		}
 	}
+}
+
+func validateMatchPatternCase(pattern, guard string, catchAllSeen bool, literals map[string]bool, sp Span, diags *[]Diagnostic) {
+	if patternHasInvalid(compilePatternNode(pattern)) {
+		*diags = append(*diags, Diagnostic{Severity: "error", Message: "invalid match pattern", Span: sp})
+	}
+	if catchAllSeen {
+		*diags = append(*diags, Diagnostic{Severity: "warning", Message: "unreachable match case after catch-all", Span: sp})
+	}
+	if guard == "" {
+		if lit, ok := parsePatternLiteral(strings.TrimSpace(pattern)); ok {
+			key := fmt.Sprintf("%#v", lit)
+			if literals[key] {
+				*diags = append(*diags, Diagnostic{Severity: "warning", Message: "duplicate match literal case", Span: sp})
+			}
+			literals[key] = true
+		}
+	}
+	validatePatternBindings(pattern, sp, diags)
+	validatePatternAlternativeBindings(pattern, sp, diags)
+}
+
+func patternHasInvalid(node *patternNode) bool {
+	if node == nil {
+		return true
+	}
+	if node.Kind == patternInvalid {
+		return true
+	}
+	if patternHasInvalid(node.Child) && node.Child != nil {
+		return true
+	}
+	for _, child := range node.Children {
+		if patternHasInvalid(child) {
+			return true
+		}
+	}
+	for _, field := range node.Fields {
+		if patternHasInvalid(field.Node) {
+			return true
+		}
+	}
+	return false
 }
 
 func validatePatternBindings(pattern string, sp Span, diags *[]Diagnostic) {
@@ -530,13 +599,77 @@ func validatePatternBindings(pattern string, sp Span, diags *[]Diagnostic) {
 	}
 }
 
+func validatePatternAlternativeBindings(pattern string, sp Span, diags *[]Diagnostic) {
+	alts := splitTopLevel(strings.TrimSpace(pattern), '|')
+	if len(alts) < 2 {
+		return
+	}
+	var base []string
+	for i, alt := range alts {
+		names := patternBindingNames(alt)
+		sortStrings(names)
+		if i == 0 {
+			base = names
+			continue
+		}
+		if !stringSlicesEqual(base, names) {
+			*diags = append(*diags, Diagnostic{Severity: "warning", Message: "pattern alternatives bind different names", Span: sp})
+			return
+		}
+	}
+}
+
+func sortStrings(xs []string) {
+	sort.Strings(xs)
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func patternBindingNames(pattern string) []string {
 	pattern = strings.TrimSpace(pattern)
-	if pattern == "" || pattern == "_" || pattern == "ANY" || pattern == "NONE" {
+	if pattern == "" || pattern == "_" || pattern == "ANY" || pattern == "NONE" || pattern == "NULL" || pattern == "MISSING" {
 		return nil
+	}
+	if alts := splitTopLevel(pattern, '|'); len(alts) > 1 {
+		seen := map[string]bool{}
+		var out []string
+		for _, alt := range alts {
+			for _, name := range patternBindingNames(alt) {
+				if !seen[name] {
+					seen[name] = true
+					out = append(out, name)
+				}
+			}
+		}
+		return out
+	}
+	if strings.HasPrefix(pattern, "not ") {
+		return nil
+	}
+	if parts := splitTopLevelWord(pattern, "as"); len(parts) == 2 {
+		out := patternBindingNames(parts[0])
+		name := strings.TrimSpace(parts[1])
+		if isBindName(name) && name != "_" {
+			out = append(out, name)
+		}
+		return out
 	}
 	if strings.HasPrefix(pattern, "SOME(") && strings.HasSuffix(pattern, ")") {
 		return patternBindingNames(pattern[len("SOME(") : len(pattern)-1])
+	}
+	if (strings.HasPrefix(pattern, "ANY(") || strings.HasPrefix(pattern, "EXISTS(")) && strings.HasSuffix(pattern, ")") {
+		open := strings.IndexByte(pattern, '(')
+		return patternBindingNames(pattern[open+1 : len(pattern)-1])
 	}
 	if strings.HasPrefix(pattern, "ALL(") && strings.HasSuffix(pattern, ")") {
 		return patternBindingNames(pattern[len("ALL(") : len(pattern)-1])
@@ -545,7 +678,14 @@ func patternBindingNames(pattern string) []string {
 		var out []string
 		for _, field := range splitTopLevel(pattern[1:len(pattern)-1], ',') {
 			field = strings.TrimSpace(field)
-			if field == "" || strings.HasPrefix(field, "...") {
+			if field == "" {
+				continue
+			}
+			if strings.HasPrefix(field, "...") {
+				name := strings.TrimSpace(strings.TrimPrefix(field, "..."))
+				if isBindName(name) && name != "_" {
+					out = append(out, name)
+				}
 				continue
 			}
 			parts := splitTopLevel(field, ':')
@@ -559,7 +699,14 @@ func patternBindingNames(pattern string) []string {
 		var out []string
 		for _, item := range splitTopLevel(pattern[1:len(pattern)-1], ',') {
 			item = strings.TrimSpace(item)
-			if item == "" || strings.HasPrefix(item, "...") {
+			if item == "" {
+				continue
+			}
+			if strings.HasPrefix(item, "...") {
+				name := strings.TrimSpace(strings.TrimPrefix(item, "..."))
+				if isBindName(name) && name != "_" {
+					out = append(out, name)
+				}
 				continue
 			}
 			out = append(out, patternBindingNames(item)...)
@@ -573,6 +720,11 @@ func patternBindingNames(pattern string) []string {
 		return []string{pattern}
 	}
 	return nil
+}
+
+func patternIsCatchAll(pattern string) bool {
+	pattern = strings.TrimSpace(pattern)
+	return pattern == "_" || pattern == "ANY"
 }
 
 func validateSchemas(nodes []Node, schemas map[string]*SchemaDecl, aliases map[string]string, diags *[]Diagnostic) {

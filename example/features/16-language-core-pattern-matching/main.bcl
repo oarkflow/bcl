@@ -46,10 +46,61 @@ status_label match(status, case("active", "ok"), case("blocked", "needs_review")
 
 roles ["admin", "editor"]
 roles_are_present roles matches ALL(ANY)
+roles_are_strings match roles {
+  case ALL(role:string) => true
+  case ANY => false
+}
+roles_include_admin match roles {
+  case EXISTS("admin") => true
+  case ANY => false
+}
+roles_include_editor match roles {
+  case ANY("editor") => true
+  case ANY => false
+}
+roles_include_owner match roles {
+  case EXISTS("owner") => true
+  case ANY => false
+}
 
 priority "high"
 priority_label match priority {
   case "critical" | "high" => "fast_lane"
   case p:string => "normal:" + p
   case ANY => "unknown"
+}
+
+tagged_request {
+  kind "loan"
+  tags ["prime", "interactive"]
+  amount 25000
+  risk "low"
+}
+
+tagged_label match tagged_request {
+  case { kind: "loan", tags: ["prime", ...tail], risk: not "blocked", ...rest } => "loan:" + rest.amount + ":" + tail[0]
+  case ANY => "unknown"
+}
+
+blocked_request {
+  kind "loan"
+  tags ["prime"]
+  amount 25000
+  risk "blocked"
+}
+
+blocked_label match blocked_request {
+  case { kind: "loan", risk: not "blocked" } => "eligible"
+  case { risk: "blocked" } => "blocked"
+  case ANY => "unknown"
+}
+
+events [
+  {type "login" ok true}
+  {type "payment" ok false}
+]
+
+has_failed_payment match events {
+  case ANY({type: "payment", ok: false}) => true
+  case ANY => false
 }

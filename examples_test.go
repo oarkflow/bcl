@@ -233,6 +233,47 @@ func TestNextWaveFeatureExampleTestsRun(t *testing.T) {
 	}
 }
 
+func TestCompleteDecisionEssentialsExample(t *testing.T) {
+	prog, err := CompileDecisionFile("examples/bcl/packages/complete_decision_essentials.bcl", &Options{AllowTime: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := EvaluateDecision(prog, "complete_review", map[string]any{
+		"time": map[string]any{"now": "2026-05-20T00:00:00Z"},
+		"customer": map[string]any{
+			"verified":    true,
+			"blacklisted": false,
+			"segment":     "prime",
+		},
+		"request": map[string]any{
+			"kind":    "loan",
+			"amount":  int64(60000),
+			"channel": "mobile",
+			"tags":    []any{"prime", "existing_customer"},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Effect != "allow" || len(result.Obligations) != 1 || len(result.Advice) != 1 {
+		t.Fatalf("complete decision result = %#v", result)
+	}
+	report, err := EvaluateDecisionDataset(prog, "complete_review", "complete_review_batch", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.EffectCounts["allow"] != 1 || report.EffectCounts["deny"] != 1 || report.EffectCounts["require_review"] != 1 {
+		t.Fatalf("complete decision batch report = %#v", report)
+	}
+	suite, err := TestFile("examples/bcl/packages/complete_decision_essentials.bcl", &Options{AllowTime: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !suite.Passed || len(suite.Tests) != 2 {
+		t.Fatalf("complete decision test matrix = %#v", suite)
+	}
+}
+
 func TestExpressionExampleFastPathPredicates(t *testing.T) {
 	doc := mustParsePath(t, "example/expressions.bcl")
 	diags := Validate(doc, &Options{Strict: true})

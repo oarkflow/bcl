@@ -94,6 +94,56 @@ var benchEvalVars = map[string]any{
 	"ADMIN_ROLES": []any{"admin", "superadmin"},
 }
 
+var benchDecisionTable = []byte(`
+module "bench-decision" {
+  decision_schema "review" {
+    effects [allow, deny, require_review]
+    default deny
+    strategy first_match
+  }
+
+  decision_table "review" {
+    default deny
+    strategy first_match
+
+    row "deny-blocked" {
+      phase guard
+      priority 100
+      when { customer.blocked == true }
+      then { decision deny }
+    }
+
+    row "score-large" {
+      phase score
+      priority 50
+      when { request.amount >= 50000 }
+      then { score += 10 }
+    }
+
+    row "allow-prime" {
+      phase decide
+      priority 40
+      when {
+        match(request, case({kind: "loan", tags: EXISTS("prime"), amount: amount:number} if amount <= 75000, true), false)
+        customer.verified == true
+      }
+      then {
+        outcome {
+          decision allow
+          attributes { band "prime" }
+          metadata { queue "auto" }
+        }
+      }
+    }
+  }
+}
+`)
+
+var benchDecisionInput = map[string]any{
+	"customer": map[string]any{"blocked": false, "verified": true},
+	"request":  map[string]any{"kind": "loan", "amount": int64(60000), "tags": []any{"prime", "existing"}},
+}
+
 func BenchmarkParseSmall(b *testing.B) {
 	for b.Loop() {
 		doc, err := Parse(benchSmall)
@@ -232,6 +282,47 @@ func BenchmarkEvalCondition(b *testing.B) {
 			b.Fatal(err)
 		}
 		_ = ok
+	}
+}
+
+func BenchmarkEvaluateDecisionTableOutcome(b *testing.B) {
+	doc, err := Parse(benchDecisionTable)
+	if err != nil {
+		b.Fatal(err)
+	}
+	program, err := CompileDecisionDocument(doc, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	engine := NewDecisionEngine(program, nil)
+	opts := DecisionEvaluateOptions{Explain: false, ValidateInput: false}
+	b.ReportAllocs()
+	for b.Loop() {
+		result, err := engine.EvaluateWithOptions("review", benchDecisionInput, opts)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_ = result
+	}
+}
+
+func BenchmarkEvaluateDecisionTableOutcomeInto(b *testing.B) {
+	doc, err := Parse(benchDecisionTable)
+	if err != nil {
+		b.Fatal(err)
+	}
+	program, err := CompileDecisionDocument(doc, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	engine := NewDecisionEngine(program, nil)
+	opts := DecisionEvaluateOptions{Explain: false, ValidateInput: false}
+	result := &DecisionResult{}
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := engine.EvaluateWithOptionsInto("review", benchDecisionInput, opts, result); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

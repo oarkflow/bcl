@@ -1,6 +1,9 @@
 package bcl
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestExpressionPrecedenceTernaryAndVariables(t *testing.T) {
 	src := []byte(`
@@ -115,5 +118,104 @@ decision match request {
 	diags := Validate(doc, nil)
 	if len(diags) == 0 {
 		t.Fatal("expected duplicate pattern binding diagnostic")
+	}
+}
+
+func TestPatternMatchingAnyExistsRestAndNot(t *testing.T) {
+	vars := map[string]any{
+		"request": map[string]any{
+			"kind":   "loan",
+			"amount": int64(250),
+			"tags":   []any{"prime", "manual"},
+			"risk":   "low",
+		},
+		"roles": []any{"viewer", "admin"},
+	}
+	got, err := EvalExpr(`match request {
+  case { kind: "loan", tags: ANY("prime"), risk: not "blocked", ...rest } => rest.amount
+  case ANY => 0
+}`, &EvalOptions{Variables: vars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != int64(250) {
+		t.Fatalf("object rest/ANY/not match = %#v", got)
+	}
+	got, err = EvalExpr(`match request.tags {
+  case ["prime", ...tail] => tail
+  case ANY => []
+}`, &EvalOptions{Variables: vars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail, ok := got.([]any)
+	if !ok || len(tail) != 1 || tail[0] != "manual" {
+		t.Fatalf("list rest = %#v", got)
+	}
+	got, err = EvalExpr(`match roles {
+  case EXISTS("admin") => "privileged"
+  case ANY => "ordinary"
+}`, &EvalOptions{Variables: vars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "privileged" {
+		t.Fatalf("EXISTS match = %#v", got)
+	}
+}
+
+func TestValidateMatchWithoutCatchAllWarning(t *testing.T) {
+	doc, err := Parse([]byte(`
+decision match request {
+  case { kind: "loan" } => "loan"
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	diags := Validate(doc, nil)
+	text := FormatDiagnostics(diags)
+	if !strings.Contains(text, "match expression has no catch-all case") {
+		t.Fatalf("missing catch-all warning: %#v", diags)
+	}
+}
+
+func TestPatternMissingNullAndAlias(t *testing.T) {
+	vars := map[string]any{
+		"request": map[string]any{"kind": "loan", "note": nil, "amount": int64(25)},
+	}
+	got, err := EvalExpr(`match request {
+  case { missing: MISSING, note: NULL, amount: _:number as original } => original
+  case ANY => 0
+}`, &EvalOptions{Variables: vars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != int64(25) {
+		t.Fatalf("alias match = %#v", got)
+	}
+}
+
+func TestValidatePatternDiagnostics(t *testing.T) {
+	doc, err := Parse([]byte(`
+a match status {
+  case "active" => true
+  case "active" => false
+  case ANY => true
+  case "blocked" => false
+}
+b match status {
+  case left | right:x => true
+  case ANY => false
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := FormatDiagnostics(Validate(doc, nil))
+	for _, want := range []string{"duplicate match literal case", "unreachable match case after catch-all", "pattern alternatives bind different names"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q diagnostic in:\n%s", want, text)
+		}
 	}
 }

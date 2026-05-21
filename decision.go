@@ -3,12 +3,14 @@ package bcl
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type DecisionProgram struct {
@@ -48,9 +50,11 @@ type DecisionRule struct {
 	ID        string         `json:"id"`
 	Effect    string         `json:"effect,omitempty"`
 	Priority  int64          `json:"priority,omitempty"`
+	Phase     string         `json:"phase,omitempty"`
 	Condition map[string]any `json:"condition,omitempty"`
 	Then      map[string]any `json:"then,omitempty"`
 	Reason    string         `json:"reason,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 	Source    string         `json:"source,omitempty"`
 	Order     int            `json:"-"`
 	Span      Span           `json:"span,omitempty"`
@@ -100,8 +104,13 @@ type DecisionResult struct {
 	PolicyID    string           `json:"policy_id,omitempty"`
 	Reason      string           `json:"reason,omitempty"`
 	Score       float64          `json:"score,omitempty"`
+	Outcome     *DecisionOutcome `json:"outcome,omitempty"`
+	Attributes  map[string]any   `json:"attributes,omitempty"`
+	Metadata    map[string]any   `json:"metadata,omitempty"`
 	Actions     []DecisionAction `json:"actions,omitempty"`
 	Events      []DecisionAction `json:"events,omitempty"`
+	Obligations []DecisionAction `json:"obligations,omitempty"`
+	Advice      []DecisionAction `json:"advice,omitempty"`
 	Rank        *DecisionRank    `json:"rank,omitempty"`
 	Evaluated   int              `json:"evaluated"`
 	Trace       []string         `json:"trace,omitempty"`
@@ -112,6 +121,7 @@ type DecisionResult struct {
 type DecisionTrace struct {
 	RuleID          string   `json:"rule_id,omitempty"`
 	Source          string   `json:"source,omitempty"`
+	Phase           string   `json:"phase,omitempty"`
 	Status          string   `json:"status"`
 	Effect          string   `json:"effect,omitempty"`
 	Reason          string   `json:"reason,omitempty"`
@@ -123,6 +133,52 @@ type DecisionTrace struct {
 	Action          string   `json:"action,omitempty"`
 	Event           string   `json:"event,omitempty"`
 	CandidateScore  *float64 `json:"candidate_score,omitempty"`
+}
+
+type DecisionOutcome struct {
+	Effect      string           `json:"effect"`
+	Allowed     bool             `json:"allowed"`
+	PolicyID    string           `json:"policy_id,omitempty"`
+	Reason      string           `json:"reason,omitempty"`
+	Score       float64          `json:"score,omitempty"`
+	Attributes  map[string]any   `json:"attributes,omitempty"`
+	Metadata    map[string]any   `json:"metadata,omitempty"`
+	Obligations []DecisionAction `json:"obligations,omitempty"`
+	Advice      []DecisionAction `json:"advice,omitempty"`
+}
+
+func (r *DecisionResult) Reset() {
+	if r == nil {
+		return
+	}
+	r.DecisionID = ""
+	r.Effect = ""
+	r.Allowed = false
+	r.PolicyID = ""
+	r.Reason = ""
+	r.Score = 0
+	r.Rank = nil
+	r.Evaluated = 0
+	r.Actions = r.Actions[:0]
+	r.Events = r.Events[:0]
+	r.Obligations = r.Obligations[:0]
+	r.Advice = r.Advice[:0]
+	r.Trace = r.Trace[:0]
+	r.Explain = r.Explain[:0]
+	r.Diagnostics = r.Diagnostics[:0]
+	clear(r.Attributes)
+	clear(r.Metadata)
+	if r.Outcome != nil {
+		r.Outcome.Effect = ""
+		r.Outcome.Allowed = false
+		r.Outcome.PolicyID = ""
+		r.Outcome.Reason = ""
+		r.Outcome.Score = 0
+		r.Outcome.Attributes = nil
+		r.Outcome.Metadata = nil
+		r.Outcome.Obligations = nil
+		r.Outcome.Advice = nil
+	}
 }
 
 type DecisionAction struct {
@@ -167,6 +223,30 @@ type DecisionScenarioResult struct {
 	Diagnostics []Diagnostic    `json:"diagnostics,omitempty"`
 }
 
+type DecisionBatchCase struct {
+	ID     string         `json:"id,omitempty"`
+	Input  map[string]any `json:"input,omitempty"`
+	Expect map[string]any `json:"expect,omitempty"`
+}
+
+type DecisionBatchCaseResult struct {
+	ID          string          `json:"id,omitempty"`
+	Result      *DecisionResult `json:"result,omitempty"`
+	Passed      bool            `json:"passed"`
+	DefaultOnly bool            `json:"default_only,omitempty"`
+	Diagnostics []Diagnostic    `json:"diagnostics,omitempty"`
+}
+
+type DecisionBatchReport struct {
+	DecisionID       string                    `json:"decision_id"`
+	Cases            []DecisionBatchCaseResult `json:"cases,omitempty"`
+	EffectCounts     map[string]int            `json:"effect_counts,omitempty"`
+	RuleHitCounts    map[string]int            `json:"rule_hit_counts,omitempty"`
+	DefaultOnlyCount int                       `json:"default_only_count,omitempty"`
+	FailedCount      int                       `json:"failed_count,omitempty"`
+	Diagnostics      []Diagnostic              `json:"diagnostics,omitempty"`
+}
+
 func NewDecisionEngine(program *DecisionProgram, opts *Options) *DecisionEngine {
 	return &DecisionEngine{
 		Program: program,
@@ -190,6 +270,20 @@ func (e *DecisionEngine) EvaluateWithOptions(decisionID string, input map[string
 		return nil, fmt.Errorf("nil decision engine")
 	}
 	return evaluateDecisionInternal(e.Program, decisionID, input, e.Options, evalOpts)
+}
+
+func (e *DecisionEngine) EvaluateInto(decisionID string, input map[string]any, result *DecisionResult) error {
+	if e == nil {
+		return fmt.Errorf("nil decision engine")
+	}
+	return e.EvaluateWithOptionsInto(decisionID, input, e.EvaluateOptions, result)
+}
+
+func (e *DecisionEngine) EvaluateWithOptionsInto(decisionID string, input map[string]any, evalOpts DecisionEvaluateOptions, result *DecisionResult) error {
+	if e == nil {
+		return fmt.Errorf("nil decision engine")
+	}
+	return evaluateDecisionIntoInternal(e.Program, decisionID, input, e.Options, evalOpts, result)
 }
 
 func (e *DecisionEngine) EvaluateScenario(scenario *DecisionScenario) (*DecisionScenarioResult, error) {
@@ -243,7 +337,7 @@ func CompileDecisionDocument(doc *Document, opts *Options) (*DecisionProgram, er
 	if err != nil {
 		return prog, err
 	}
-	if len(prog.Diagnostics) > 0 {
+	if hasErrorDiagnostics(prog.Diagnostics) {
 		return prog, ErrorList(prog.Diagnostics)
 	}
 	return prog, nil
@@ -410,6 +504,8 @@ func (b *decisionBuilder) walk(prog *DecisionProgram, nodes []Node, module strin
 			if d := b.decisionFromPolicy(block, module); d != nil {
 				prog.Decisions[d.ID] = d
 			}
+		case "decision_table":
+			b.mergeDecisionTable(prog, block, module)
 		case "decision_schema":
 			if c := b.contractFromBlock(block); c != nil {
 				prog.Contracts[c.ID] = c
@@ -434,6 +530,8 @@ func (b *decisionBuilder) walk(prog *DecisionProgram, nodes []Node, module strin
 			if t := b.testFromBlock(block); t.Name != "" {
 				prog.Tests = append(prog.Tests, t)
 			}
+		case "test_matrix":
+			prog.Tests = append(prog.Tests, b.testsFromMatrix(block)...)
 		default:
 			b.walk(prog, block.Body, module)
 		}
@@ -456,6 +554,7 @@ func (b *decisionBuilder) decisionFromPolicy(block *Block, module string) *Decis
 			if d.Default == "" {
 				d.Default = "deny"
 			}
+			d.Metadata["explicit_default"] = true
 		case "strategy":
 			d.Strategy = scalarString(b.compiler.value(a.Value))
 		case "effect":
@@ -470,6 +569,9 @@ func (b *decisionBuilder) decisionFromPolicy(block *Block, module string) *Decis
 			d.Rules = append(d.Rules, rule)
 			i = next
 		}
+	}
+	if decisionRulesHavePhase(d.Rules) {
+		sortDecisionRules(d.Rules)
 	}
 	return d
 }
@@ -505,11 +607,82 @@ func (b *decisionBuilder) applyContracts(prog *DecisionProgram) {
 		}
 		if contract.Default != "" {
 			d.Default = contract.Default
+			if d.Metadata == nil {
+				d.Metadata = map[string]any{}
+			}
+			d.Metadata["explicit_default"] = true
 		}
 		if contract.Strategy != "" {
 			d.Strategy = contract.Strategy
 		}
 	}
+}
+
+func (b *decisionBuilder) mergeDecisionTable(prog *DecisionProgram, block *Block, module string) {
+	if block.ID == "" {
+		return
+	}
+	d := prog.Decisions[block.ID]
+	if d == nil {
+		d = &DecisionDefinition{ID: block.ID, Module: module, Default: "deny", Strategy: "first_match", Metadata: map[string]any{}, Span: block.Span}
+		prog.Decisions[d.ID] = d
+	}
+	if d.Metadata == nil {
+		d.Metadata = map[string]any{}
+	}
+	for _, n := range block.Body {
+		a, ok := n.(*Assignment)
+		if !ok {
+			continue
+		}
+		switch a.Name {
+		case "default":
+			d.Default = scalarString(b.compiler.value(a.Value))
+			if d.Default == "" {
+				d.Default = "deny"
+			}
+			d.Metadata["explicit_default"] = true
+		case "strategy":
+			if strategy := scalarString(b.compiler.value(a.Value)); strategy != "" {
+				d.Strategy = strategy
+			}
+		}
+	}
+	for _, n := range block.Body {
+		row, ok := n.(*Block)
+		if !ok || row.Type != "row" {
+			continue
+		}
+		r := DecisionRule{ID: row.ID, Source: "decision_table", Order: b.nextOrder(), Span: row.Span}
+		for _, item := range row.Body {
+			a, ok := item.(*Assignment)
+			if !ok {
+				continue
+			}
+			switch a.Name {
+			case "priority":
+				r.Priority = intValue(b.compiler.value(a.Value))
+			case "phase":
+				r.Phase = scalarString(b.compiler.value(a.Value))
+			case "when":
+				r.Condition = b.conditionValue(a.Value)
+			case "then":
+				r.Then = b.valueObject(a.Value)
+				r.Effect = decisionEffectFromThen(r.Then)
+			case "effect", "decision":
+				r.Effect = scalarString(b.compiler.value(a.Value))
+			case "reason":
+				r.Reason = scalarString(b.compiler.value(a.Value))
+			default:
+				b.applyDecisionRuleMetadata(&r, a)
+			}
+		}
+		if r.ID == "" {
+			r.ID = fmt.Sprintf("row-%d", r.Order)
+		}
+		d.Rules = append(d.Rules, r)
+	}
+	sortDecisionRules(d.Rules)
 }
 
 func (b *decisionBuilder) mergeRuleSet(prog *DecisionProgram, block *Block, module string) {
@@ -547,13 +720,17 @@ func (b *decisionBuilder) mergeRuleSet(prog *DecisionProgram, block *Block, modu
 			switch a.Name {
 			case "priority":
 				r.Priority = intValue(b.compiler.value(a.Value))
+			case "phase":
+				r.Phase = scalarString(b.compiler.value(a.Value))
 			case "when":
 				r.Condition = b.conditionValue(a.Value)
 			case "then":
 				r.Then = b.valueObject(a.Value)
-				r.Effect = scalarString(lookup(r.Then, "decision"))
+				r.Effect = decisionEffectFromThen(r.Then)
 			case "reason":
 				r.Reason = scalarString(b.compiler.value(a.Value))
+			default:
+				b.applyDecisionRuleMetadata(&r, a)
 			}
 		}
 		d.Rules = append(d.Rules, r)
@@ -588,11 +765,29 @@ func (b *decisionBuilder) inlineRuleFrom(nodes []Node, i int, a *Assignment, sou
 		case "priority":
 			rule.Priority = intValue(b.compiler.value(aa.Value))
 			next = j
+		case "phase":
+			rule.Phase = scalarString(b.compiler.value(aa.Value))
+			next = j
+		case "version", "status", "effective_from", "effective_until", "owner", "rationale":
+			b.applyDecisionRuleMetadata(&rule, aa)
+			next = j
 		default:
 			return rule, next
 		}
 	}
 	return rule, next
+}
+
+func (b *decisionBuilder) applyDecisionRuleMetadata(rule *DecisionRule, a *Assignment) {
+	switch a.Name {
+	case "version", "status", "effective_from", "effective_until", "owner", "rationale":
+	default:
+		return
+	}
+	if rule.Metadata == nil {
+		rule.Metadata = map[string]any{}
+	}
+	rule.Metadata[a.Name] = b.compiler.value(a.Value)
 }
 
 func (b *decisionBuilder) rankingFromBlock(block *Block, module string) *RankingDefinition {
@@ -675,6 +870,34 @@ func (b *decisionBuilder) testFromBlock(block *Block) DecisionTest {
 	return t
 }
 
+func (b *decisionBuilder) testsFromMatrix(block *Block) []DecisionTest {
+	var decision string
+	for _, n := range block.Body {
+		if a, ok := n.(*Assignment); ok && a.Name == "decision" {
+			decision = scalarString(b.compiler.value(a.Value))
+		}
+	}
+	var out []DecisionTest
+	for _, n := range block.Body {
+		child, ok := n.(*Block)
+		if !ok || child.Type != "case" {
+			continue
+		}
+		t := b.testFromBlock(child)
+		if t.Name == "" {
+			t.Name = child.ID
+		}
+		if block.ID != "" && t.Name != "" {
+			t.Name = block.ID + "/" + t.Name
+		}
+		if t.Decision == "" {
+			t.Decision = decision
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
 func (b *decisionBuilder) conditionValue(v Value) map[string]any {
 	if cond, ok := v.(*Condition); ok {
 		if m, ok := b.compiler.conditionToInterface(cond).(map[string]any); ok {
@@ -713,7 +936,7 @@ func isInlineDecisionEffect(a *Assignment, b *decisionBuilder) bool {
 		return false
 	}
 	switch a.Name {
-	case "default", "effect", "priority", "when", "then", "reason", "match", "tenant", "actions", "resources":
+	case "default", "effect", "priority", "phase", "when", "then", "reason", "version", "status", "effective_from", "effective_until", "owner", "rationale", "match", "tenant", "actions", "resources":
 		return false
 	}
 	return scalarString(b.compiler.value(a.Value)) != ""
@@ -733,7 +956,14 @@ func conditionAfter(nodes []Node, i int, b *decisionBuilder) map[string]any {
 }
 
 func sortDecisionRules(rules []DecisionRule) {
+	hasPhase := decisionRulesHavePhase(rules)
 	sort.SliceStable(rules, func(i, j int) bool {
+		if hasPhase {
+			pi, pj := decisionPhaseIndex(rules[i].Phase), decisionPhaseIndex(rules[j].Phase)
+			if pi != pj {
+				return pi < pj
+			}
+		}
 		if rules[i].Priority != rules[j].Priority {
 			return rules[i].Priority > rules[j].Priority
 		}
@@ -744,69 +974,200 @@ func sortDecisionRules(rules []DecisionRule) {
 	})
 }
 
+func decisionRulesHavePhase(rules []DecisionRule) bool {
+	for _, rule := range rules {
+		if rule.Phase != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func EvaluateDecision(program *DecisionProgram, decision string, input map[string]any, opts *Options) (*DecisionResult, error) {
 	return evaluateDecisionInternal(program, decision, input, opts, DecisionEvaluateOptions{Explain: true, ValidateInput: true})
 }
 
 func evaluateDecisionInternal(program *DecisionProgram, decision string, input map[string]any, opts *Options, evalOpts DecisionEvaluateOptions) (*DecisionResult, error) {
+	result := &DecisionResult{}
+	if err := evaluateDecisionIntoInternal(program, decision, input, opts, evalOpts, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func evaluateDecisionIntoInternal(program *DecisionProgram, decision string, input map[string]any, opts *Options, evalOpts DecisionEvaluateOptions, result *DecisionResult) error {
+	if result == nil {
+		return fmt.Errorf("nil decision result")
+	}
+	result.Reset()
 	if program == nil {
-		return nil, fmt.Errorf("nil decision program")
+		return fmt.Errorf("nil decision program")
 	}
 	def := program.Decisions[decision]
 	if def == nil {
-		return nil, fmt.Errorf("unknown decision %q", decision)
+		return fmt.Errorf("unknown decision %q", decision)
 	}
 	vars := decisionVars(program, input)
-	result := &DecisionResult{DecisionID: decision, Effect: firstNonEmpty(def.Default, "deny")}
+	result.DecisionID = decision
+	result.Effect = firstNonEmpty(def.Default, "deny")
 	if evalOpts.ValidateInput {
 		result.Diagnostics = append(result.Diagnostics, validateDecisionInput(program, decision, input, opts)...)
 		if len(result.Diagnostics) > 0 && evalOpts.Strict {
 			result.Allowed = result.Effect == "allow"
-			return result, nil
+			return nil
 		}
 	}
 	strategy := firstNonEmpty(def.Strategy, "deny_overrides")
+	explain := evalOpts.Explain
+	evalTime := decisionEvaluationTime(input)
+	directSelect := strategy == "first_match" || strategy == "highest_priority"
+	var selectedDirect DecisionRule
+	hasSelectedDirect := false
 	var matchedPolicies []DecisionRule
 	for _, rule := range def.Rules {
+		if ok, msg := decisionRuleActive(rule, evalTime); !ok {
+			if explain {
+				result.Trace = append(result.Trace, rule.ID+": skipped effective window")
+				result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Phase: rule.Phase, Status: "skipped_effective_window", Priority: rule.Priority, Message: msg})
+			}
+			continue
+		}
 		ok := true
 		if rule.Condition != nil {
 			var err error
 			ok, err = evalNormalizedCondition(rule.Condition, vars, opts)
 			if err != nil {
 				result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: err.Error(), Span: rule.Span})
-				result.Trace = append(result.Trace, rule.ID+": condition error")
-				result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Status: "error", Priority: rule.Priority, Message: err.Error()})
+				if explain {
+					result.Trace = append(result.Trace, rule.ID+": condition error")
+					result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Phase: rule.Phase, Status: "error", Priority: rule.Priority, Message: err.Error()})
+				}
 				continue
 			}
 		}
 		result.Evaluated++
 		if !ok {
-			result.Trace = append(result.Trace, rule.ID+": condition false")
-			result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Status: "skipped", Priority: rule.Priority, ConditionResult: boolPtr(false), Message: "condition false"})
+			if explain {
+				result.Trace = append(result.Trace, rule.ID+": condition false")
+				result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Phase: rule.Phase, Status: "skipped", Priority: rule.Priority, ConditionResult: boolPtr(false), Message: explainConditionFailure(rule.Condition, vars, opts)})
+			}
 			continue
 		}
-		result.Trace = append(result.Trace, rule.ID+": matched")
-		result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Status: "matched", Effect: rule.Effect, Reason: rule.Reason, Priority: rule.Priority, ConditionResult: boolPtr(true)})
-		if rule.Source == "rule_set" {
-			appendApplyTrace(result, rule, applyDecisionRule(result, rule, opts))
+		if explain {
+			result.Trace = append(result.Trace, rule.ID+": matched")
+			result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Phase: rule.Phase, Status: "matched", Effect: rule.Effect, Reason: rule.Reason, Priority: rule.Priority, ConditionResult: boolPtr(true)})
+		}
+		if rule.Source == "rule_set" || rule.Effect == "" && rule.Then != nil {
+			summary := applyDecisionRule(result, rule, opts)
+			if explain {
+				appendApplyTrace(result, rule, summary)
+			}
 			continue
 		}
 		if rule.Effect != "" {
-			matchedPolicies = append(matchedPolicies, rule)
+			if directSelect {
+				if !hasSelectedDirect {
+					selectedDirect = rule
+					hasSelectedDirect = true
+				}
+			} else {
+				matchedPolicies = append(matchedPolicies, rule)
+			}
 		}
 	}
-	for _, selected := range chooseDecisionPolicies(strategy, matchedPolicies) {
-		appendApplyTrace(result, selected, applyDecisionRule(result, selected, opts))
-		result.Explain = append(result.Explain, DecisionTrace{RuleID: selected.ID, Source: selected.Source, Status: "selected", Effect: selected.Effect, Reason: selected.Reason, Priority: selected.Priority})
+	if directSelect && hasSelectedDirect {
+		summary := applyDecisionRule(result, selectedDirect, opts)
+		if explain {
+			appendApplyTrace(result, selectedDirect, summary)
+			result.Explain = append(result.Explain, DecisionTrace{RuleID: selectedDirect.ID, Source: selectedDirect.Source, Phase: selectedDirect.Phase, Status: "selected", Effect: selectedDirect.Effect, Reason: selectedDirect.Reason, Priority: selectedDirect.Priority})
+		}
+	} else {
+		for _, selected := range chooseDecisionPolicies(strategy, matchedPolicies) {
+			summary := applyDecisionRule(result, selected, opts)
+			if explain {
+				appendApplyTrace(result, selected, summary)
+				result.Explain = append(result.Explain, DecisionTrace{RuleID: selected.ID, Source: selected.Source, Phase: selected.Phase, Status: "selected", Effect: selected.Effect, Reason: selected.Reason, Priority: selected.Priority})
+			}
+		}
 	}
-	if rank := evaluateDecisionRank(program, decision, vars, input, opts, result); rank != nil {
+	if rank := evaluateDecisionRank(program, decision, vars, input, opts, result, explain); rank != nil {
 		result.Rank = rank
 	}
 	result.Allowed = result.Effect == "allow"
+	result.Outcome = normalizedDecisionOutcome(result)
 	if !evalOpts.Explain {
 		result.Explain = nil
 	}
-	return result, nil
+	return nil
+}
+
+func decisionPhaseIndex(phase string) int {
+	switch phase {
+	case "validate":
+		return 0
+	case "guard":
+		return 1
+	case "score":
+		return 2
+	case "decide":
+		return 3
+	case "notify":
+		return 4
+	case "":
+		return 3
+	default:
+		return 5
+	}
+}
+
+func explainConditionFailure(condition map[string]any, vars map[string]any, opts *Options) string {
+	if len(condition) == 0 {
+		return "condition false"
+	}
+	if expr := scalarString(condition["expr"]); expr != "" {
+		if detail := explainExpressionFailure(expr, vars, opts); detail != "" {
+			return detail
+		}
+		return "condition false: " + expr
+	}
+	op := scalarString(condition["op"])
+	children, _ := condition["children"].([]any)
+	switch op {
+	case "all", "":
+		for _, raw := range children {
+			child, _ := raw.(map[string]any)
+			ok, err := evalNormalizedCondition(child, vars, opts)
+			if err == nil && !ok {
+				return explainConditionFailure(child, vars, opts)
+			}
+		}
+	case "any":
+		return "condition false: no any branch matched"
+	case "not":
+		return "condition false: negated condition matched"
+	case "none":
+		return "condition false: at least one none branch matched"
+	}
+	return "condition false"
+}
+
+func explainExpressionFailure(expr string, vars map[string]any, opts *Options) string {
+	for _, op := range []string{" not_in ", " starts_with ", " ends_with ", " contains ", " matches ", " has_any ", " has_all ", " == ", " != ", " >= ", " <= ", " > ", " < ", " in ", " has "} {
+		idx := strings.Index(expr, op)
+		if idx < 0 {
+			continue
+		}
+		leftRaw := strings.TrimSpace(expr[:idx])
+		rightRaw := strings.TrimSpace(expr[idx+len(op):])
+		evalOpts := evalOptionsFrom(opts, vars)
+		left, leftErr := EvalExpr(leftRaw, evalOpts)
+		right, rightErr := EvalExpr(rightRaw, evalOpts)
+		if leftErr != nil || rightErr != nil {
+			return ""
+		}
+		return fmt.Sprintf("condition false: %s %s %s (actual=%v expected=%v)", leftRaw, strings.TrimSpace(op), rightRaw, left, right)
+	}
+	return ""
 }
 
 func chooseDecisionPolicy(strategy string, rules []DecisionRule) (DecisionRule, bool) {
@@ -852,6 +1213,14 @@ func chooseDecisionPolicies(strategy string, rules []DecisionRule) []DecisionRul
 }
 
 func decisionVars(program *DecisionProgram, input map[string]any) map[string]any {
+	if input == nil {
+		input = map[string]any{}
+	}
+	if len(program.Constants) == 0 {
+		if context, ok := input["context"].(map[string]any); !ok || len(context) == 0 {
+			return input
+		}
+	}
 	vars := map[string]any{}
 	for k, v := range program.Constants {
 		vars[k] = v
@@ -869,16 +1238,66 @@ func decisionVars(program *DecisionProgram, input map[string]any) map[string]any
 	return vars
 }
 
+func decisionEvaluationTime(input map[string]any) time.Time {
+	for _, path := range []string{"time.now", "context.time.now"} {
+		if t, ok := parseDecisionTime(lookup(input, path)); ok {
+			return t
+		}
+	}
+	return time.Now().UTC()
+}
+
+func decisionRuleActive(rule DecisionRule, now time.Time) (bool, string) {
+	status := strings.ToLower(scalarString(rule.Metadata["status"]))
+	if status != "" && status != "active" {
+		return false, "rule status is " + status
+	}
+	if from, ok := parseDecisionTime(rule.Metadata["effective_from"]); ok && now.Before(from) {
+		return false, "rule is not yet effective"
+	}
+	if until, ok := parseDecisionTime(rule.Metadata["effective_until"]); ok && now.After(until) {
+		return false, "rule is no longer effective"
+	}
+	return true, ""
+}
+
+func parseDecisionTime(v any) (time.Time, bool) {
+	switch x := v.(type) {
+	case time.Time:
+		return x.UTC(), true
+	case string:
+		if x == "" {
+			return time.Time{}, false
+		}
+		for _, layout := range []string{time.RFC3339, "2006-01-02"} {
+			if t, err := time.Parse(layout, x); err == nil {
+				return t.UTC(), true
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"$datetime", "$timestamp", "$date"} {
+			if s, ok := x[key].(string); ok {
+				return parseDecisionTime(s)
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
 type decisionApplySummary struct {
-	ScoreDelta float64
-	Actions    []DecisionAction
-	Events     []DecisionAction
+	ScoreDelta      float64
+	ActionStart     int
+	EventStart      int
+	ObligationStart int
+	AdviceStart     int
 }
 
 func applyDecisionRule(result *DecisionResult, rule DecisionRule, opts *Options) decisionApplySummary {
 	beforeScore := result.Score
 	beforeActions := len(result.Actions)
 	beforeEvents := len(result.Events)
+	beforeObligations := len(result.Obligations)
+	beforeAdvice := len(result.Advice)
 	if rule.Effect != "" {
 		result.Effect = rule.Effect
 		result.PolicyID = rule.ID
@@ -889,6 +1308,7 @@ func applyDecisionRule(result *DecisionResult, rule DecisionRule, opts *Options)
 			result.Effect = effect
 			result.PolicyID = rule.ID
 		}
+		applyDecisionOutcome(result, rule)
 		applyThenExpressions(result, rule.Then)
 		for _, action := range decisionActionsFrom(rule.Then, "action") {
 			result.Actions = append(result.Actions, action)
@@ -901,66 +1321,220 @@ func applyDecisionRule(result *DecisionResult, rule DecisionRule, opts *Options)
 			}
 		}
 		result.Events = append(result.Events, decisionActionsFrom(rule.Then, "event")...)
+		result.Obligations = append(result.Obligations, decisionActionsFrom(rule.Then, "obligation")...)
+		result.Advice = append(result.Advice, decisionActionsFrom(rule.Then, "advice")...)
 	}
 	return decisionApplySummary{
-		ScoreDelta: result.Score - beforeScore,
-		Actions:    append([]DecisionAction(nil), result.Actions[beforeActions:]...),
-		Events:     append([]DecisionAction(nil), result.Events[beforeEvents:]...),
+		ScoreDelta:      result.Score - beforeScore,
+		ActionStart:     beforeActions,
+		EventStart:      beforeEvents,
+		ObligationStart: beforeObligations,
+		AdviceStart:     beforeAdvice,
 	}
 }
 
 func appendApplyTrace(result *DecisionResult, rule DecisionRule, summary decisionApplySummary) {
 	if summary.ScoreDelta != 0 {
-		result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Status: "score", Priority: rule.Priority, ScoreDelta: summary.ScoreDelta})
+		result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Phase: rule.Phase, Status: "score", Priority: rule.Priority, ScoreDelta: summary.ScoreDelta})
 	}
-	for _, action := range summary.Actions {
-		result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Status: "action", Priority: rule.Priority, Action: action.Name})
+	for _, action := range result.Actions[summary.ActionStart:] {
+		result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Phase: rule.Phase, Status: "action", Priority: rule.Priority, Action: action.Name})
 	}
-	for _, event := range summary.Events {
-		result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Status: "event", Priority: rule.Priority, Event: event.Name})
+	for _, event := range result.Events[summary.EventStart:] {
+		result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Phase: rule.Phase, Status: "event", Priority: rule.Priority, Event: event.Name})
 	}
+	for _, obligation := range result.Obligations[summary.ObligationStart:] {
+		result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Phase: rule.Phase, Status: "obligation", Priority: rule.Priority, Action: obligation.Name})
+	}
+	for _, advice := range result.Advice[summary.AdviceStart:] {
+		result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Phase: rule.Phase, Status: "advice", Priority: rule.Priority, Action: advice.Name})
+	}
+}
+
+func applyDecisionOutcome(result *DecisionResult, rule DecisionRule) {
+	then := rule.Then
+	outcome := blockBodyMap(then["outcome"])
+	if effect := firstNonEmpty(scalarString(outcome["effect"]), scalarString(outcome["decision"])); effect != "" {
+		result.Effect = effect
+		result.PolicyID = rule.ID
+	}
+	if reason := scalarString(outcome["reason"]); reason != "" {
+		result.Reason = reason
+	}
+	if attrs := firstNonEmptyDecisionMap(decisionMapValue(outcome["attributes"]), blockBodyMap(outcome["attributes"]), blockBodyMap(then["attributes"])); len(attrs) > 0 {
+		if result.Attributes == nil {
+			result.Attributes = map[string]any{}
+		}
+		mergeMap(result.Attributes, attrs)
+	}
+	if metadata := firstNonEmptyDecisionMap(decisionMapValue(outcome["metadata"]), blockBodyMap(outcome["metadata"]), blockBodyMap(then["metadata"])); len(metadata) > 0 {
+		if result.Metadata == nil {
+			result.Metadata = map[string]any{}
+		}
+		mergeMap(result.Metadata, metadata)
+	}
+}
+
+func decisionEffectFromThen(then map[string]any) string {
+	if len(then) == 0 {
+		return ""
+	}
+	if effect := scalarString(lookup(then, "decision")); effect != "" {
+		return effect
+	}
+	outcome := blockBodyMap(then["outcome"])
+	return firstNonEmpty(scalarString(outcome["effect"]), scalarString(outcome["decision"]))
+}
+
+func normalizedDecisionOutcome(result *DecisionResult) *DecisionOutcome {
+	if result.Outcome == nil {
+		result.Outcome = &DecisionOutcome{}
+	}
+	result.Outcome.Effect = result.Effect
+	result.Outcome.Allowed = result.Allowed
+	result.Outcome.PolicyID = result.PolicyID
+	result.Outcome.Reason = result.Reason
+	result.Outcome.Score = result.Score
+	result.Outcome.Attributes = result.Attributes
+	result.Outcome.Metadata = result.Metadata
+	result.Outcome.Obligations = result.Obligations
+	result.Outcome.Advice = result.Advice
+	return result.Outcome
+}
+
+func blockBodyMap(v any) map[string]any {
+	switch x := v.(type) {
+	case nil:
+		return nil
+	case []any:
+		for _, item := range x {
+			if m := blockBodyMap(item); len(m) > 0 {
+				return m
+			}
+		}
+		return nil
+	case []map[string]any:
+		for _, item := range x {
+			if m := blockBodyMap(item); len(m) > 0 {
+				return m
+			}
+		}
+		return nil
+	default:
+		if body, ok := decisionMapValue(x)["body"].(map[string]any); ok {
+			return body
+		}
+		if m := decisionMapValue(x); len(m) > 0 {
+			return m
+		}
+	}
+	return nil
+}
+
+func decisionMapValue(v any) map[string]any {
+	if m, ok := v.(map[string]any); ok {
+		return m
+	}
+	return nil
+}
+
+func firstNonEmptyDecisionMap(a, b, c map[string]any) map[string]any {
+	if len(a) > 0 {
+		return a
+	}
+	if len(b) > 0 {
+		return b
+	}
+	if len(c) > 0 {
+		return c
+	}
+	return nil
 }
 
 func applyThenExpressions(result *DecisionResult, then map[string]any) {
 	raw := then["$expr"]
-	items := asAnySlice(raw)
-	if len(items) == 0 && raw != nil {
-		items = []any{raw}
-	}
-	for _, item := range items {
-		expr := scalarString(lookupExpr(item))
-		parts := strings.Fields(expr)
-		if len(parts) == 3 && parts[0] == "score" && parts[1] == "+=" {
-			if n, ok := numericFloat(parseInlineNumber(parts[2])); ok {
-				result.Score += n
-			}
+	switch x := raw.(type) {
+	case nil:
+		return
+	case []any:
+		for _, item := range x {
+			applyThenExpression(result, item)
 		}
+	case []map[string]any:
+		for _, item := range x {
+			applyThenExpression(result, item)
+		}
+	default:
+		applyThenExpression(result, x)
+	}
+}
+
+func applyThenExpression(result *DecisionResult, item any) {
+	expr := scalarString(lookupExpr(item))
+	if !strings.HasPrefix(expr, "score") {
+		return
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(expr, "score"))
+	if !strings.HasPrefix(rest, "+=") {
+		return
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(rest, "+="))
+	if value == "" || strings.ContainsAny(value, " \t\r\n") {
+		return
+	}
+	if n, ok := numericFloat(parseInlineNumber(value)); ok {
+		result.Score += n
 	}
 }
 
 func decisionActionsFrom(then map[string]any, key string) []DecisionAction {
-	var out []DecisionAction
-	for _, item := range asAnySlice(then[key]) {
-		m, ok := item.(map[string]any)
-		if !ok {
-			if name := scalarString(item); name != "" {
-				out = append(out, DecisionAction{Name: name})
+	switch x := then[key].(type) {
+	case nil:
+		return nil
+	case []any:
+		out := make([]DecisionAction, 0, len(x))
+		for _, item := range x {
+			if action, ok := decisionActionFrom(item); ok {
+				out = append(out, action)
 			}
-			continue
 		}
-		name := scalarString(m["id"])
-		body, _ := m["body"].(map[string]any)
-		if name == "" {
-			name = scalarString(m["name"])
+		return out
+	case []map[string]any:
+		out := make([]DecisionAction, 0, len(x))
+		for _, item := range x {
+			if action, ok := decisionActionFrom(item); ok {
+				out = append(out, action)
+			}
 		}
-		if name != "" {
-			out = append(out, DecisionAction{Name: name, Params: body})
+		return out
+	default:
+		if action, ok := decisionActionFrom(x); ok {
+			return []DecisionAction{action}
 		}
+		return nil
 	}
-	return out
 }
 
-func evaluateDecisionRank(program *DecisionProgram, decision string, vars, input map[string]any, opts *Options, result *DecisionResult) *DecisionRank {
+func decisionActionFrom(item any) (DecisionAction, bool) {
+	m, ok := item.(map[string]any)
+	if !ok {
+		if name := scalarString(item); name != "" {
+			return DecisionAction{Name: name}, true
+		}
+		return DecisionAction{}, false
+	}
+	name := scalarString(m["id"])
+	body, _ := m["body"].(map[string]any)
+	if name == "" {
+		name = scalarString(m["name"])
+	}
+	if name == "" {
+		return DecisionAction{}, false
+	}
+	return DecisionAction{Name: name, Params: body}, true
+}
+
+func evaluateDecisionRank(program *DecisionProgram, decision string, vars, input map[string]any, opts *Options, result *DecisionResult, explain bool) *DecisionRank {
 	ranking := program.Rankings[decision]
 	if ranking == nil {
 		return nil
@@ -978,16 +1552,22 @@ func evaluateDecisionRank(program *DecisionProgram, decision string, vars, input
 			ok, err := evalNormalizedCondition(rule.Condition, candidateVars, opts)
 			if err != nil {
 				result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: err.Error(), Span: rule.Span})
-				result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Status: "error", Candidate: candidate.ID, Priority: rule.Priority, Message: err.Error()})
+				if explain {
+					result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Status: "error", Candidate: candidate.ID, Priority: rule.Priority, Message: err.Error()})
+				}
 				pass = false
 				break
 			}
 			if !ok {
-				result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Status: "skipped", Candidate: candidate.ID, Priority: rule.Priority, ConditionResult: boolPtr(false), Message: "ranking condition false"})
+				if explain {
+					result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Status: "skipped", Candidate: candidate.ID, Priority: rule.Priority, ConditionResult: boolPtr(false), Message: "ranking condition false"})
+				}
 				pass = false
 				break
 			}
-			result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Status: "matched", Candidate: candidate.ID, Priority: rule.Priority, ConditionResult: boolPtr(true)})
+			if explain {
+				result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Status: "matched", Candidate: candidate.ID, Priority: rule.Priority, ConditionResult: boolPtr(true)})
+			}
 		}
 		if !pass {
 			continue
@@ -1000,14 +1580,18 @@ func evaluateDecisionRank(program *DecisionProgram, decision string, vars, input
 		if !ok {
 			continue
 		}
-		result.Explain = append(result.Explain, DecisionTrace{Status: "candidate_score", Candidate: candidate.ID, CandidateScore: floatPtr(score)})
+		if explain {
+			result.Explain = append(result.Explain, DecisionTrace{Status: "candidate_score", Candidate: candidate.ID, CandidateScore: floatPtr(score)})
+		}
 		rank := &DecisionRank{ID: candidate.ID, Score: score, Facts: candidate.Facts}
 		if best == nil || rank.Score > best.Score {
 			best = rank
 		}
 	}
 	if best != nil {
-		result.Explain = append(result.Explain, DecisionTrace{Status: "ranked", Candidate: best.ID, Message: fmt.Sprintf("score %.4f", best.Score)})
+		if explain {
+			result.Explain = append(result.Explain, DecisionTrace{Status: "ranked", Candidate: best.ID, Message: fmt.Sprintf("score %.4f", best.Score)})
+		}
 	}
 	return best
 }
@@ -1280,6 +1864,15 @@ func floatPtr(v float64) *float64 {
 	return &v
 }
 
+func hasErrorDiagnostics(diags []Diagnostic) bool {
+	for _, d := range diags {
+		if d.Severity == "" || d.Severity == "error" {
+			return true
+		}
+	}
+	return false
+}
+
 func validateDecisionProgram(prog *DecisionProgram) []Diagnostic {
 	if prog == nil {
 		return nil
@@ -1292,7 +1885,14 @@ func validateDecisionProgram(prog *DecisionProgram) []Diagnostic {
 		if !isDecisionStrategy(d.Strategy) {
 			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("decision %q uses invalid strategy %q", id, d.Strategy), Span: d.Span})
 		}
+		if d.Metadata == nil || d.Metadata["explicit_default"] != true {
+			diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q has no explicit default", id), Span: d.Span})
+		}
 		seen := map[string]Span{}
+		conditionEffects := map[string]string{}
+		conditionSpans := map[string]Span{}
+		catchAllSeen := false
+		catchAllRule := ""
 		for _, rule := range d.Rules {
 			if rule.ID != "" {
 				if first, ok := seen[rule.ID]; ok {
@@ -1301,7 +1901,28 @@ func validateDecisionProgram(prog *DecisionProgram) []Diagnostic {
 				}
 				seen[rule.ID] = rule.Span
 			}
-			if effect := scalarString(lookup(rule.Then, "decision")); effect != "" {
+			if rule.Phase != "" && !isDecisionPhase(rule.Phase) {
+				diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("decision %q rule %q uses invalid phase %q", id, rule.ID, rule.Phase), Span: rule.Span})
+			}
+			if firstNonEmpty(d.Strategy, "deny_overrides") == "first_match" {
+				if catchAllSeen {
+					diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q rule %q is unreachable after catch-all rule %q", id, rule.ID, catchAllRule), Span: rule.Span})
+				}
+				if isCatchAllDecisionRule(rule) {
+					catchAllSeen = true
+					catchAllRule = rule.ID
+				}
+			}
+			if key := decisionConditionKey(rule.Condition); key != "" && rule.Effect != "" {
+				if prev, ok := conditionEffects[key]; ok && prev != rule.Effect {
+					diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q has conflicting effects %q/%q for equivalent conditions", id, prev, rule.Effect), Span: conditionSpans[key]})
+					diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q has conflicting effects %q/%q for equivalent conditions", id, prev, rule.Effect), Span: rule.Span})
+				} else if !ok {
+					conditionEffects[key] = rule.Effect
+					conditionSpans[key] = rule.Span
+				}
+			}
+			if effect := decisionEffectFromThen(rule.Then); effect != "" {
 				if contract := prog.Contracts[id]; contract != nil && len(contract.Effects) > 0 && !stringIn(effect, contract.Effects) {
 					diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("decision %q rule %q sets undeclared effect %q", id, rule.ID, effect), Span: rule.Span})
 				}
@@ -1313,6 +1934,7 @@ func validateDecisionProgram(prog *DecisionProgram) []Diagnostic {
 			}
 			diags = append(diags, validateDecisionActionPayloads(id, rule)...)
 		}
+		diags = append(diags, validateDecisionRuleAnalysis(id, d, prog)...)
 	}
 	for id, ranking := range prog.Rankings {
 		if prog.Decisions[id] == nil {
@@ -1350,9 +1972,387 @@ func validateDecisionProgram(prog *DecisionProgram) []Diagnostic {
 	return diags
 }
 
+func validateDecisionRuleAnalysis(id string, d *DecisionDefinition, prog *DecisionProgram) []Diagnostic {
+	var diags []Diagnostic
+	if d == nil {
+		return nil
+	}
+	if d.Strategy == "first_match" || d.Strategy == "highest_priority" {
+		for i := 0; i < len(d.Rules); i++ {
+			for j := i + 1; j < len(d.Rules); j++ {
+				a, b := d.Rules[i], d.Rules[j]
+				if a.Priority == b.Priority && a.Effect != "" && b.Effect != "" && a.Effect != b.Effect && rulesMayOverlap(a, b) {
+					diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q has ambiguous same-priority rules %q/%q", id, a.ID, b.ID), Span: b.Span})
+				}
+			}
+		}
+	}
+	for _, warning := range numericOverlapWarnings(id, d.Rules) {
+		diags = append(diags, warning)
+	}
+	diags = append(diags, enumCoverageWarnings(id, d.Rules, prog.Schemas[id])...)
+	diags = append(diags, schemaPatternWarnings(id, d.Rules, prog.Schemas[id])...)
+	return diags
+}
+
+func rulesMayOverlap(a, b DecisionRule) bool {
+	ka := decisionConditionKey(a.Condition)
+	kb := decisionConditionKey(b.Condition)
+	if ka != "" && kb != "" && ka == kb {
+		return true
+	}
+	ca, oka := simpleNumericCondition(a.Condition)
+	cb, okb := simpleNumericCondition(b.Condition)
+	if oka && okb && ca.Path == cb.Path {
+		return numericConditionsOverlap(ca, cb)
+	}
+	return a.Condition == nil || b.Condition == nil
+}
+
+type numericCondition struct {
+	Path string
+	Op   string
+	Val  float64
+	Span Span
+}
+
+func simpleNumericCondition(condition map[string]any) (numericCondition, bool) {
+	expr := scalarString(condition["expr"])
+	if expr == "" {
+		children := asAnySlice(condition["children"])
+		if len(children) == 1 {
+			if child, ok := children[0].(map[string]any); ok {
+				return simpleNumericCondition(child)
+			}
+		}
+		return numericCondition{}, false
+	}
+	for _, op := range []string{">=", "<=", ">", "<", "=="} {
+		needle := " " + op + " "
+		idx := strings.Index(expr, needle)
+		if idx < 0 {
+			continue
+		}
+		left := strings.TrimSpace(expr[:idx])
+		right := strings.TrimSpace(expr[idx+len(needle):])
+		if strings.ContainsAny(left, " ()[]{}+-*/%,") {
+			return numericCondition{}, false
+		}
+		if n, ok := numericFloat(parseInlineNumber(right)); ok {
+			return numericCondition{Path: left, Op: op, Val: n}, true
+		}
+	}
+	return numericCondition{}, false
+}
+
+func numericConditionsOverlap(a, b numericCondition) bool {
+	amin, amax := numericBounds(a)
+	bmin, bmax := numericBounds(b)
+	return amin <= bmax && bmin <= amax
+}
+
+func numericBounds(c numericCondition) (float64, float64) {
+	switch c.Op {
+	case "==":
+		return c.Val, c.Val
+	case ">=", ">":
+		return c.Val, math.Inf(1)
+	case "<=", "<":
+		return math.Inf(-1), c.Val
+	default:
+		return math.Inf(-1), math.Inf(1)
+	}
+}
+
+func numericOverlapWarnings(id string, rules []DecisionRule) []Diagnostic {
+	var diags []Diagnostic
+	for i := 0; i < len(rules); i++ {
+		a, oka := simpleNumericCondition(rules[i].Condition)
+		if !oka {
+			continue
+		}
+		for j := i + 1; j < len(rules); j++ {
+			b, okb := simpleNumericCondition(rules[j].Condition)
+			if okb && a.Path == b.Path && rules[i].Effect != rules[j].Effect && numericConditionsOverlap(a, b) {
+				diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q has overlapping numeric rules on %s", id, a.Path), Span: rules[j].Span})
+			}
+		}
+	}
+	return diags
+}
+
+func enumCoverageWarnings(id string, rules []DecisionRule, schema any) []Diagnostic {
+	var diags []Diagnostic
+	fields := flattenSchemaFields(schema)
+	seen := map[string]map[string]bool{}
+	for _, rule := range rules {
+		path, value, ok := simpleEqualityCondition(rule.Condition)
+		if !ok {
+			continue
+		}
+		field := fields[path]
+		if len(asAnySlice(field["enum"])) == 0 {
+			continue
+		}
+		if seen[path] == nil {
+			seen[path] = map[string]bool{}
+		}
+		seen[path][fmt.Sprint(value)] = true
+	}
+	for path, got := range seen {
+		enum := asAnySlice(fields[path]["enum"])
+		if len(got) > 0 && len(got) < len(enum) {
+			diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q does not cover all enum values for %s", id, path)})
+		}
+	}
+	return diags
+}
+
+func simpleEqualityCondition(condition map[string]any) (string, any, bool) {
+	expr := scalarString(condition["expr"])
+	if expr == "" {
+		children := asAnySlice(condition["children"])
+		if len(children) == 1 {
+			if child, ok := children[0].(map[string]any); ok {
+				return simpleEqualityCondition(child)
+			}
+		}
+		return "", nil, false
+	}
+	idx := strings.Index(expr, " == ")
+	if idx < 0 {
+		return "", nil, false
+	}
+	left := strings.TrimSpace(expr[:idx])
+	right := strings.TrimSpace(expr[idx+4:])
+	if strings.ContainsAny(left, " ()[]{}+-*/%,") {
+		return "", nil, false
+	}
+	if lit, ok := parsePatternLiteral(right); ok {
+		return left, lit, true
+	}
+	return "", nil, false
+}
+
+func schemaPatternWarnings(id string, rules []DecisionRule, schema any) []Diagnostic {
+	if schema == nil {
+		return nil
+	}
+	fields := flattenSchemaFields(schema)
+	var diags []Diagnostic
+	for _, rule := range rules {
+		for _, expr := range conditionExprs(rule.Condition) {
+			for _, mp := range matchPatternsFromExpr(expr) {
+				subject := strings.TrimSpace(mp.Subject)
+				base := fields[subject]
+				if len(base) == 0 {
+					continue
+				}
+				diags = append(diags, validatePatternAgainstSchema(id, subject, mp.Pattern, fields, rule.Span)...)
+			}
+		}
+	}
+	return diags
+}
+
+func conditionExprs(condition map[string]any) []string {
+	if len(condition) == 0 {
+		return nil
+	}
+	if expr := scalarString(condition["expr"]); expr != "" {
+		return []string{expr}
+	}
+	var out []string
+	for _, raw := range asAnySlice(condition["children"]) {
+		if child, ok := raw.(map[string]any); ok {
+			out = append(out, conditionExprs(child)...)
+		}
+	}
+	return out
+}
+
+type matchPatternRef struct {
+	Subject string
+	Pattern string
+}
+
+func matchPatternsFromExpr(expr string) []matchPatternRef {
+	expr = strings.TrimSpace(expr)
+	if strings.HasPrefix(expr, "match(") && strings.HasSuffix(expr, ")") {
+		args := splitTopLevel(expr[len("match("):len(expr)-1], ',')
+		if len(args) < 2 {
+			return nil
+		}
+		var out []matchPatternRef
+		for _, arg := range args[1:] {
+			arg = strings.TrimSpace(arg)
+			if !strings.HasPrefix(arg, "case(") || !strings.HasSuffix(arg, ")") {
+				continue
+			}
+			parts := splitTopLevel(arg[len("case("):len(arg)-1], ',')
+			if len(parts) < 2 {
+				continue
+			}
+			pat, _ := splitPatternGuard(parts[0])
+			out = append(out, matchPatternRef{Subject: strings.TrimSpace(args[0]), Pattern: pat})
+		}
+		return out
+	}
+	if strings.HasPrefix(expr, "match ") {
+		open := strings.IndexByte(expr, '{')
+		close := strings.LastIndexByte(expr, '}')
+		if open < 0 || close < open {
+			return nil
+		}
+		subject := strings.TrimSpace(expr[len("match "):open])
+		var out []matchPatternRef
+		for _, rawCase := range splitMatchCases(expr[open+1 : close]) {
+			pat, _, _, err := parseRawCase(rawCase)
+			if err == nil {
+				out = append(out, matchPatternRef{Subject: subject, Pattern: pat})
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func flattenSchemaFields(schema any) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	var walk func(prefix string, fields []map[string]any)
+	walk = func(prefix string, fields []map[string]any) {
+		for _, field := range fields {
+			name := fieldName(field)
+			if name == "" {
+				continue
+			}
+			path := name
+			if prefix != "" {
+				path = prefix + "." + name
+			}
+			out[path] = field
+			walk(path, schemaFieldsFromAny(field["fields"]))
+		}
+	}
+	if m, ok := schema.(map[string]any); ok {
+		walk("", schemaFieldsFromAny(m["fields"]))
+	}
+	return out
+}
+
+func validatePatternAgainstSchema(id, subject, pattern string, fields map[string]map[string]any, sp Span) []Diagnostic {
+	node := compilePatternNode(pattern)
+	var diags []Diagnostic
+	var walk func(path string, n *patternNode)
+	walk = func(path string, n *patternNode) {
+		if n == nil {
+			return
+		}
+		switch n.Kind {
+		case patternObject:
+			for _, pf := range n.Fields {
+				childPath := path + "." + pf.Key
+				field := fields[childPath]
+				if len(field) == 0 {
+					diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q pattern references unknown schema field %q", id, childPath), Span: sp})
+					continue
+				}
+				validatePatternNodeForField(id, childPath, pf.Node, field, sp, &diags)
+				walk(childPath, pf.Node)
+			}
+		case patternAlias, patternSome, patternNot, patternAnyCollection, patternAllCollection:
+			walk(path, n.Child)
+		case patternAlt, patternList, patternTypeCtor:
+			for _, child := range n.Children {
+				walk(path, child)
+			}
+		}
+	}
+	walk(subject, node)
+	return diags
+}
+
+func validatePatternNodeForField(id, path string, node *patternNode, field map[string]any, sp Span, diags *[]Diagnostic) {
+	if node == nil {
+		return
+	}
+	if node.Kind == patternAlias {
+		validatePatternNodeForField(id, path, node.Child, field, sp, diags)
+		return
+	}
+	if node.Kind == patternMissing {
+		if required, _ := field["required"].(bool); required {
+			*diags = append(*diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q pattern expects required field %q to be missing", id, path), Span: sp})
+		}
+		return
+	}
+	if node.Kind == patternTypedBind {
+		if typ := scalarString(field["type"]); typ != "" && !schemaTypeCompatible(typ, node.Type) {
+			*diags = append(*diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q pattern binding for %q expects %s but schema is %s", id, path, node.Type, typ), Span: sp})
+		}
+	}
+	if node.Kind == patternLiteral {
+		enum := asAnySlice(field["enum"])
+		if len(enum) > 0 {
+			found := false
+			for _, item := range enum {
+				if equalLoose(item, node.Literal) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				*diags = append(*diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q pattern literal for %q is outside schema enum", id, path), Span: sp})
+			}
+		}
+		if typ := scalarString(field["type"]); typ != "" && !runtimeTypeMatches(typ, node.Literal) {
+			*diags = append(*diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("decision %q pattern literal for %q is incompatible with schema type %s", id, path, typ), Span: sp})
+		}
+	}
+}
+
+func schemaTypeCompatible(schemaType, patternType string) bool {
+	schemaType = resolveBuiltinAlias(schemaType)
+	if schemaType == patternType {
+		return true
+	}
+	return schemaType == "float" && patternType == "number" || schemaType == "number" && patternType == "float" || schemaType == "list" && patternType == "array" || schemaType == "object" && patternType == "map"
+}
+
+func decisionConditionKey(condition map[string]any) string {
+	if len(condition) == 0 {
+		return "<catch-all>"
+	}
+	b, err := json.Marshal(condition)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func isCatchAllDecisionRule(rule DecisionRule) bool {
+	if len(rule.Condition) == 0 {
+		return true
+	}
+	if op := scalarString(rule.Condition["op"]); op == "expr" {
+		expr := strings.TrimSpace(scalarString(rule.Condition["expr"]))
+		return expr == "true"
+	}
+	return false
+}
+
 func isDecisionStrategy(strategy string) bool {
 	switch strategy {
 	case "", "deny_overrides", "allow_overrides", "first_match", "highest_priority", "all_must_pass", "collect_all":
+		return true
+	default:
+		return false
+	}
+}
+
+func isDecisionPhase(phase string) bool {
+	switch phase {
+	case "validate", "guard", "score", "decide", "notify":
 		return true
 	default:
 		return false
@@ -1418,6 +2418,113 @@ func EvaluateDecisionScenario(program *DecisionProgram, scenario *DecisionScenar
 	return evaluateDecisionScenarioInternal(program, scenario, opts, DecisionEvaluateOptions{Explain: true, ValidateInput: true})
 }
 
+func EvaluateDecisionBatch(program *DecisionProgram, decisionID string, cases []DecisionBatchCase, opts *Options) (*DecisionBatchReport, error) {
+	if program == nil {
+		return nil, fmt.Errorf("nil decision program")
+	}
+	if decisionID == "" {
+		return nil, fmt.Errorf("missing decision id")
+	}
+	report := &DecisionBatchReport{
+		DecisionID:    decisionID,
+		EffectCounts:  map[string]int{},
+		RuleHitCounts: map[string]int{},
+	}
+	for i, c := range cases {
+		id := c.ID
+		if id == "" {
+			id = fmt.Sprintf("case-%d", i+1)
+		}
+		result, err := EvaluateDecision(program, decisionID, c.Input, opts)
+		cr := DecisionBatchCaseResult{ID: id, Result: result, Passed: true}
+		if err != nil {
+			cr.Passed = false
+			cr.Diagnostics = append(cr.Diagnostics, Diagnostic{Severity: "error", Message: err.Error()})
+			report.Diagnostics = append(report.Diagnostics, cr.Diagnostics...)
+			report.FailedCount++
+			report.Cases = append(report.Cases, cr)
+			continue
+		}
+		report.EffectCounts[result.Effect]++
+		for _, step := range result.Explain {
+			if step.RuleID != "" && (step.Status == "matched" || step.Status == "selected") {
+				report.RuleHitCounts[step.RuleID]++
+			}
+		}
+		cr.DefaultOnly = result.PolicyID == ""
+		if cr.DefaultOnly {
+			report.DefaultOnlyCount++
+		}
+		cr.Diagnostics = append(cr.Diagnostics, result.Diagnostics...)
+		if !decisionBatchExpectationPassed(result, c.Expect, &cr.Diagnostics) || len(result.Diagnostics) > 0 {
+			cr.Passed = false
+			report.FailedCount++
+		}
+		report.Diagnostics = append(report.Diagnostics, cr.Diagnostics...)
+		report.Cases = append(report.Cases, cr)
+	}
+	return report, nil
+}
+
+func EvaluateDecisionDataset(program *DecisionProgram, decisionID, datasetID string, opts *Options) (*DecisionBatchReport, error) {
+	if program == nil {
+		return nil, fmt.Errorf("nil decision program")
+	}
+	dataset := program.Datasets[datasetID]
+	if dataset == nil {
+		return nil, fmt.Errorf("unknown dataset %q", datasetID)
+	}
+	cases := make([]DecisionBatchCase, 0, len(dataset.Records))
+	for _, record := range dataset.Records {
+		cases = append(cases, DecisionBatchCase{ID: record.ID, Input: record.Facts})
+	}
+	return EvaluateDecisionBatch(program, decisionID, cases, opts)
+}
+
+func decisionBatchExpectationPassed(result *DecisionResult, expect map[string]any, diags *[]Diagnostic) bool {
+	if len(expect) == 0 {
+		return true
+	}
+	ok := true
+	for key, want := range expect {
+		var got any
+		switch {
+		case key == "effect":
+			got = result.Effect
+		case key == "allowed":
+			got = result.Allowed
+		case key == "policy_id":
+			got = result.PolicyID
+		case key == "score":
+			got = result.Score
+		case key == "action":
+			got = decisionActionsContain(result.Actions, scalarString(want))
+		case key == "event":
+			got = decisionActionsContain(result.Events, scalarString(want))
+		case key == "obligation":
+			got = decisionActionsContain(result.Obligations, scalarString(want))
+		case key == "advice":
+			got = decisionActionsContain(result.Advice, scalarString(want))
+		case strings.HasPrefix(key, "attributes."):
+			got = lookupMapPath(result.Attributes, strings.TrimPrefix(key, "attributes."))
+		case strings.HasPrefix(key, "metadata."):
+			got = lookupMapPath(result.Metadata, strings.TrimPrefix(key, "metadata."))
+		default:
+			continue
+		}
+		if !equalLoose(got, want) {
+			if b, ok := got.(bool); ok && scalarString(want) != "" {
+				if b {
+					continue
+				}
+			}
+			ok = false
+			*diags = append(*diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("expected %s %#v, got %#v", key, want, got)})
+		}
+	}
+	return ok
+}
+
 func evaluateDecisionScenarioInternal(program *DecisionProgram, scenario *DecisionScenario, opts *Options, evalOpts DecisionEvaluateOptions) (*DecisionScenarioResult, error) {
 	if scenario == nil {
 		return nil, fmt.Errorf("nil decision scenario")
@@ -1461,6 +2568,42 @@ func evaluateDecisionScenarioInternal(program *DecisionProgram, scenario *Decisi
 		out.Passed = false
 		out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("expected event %q", want)})
 	}
+	if want := scalarString(scenario.Expect["obligation"]); want != "" && !decisionActionsContain(result.Obligations, want) {
+		out.Passed = false
+		out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("expected obligation %q", want)})
+	}
+	if want := scalarString(scenario.Expect["advice"]); want != "" && !decisionActionsContain(result.Advice, want) {
+		out.Passed = false
+		out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("expected advice %q", want)})
+	}
+	for key, want := range scenario.Expect {
+		switch {
+		case strings.HasPrefix(key, "attributes."):
+			path := strings.TrimPrefix(key, "attributes.")
+			if !equalLoose(lookupMapPath(result.Attributes, path), want) {
+				out.Passed = false
+				out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("expected attributes.%s %#v", path, want)})
+			}
+		case strings.HasPrefix(key, "metadata."):
+			path := strings.TrimPrefix(key, "metadata.")
+			if !equalLoose(lookupMapPath(result.Metadata, path), want) {
+				out.Passed = false
+				out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("expected metadata.%s %#v", path, want)})
+			}
+		case strings.HasPrefix(key, "outcome.attributes."):
+			path := strings.TrimPrefix(key, "outcome.attributes.")
+			if result.Outcome == nil || !equalLoose(lookupMapPath(result.Outcome.Attributes, path), want) {
+				out.Passed = false
+				out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("expected outcome.attributes.%s %#v", path, want)})
+			}
+		case strings.HasPrefix(key, "outcome.metadata."):
+			path := strings.TrimPrefix(key, "outcome.metadata.")
+			if result.Outcome == nil || !equalLoose(lookupMapPath(result.Outcome.Metadata, path), want) {
+				out.Passed = false
+				out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("expected outcome.metadata.%s %#v", path, want)})
+			}
+		}
+	}
 	if want, ok := scenario.Expect["diagnostics"].(string); ok && want == "none" && len(result.Diagnostics) > 0 {
 		out.Passed = false
 		out.Diagnostics = append(out.Diagnostics, Diagnostic{Severity: "error", Message: "expected no diagnostics"})
@@ -1479,6 +2622,13 @@ func decisionActionsContain(actions []DecisionAction, name string) bool {
 		}
 	}
 	return false
+}
+
+func lookupMapPath(m map[string]any, path string) any {
+	if len(m) == 0 || path == "" {
+		return nil
+	}
+	return lookup(m, path)
 }
 
 func scenarioFromMap(s *DecisionScenario, m map[string]any) {

@@ -56,10 +56,38 @@ func main() {
 		},
 	})
 
+	runWithEngine("advanced decision table with outcomes and phases", "packages/advanced_decision_features.bcl", "customer-review", map[string]any{
+		"customer": map[string]any{
+			"verified":    true,
+			"blacklisted": false,
+		},
+		"application": map[string]any{
+			"kind":    "loan",
+			"amount":  int64(60000),
+			"channel": "mobile",
+			"tags":    []any{"prime", "existing_customer"},
+		},
+	})
+
+	runWithEngine("advanced decision why-not trace", "packages/advanced_decision_features.bcl", "customer-review", map[string]any{
+		"customer": map[string]any{
+			"verified":    false,
+			"blacklisted": false,
+		},
+		"application": map[string]any{
+			"kind":    "loan",
+			"amount":  int64(12000),
+			"channel": "broker",
+			"tags":    []any{"standard"},
+		},
+	})
+
+	runCompleteDecisionEssentials()
 	runStrictValidationExample()
 	runInlinePatternDecision()
 	runScenario("packages/loan_eligibility.bcl", "scenarios/loan_prime.yaml")
 	runInlineScenario()
+	runDecisionTestMatrix()
 }
 
 func runWithEngine(name, path, decision string, input map[string]any) {
@@ -74,6 +102,40 @@ func runWithEngine(name, path, decision string, input map[string]any) {
 	}
 	fmt.Printf("\n== %s ==\n", name)
 	printJSON(result)
+}
+
+func runCompleteDecisionEssentials() {
+	program, err := compileDecisionPackage("packages/complete_decision_essentials.bcl")
+	if err != nil {
+		log.Fatal(err)
+	}
+	engine := bcl.NewDecisionEngine(program, nil)
+	result, err := engine.Evaluate("complete_review", map[string]any{
+		"time": map[string]any{"now": "2026-05-20T00:00:00Z"},
+		"customer": map[string]any{
+			"verified":    true,
+			"blacklisted": false,
+			"segment":     "prime",
+		},
+		"request": map[string]any{
+			"kind":    "loan",
+			"amount":  int64(60000),
+			"channel": "mobile",
+			"tags":    []any{"prime", "existing_customer"},
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("\n== complete decision essentials ==\n")
+	printJSON(result)
+
+	report, err := bcl.EvaluateDecisionDataset(program, "complete_review", "complete_review_batch", nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("\n== complete decision batch report ==\n")
+	printJSON(report)
 }
 
 func runStrictValidationExample() {
@@ -224,6 +286,15 @@ func runInlineScenario() {
 		log.Fatal(err)
 	}
 	fmt.Printf("\n== inline scenario with extended expectations ==\n")
+	printJSON(result)
+}
+
+func runDecisionTestMatrix() {
+	result, err := bcl.TestFile("examples/bcl/packages/advanced_decision_features.bcl", &bcl.Options{AllowTime: true})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("\n== decision test matrix ==\n")
 	printJSON(result)
 }
 

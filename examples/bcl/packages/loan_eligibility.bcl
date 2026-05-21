@@ -14,6 +14,12 @@ module "loan-eligibility" {
     strategy deny_overrides
   }
 
+  decision_schema "loan-application-table" {
+    effects [allow, deny, require_review]
+    default deny
+    strategy first_match
+  }
+
   predicate "prime_applicant" {
     match(applicant, case({age: age, credit_score: score, monthly_income: income} if age >= MIN_AGE and score >= PRIME_CREDIT and income >= loan.emi * 3, true), false)
   }
@@ -53,6 +59,33 @@ module "loan-eligibility" {
         event risk_signal { type "income_pressure" }
       }
       reason "income is close to repayment threshold"
+    }
+  }
+
+  decision_table "loan-application-table" {
+    strategy first_match
+
+    row "prime-table-allow" {
+      priority 20
+      when {
+        applicant.age >= MIN_AGE
+        applicant.credit_score >= PRIME_CREDIT
+        applicant.monthly_income >= loan.emi * 3
+        applicant.blacklisted == false
+      }
+      then { decision allow }
+      reason "prime applicant affordability requirements met"
+    }
+
+    row "borderline-table-review" {
+      priority 10
+      when {
+        applicant.credit_score >= 620
+        applicant.credit_score < PRIME_CREDIT
+        applicant.monthly_income >= loan.emi * 3
+      }
+      then { decision require_review }
+      reason "borderline credit requires manual review"
     }
   }
 

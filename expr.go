@@ -55,6 +55,8 @@ func defaultEvalOptions() *EvalOptions {
 
 var exprTokenCache sync.Map
 var regexCache sync.Map
+var matchProgramCache sync.Map
+var patternBindPool = sync.Pool{New: func() any { return map[string]any{} }}
 
 var exprProgramCache = struct {
 	sync.RWMutex
@@ -80,6 +82,10 @@ type OptionalValue struct {
 }
 
 type AllPattern struct {
+	Pattern string
+}
+
+type AnyPattern struct {
 	Pattern string
 }
 
@@ -729,6 +735,11 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 			return nil, fmt.Errorf("ALL requires 1 argument")
 		}
 		return AllPattern{Pattern: fmt.Sprint(args[0])}, nil
+	case "ANY", "EXISTS":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("%s requires 1 argument", name)
+		}
+		return AnyPattern{Pattern: fmt.Sprint(args[0])}, nil
 	case "lower":
 		if len(args) != 1 {
 			return nil, fmt.Errorf("lower requires 1 argument")
@@ -1042,8 +1053,41 @@ func evalOp(op string, a, b any) (any, error) {
 
 func evalMatchRaw(raw string, vars map[string]any, opts *EvalOptions) (any, error) {
 	raw = strings.TrimSpace(raw)
+	prog, err := compileMatchProgram(raw)
+	if err != nil {
+		return nil, err
+	}
+	return prog.eval(vars, opts)
+}
+
+type matchCaseProgram struct {
+	Pattern string
+	Node    *patternNode
+	Guard   string
+	Result  string
+}
+
+type matchProgram struct {
+	Subject string
+	Cases   []matchCaseProgram
+	Default string
+}
+
+func compileMatchProgram(raw string) (*matchProgram, error) {
+	if cached, ok := matchProgramCache.Load(raw); ok {
+		return cached.(*matchProgram), nil
+	}
+	prog, err := parseMatchProgram(raw)
+	if err != nil {
+		return nil, err
+	}
+	actual, _ := matchProgramCache.LoadOrStore(raw, prog)
+	return actual.(*matchProgram), nil
+}
+
+func parseMatchProgram(raw string) (*matchProgram, error) {
 	if strings.HasPrefix(raw, "match(") {
-		return evalMatchCallRaw(raw, vars, opts)
+		return parseMatchCallProgram(raw)
 	}
 	open := strings.IndexByte(raw, '{')
 	if open < 0 || !strings.HasPrefix(raw, "match ") {
@@ -1054,35 +1098,19 @@ func evalMatchRaw(raw string, vars map[string]any, opts *EvalOptions) (any, erro
 	if close < open {
 		return nil, fmt.Errorf("malformed match expression")
 	}
-	subject, err := evalProgramRaw(subjectExpr, vars, opts)
-	if err != nil {
-		return nil, err
-	}
+	prog := &matchProgram{Subject: subjectExpr}
 	for _, rawCase := range splitMatchCases(raw[open+1 : close]) {
 		pat, guard, result, err := parseRawCase(rawCase)
 		if err != nil {
 			return nil, err
 		}
-		binds := map[string]any{}
-		if !matchPatternRaw(subject, pat, binds) {
-			continue
-		}
-		caseVars := mergeVars(vars, binds)
-		if guard != "" {
-			ok, err := evalProgramRaw(guard, caseVars, opts)
-			if err != nil {
-				return nil, err
-			}
-			if !truthy(ok) {
-				continue
-			}
-		}
-		return evalProgramRaw(result, caseVars, opts)
+		node := compilePatternNode(pat)
+		prog.Cases = append(prog.Cases, matchCaseProgram{Pattern: pat, Node: node, Guard: guard, Result: result})
 	}
-	return nil, nil
+	return prog, nil
 }
 
-func evalMatchCallRaw(raw string, vars map[string]any, opts *EvalOptions) (any, error) {
+func parseMatchCallProgram(raw string) (*matchProgram, error) {
 	inner := strings.TrimSpace(raw[len("match("):])
 	if !strings.HasSuffix(inner, ")") {
 		return nil, fmt.Errorf("malformed match call")
@@ -1091,18 +1119,12 @@ func evalMatchCallRaw(raw string, vars map[string]any, opts *EvalOptions) (any, 
 	if len(args) < 2 {
 		return nil, fmt.Errorf("match requires a value and at least one case")
 	}
-	subject, err := evalProgramRaw(args[0], vars, opts)
-	if err != nil {
-		return nil, err
-	}
+	prog := &matchProgram{Subject: strings.TrimSpace(args[0])}
 	for _, arg := range args[1:] {
 		arg = strings.TrimSpace(arg)
 		if !strings.HasPrefix(arg, "case(") || !strings.HasSuffix(arg, ")") {
-			v, err := evalProgramRaw(arg, vars, opts)
-			if err != nil {
-				return nil, err
-			}
-			return v, nil
+			prog.Default = arg
+			return prog, nil
 		}
 		parts := splitTopLevel(arg[len("case("):len(arg)-1], ',')
 		if len(parts) < 2 {
@@ -1110,13 +1132,33 @@ func evalMatchCallRaw(raw string, vars map[string]any, opts *EvalOptions) (any, 
 		}
 		pat, guard := splitPatternGuard(parts[0])
 		result := strings.Join(parts[1:], ",")
-		binds := map[string]any{}
-		if !matchPatternRaw(subject, pat, binds) {
+		node := compilePatternNode(pat)
+		prog.Cases = append(prog.Cases, matchCaseProgram{Pattern: pat, Node: node, Guard: guard, Result: result})
+	}
+	return prog, nil
+}
+
+func (p *matchProgram) eval(vars map[string]any, opts *EvalOptions) (any, error) {
+	subject, err := evalProgramRaw(p.Subject, vars, opts)
+	if err != nil {
+		return nil, err
+	}
+	binds := patternBindPool.Get().(map[string]any)
+	defer putPatternBinds(binds)
+	for _, c := range p.Cases {
+		clear(binds)
+		if !matchPatternCompiled(subject, c.Node, binds) {
 			continue
 		}
-		caseVars := mergeVars(vars, binds)
-		if guard != "" {
-			ok, err := evalProgramRaw(guard, caseVars, opts)
+		caseVars := vars
+		if c.Guard != "" {
+			ok, handled, err := evalSimpleExprBoolOverlay(c.Guard, vars, binds)
+			if !handled {
+				caseVars = mergeVars(vars, binds)
+				v, evalErr := evalProgramRaw(c.Guard, caseVars, opts)
+				err = evalErr
+				ok = truthy(v)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -1124,9 +1166,68 @@ func evalMatchCallRaw(raw string, vars map[string]any, opts *EvalOptions) (any, 
 				continue
 			}
 		}
-		return evalProgramRaw(result, caseVars, opts)
+		if len(binds) > 0 && resultMayUseBindings(c.Result, binds) {
+			caseVars = mergeVars(vars, binds)
+		}
+		return evalProgramRaw(c.Result, caseVars, opts)
+	}
+	if p.Default != "" {
+		return evalProgramRaw(p.Default, vars, opts)
 	}
 	return nil, nil
+}
+
+func putPatternBinds(binds map[string]any) {
+	clear(binds)
+	patternBindPool.Put(binds)
+}
+
+func evalSimpleExprBoolOverlay(expr string, vars, binds map[string]any) (bool, bool, error) {
+	if strings.HasPrefix(expr, "match ") || strings.HasPrefix(expr, "match(") {
+		return false, false, nil
+	}
+	for _, op := range []string{" not_in ", " starts_with ", " ends_with ", " contains ", " has_any ", " has_all ", " == ", " != ", " >= ", " <= ", " > ", " < ", " in ", " has "} {
+		idx := strings.Index(expr, op)
+		if idx < 0 {
+			continue
+		}
+		left, ok := simplePatternOperand(strings.TrimSpace(expr[:idx]), vars, binds)
+		if !ok {
+			return false, false, nil
+		}
+		right, ok := simplePatternOperand(strings.TrimSpace(expr[idx+len(op):]), vars, binds)
+		if !ok {
+			return false, false, nil
+		}
+		v, err := evalOp(strings.TrimSpace(op), left, right)
+		if err != nil {
+			return false, true, err
+		}
+		return truthy(v), true, nil
+	}
+	return false, false, nil
+}
+
+func simplePatternOperand(raw string, vars, binds map[string]any) (any, bool) {
+	if raw == "" || strings.ContainsAny(raw, " ()[]{}+-*/%,") {
+		return nil, false
+	}
+	if v, ok := parseSimpleOperandLiteral(raw); ok {
+		return v, true
+	}
+	if v, ok := binds[raw]; ok {
+		return v, true
+	}
+	return lookup(vars, raw), true
+}
+
+func resultMayUseBindings(result string, binds map[string]any) bool {
+	for name := range binds {
+		if strings.Contains(result, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseRawCase(raw string) (pattern, guard, result string, err error) {
@@ -1284,6 +1385,308 @@ func isWordBoundary(s string, i int) bool {
 	return !(c == '_' || c == '-' || c == '.' || c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z')
 }
 
+type patternKind byte
+
+const (
+	patternInvalid patternKind = iota
+	patternAny
+	patternNone
+	patternNull
+	patternMissing
+	patternSome
+	patternAnyCollection
+	patternAllCollection
+	patternObject
+	patternList
+	patternTypedBind
+	patternBind
+	patternLiteral
+	patternNot
+	patternAlt
+	patternAlias
+	patternTypeCtor
+)
+
+type patternField struct {
+	Key  string
+	Node *patternNode
+}
+
+type patternNode struct {
+	Kind     patternKind
+	Name     string
+	Type     string
+	Literal  any
+	Child    *patternNode
+	Children []*patternNode
+	Fields   []patternField
+	Rest     string
+}
+
+func compilePatternNode(pattern string) *patternNode {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return &patternNode{Kind: patternInvalid}
+	}
+	alts := splitTopLevel(pattern, '|')
+	if len(alts) > 1 {
+		node := &patternNode{Kind: patternAlt, Children: make([]*patternNode, 0, len(alts))}
+		for _, alt := range alts {
+			node.Children = append(node.Children, compilePatternNode(alt))
+		}
+		return node
+	}
+	if strings.HasPrefix(pattern, "not ") {
+		return &patternNode{Kind: patternNot, Child: compilePatternNode(pattern[len("not "):])}
+	}
+	if parts := splitTopLevelWord(pattern, "as"); len(parts) == 2 {
+		name := strings.TrimSpace(parts[1])
+		if isBindName(name) && name != "_" {
+			return &patternNode{Kind: patternAlias, Name: name, Child: compilePatternNode(parts[0])}
+		}
+		return &patternNode{Kind: patternInvalid}
+	}
+	if pattern == "_" || pattern == "ANY" {
+		return &patternNode{Kind: patternAny}
+	}
+	if pattern == "NONE" {
+		return &patternNode{Kind: patternNone}
+	}
+	if pattern == "NULL" {
+		return &patternNode{Kind: patternNull}
+	}
+	if pattern == "MISSING" {
+		return &patternNode{Kind: patternMissing}
+	}
+	if strings.HasPrefix(pattern, "SOME(") && strings.HasSuffix(pattern, ")") {
+		return &patternNode{Kind: patternSome, Child: compilePatternNode(pattern[len("SOME(") : len(pattern)-1])}
+	}
+	if (strings.HasPrefix(pattern, "ANY(") || strings.HasPrefix(pattern, "EXISTS(")) && strings.HasSuffix(pattern, ")") {
+		open := strings.IndexByte(pattern, '(')
+		return &patternNode{Kind: patternAnyCollection, Child: compilePatternNode(pattern[open+1 : len(pattern)-1])}
+	}
+	if strings.HasPrefix(pattern, "ALL(") && strings.HasSuffix(pattern, ")") {
+		return &patternNode{Kind: patternAllCollection, Child: compilePatternNode(pattern[len("ALL(") : len(pattern)-1])}
+	}
+	if strings.HasPrefix(pattern, "{") && strings.HasSuffix(pattern, "}") {
+		node := &patternNode{Kind: patternObject}
+		for _, field := range splitTopLevel(pattern[1:len(pattern)-1], ',') {
+			field = strings.TrimSpace(field)
+			if field == "" {
+				continue
+			}
+			if strings.HasPrefix(field, "...") {
+				name := strings.TrimSpace(strings.TrimPrefix(field, "..."))
+				if isBindName(name) && name != "_" {
+					node.Rest = name
+				}
+				continue
+			}
+			parts := splitTopLevel(field, ':')
+			if len(parts) < 2 {
+				return &patternNode{Kind: patternInvalid}
+			}
+			node.Fields = append(node.Fields, patternField{Key: unquotePatternKey(parts[0]), Node: compilePatternNode(strings.Join(parts[1:], ":"))})
+		}
+		return node
+	}
+	if strings.HasPrefix(pattern, "[") && strings.HasSuffix(pattern, "]") {
+		node := &patternNode{Kind: patternList}
+		for _, item := range splitTopLevel(pattern[1:len(pattern)-1], ',') {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			if strings.HasPrefix(item, "...") {
+				name := strings.TrimSpace(strings.TrimPrefix(item, "..."))
+				if isBindName(name) && name != "_" {
+					node.Rest = name
+				}
+				continue
+			}
+			node.Children = append(node.Children, compilePatternNode(item))
+		}
+		return node
+	}
+	if name, typ, ok := splitTypedPattern(pattern); ok {
+		return &patternNode{Kind: patternTypedBind, Name: name, Type: typ}
+	}
+	if isBindName(pattern) {
+		return &patternNode{Kind: patternBind, Name: pattern}
+	}
+	if lit, ok := parsePatternLiteral(pattern); ok {
+		return &patternNode{Kind: patternLiteral, Literal: lit}
+	}
+	if strings.Contains(pattern, "(") && strings.HasSuffix(pattern, ")") {
+		name := strings.TrimSpace(pattern[:strings.IndexByte(pattern, '(')])
+		inner := pattern[strings.IndexByte(pattern, '(')+1 : len(pattern)-1]
+		node := &patternNode{Kind: patternTypeCtor, Name: name}
+		for _, part := range splitTopLevel(inner, ',') {
+			if part = strings.TrimSpace(part); part != "" {
+				node.Children = append(node.Children, compilePatternNode(part))
+			}
+		}
+		return node
+	}
+	return &patternNode{Kind: patternInvalid}
+}
+
+func matchPatternCompiled(v any, node *patternNode, binds map[string]any) bool {
+	if node == nil {
+		return false
+	}
+	switch node.Kind {
+	case patternAny:
+		return true
+	case patternNone:
+		if opt, ok := v.(OptionalValue); ok {
+			return !opt.Present
+		}
+		return v == nil || v == SymbolNONE
+	case patternNull:
+		return v == nil
+	case patternMissing:
+		_, ok := v.(missingValue)
+		return ok
+	case patternSome:
+		opt, ok := v.(OptionalValue)
+		return ok && opt.Present && matchPatternCompiled(opt.Value, node.Child, binds)
+	case patternAnyCollection:
+		xs, ok := sliceValues(v)
+		if !ok {
+			return false
+		}
+		for _, item := range xs {
+			if matchPatternCompiled(item, node.Child, binds) {
+				return true
+			}
+		}
+		return false
+	case patternAllCollection:
+		xs, ok := sliceValues(v)
+		if !ok {
+			return false
+		}
+		for _, item := range xs {
+			if !matchPatternCompiled(item, node.Child, binds) {
+				return false
+			}
+		}
+		return true
+	case patternObject:
+		for _, field := range node.Fields {
+			val, exists := lookupPartPresence(v, field.Key)
+			if !exists {
+				val = missingValue{}
+			}
+			if !matchPatternCompiled(val, field.Node, binds) {
+				return false
+			}
+		}
+		if node.Rest != "" {
+			bindObjectRest(v, node.Fields, node.Rest, binds)
+		}
+		return true
+	case patternList:
+		items, ok := sliceValues(v)
+		if !ok || len(items) < len(node.Children) {
+			return false
+		}
+		if node.Rest == "" && len(items) != len(node.Children) {
+			return false
+		}
+		for i, child := range node.Children {
+			if !matchPatternCompiled(items[i], child, binds) {
+				return false
+			}
+		}
+		if node.Rest != "" {
+			binds[node.Rest] = append([]any(nil), items[len(node.Children):]...)
+		}
+		return true
+	case patternTypedBind:
+		if !matchesTypeName(v, node.Type) {
+			return false
+		}
+		if node.Name != "_" {
+			binds[node.Name] = v
+		}
+		return true
+	case patternBind:
+		binds[node.Name] = v
+		return true
+	case patternLiteral:
+		return equalLoose(v, node.Literal)
+	case patternNot:
+		scratch := patternBindPool.Get().(map[string]any)
+		ok := !matchPatternCompiled(v, node.Child, scratch)
+		putPatternBinds(scratch)
+		return ok
+	case patternAlt:
+		for _, child := range node.Children {
+			local := patternBindPool.Get().(map[string]any)
+			if matchPatternCompiled(v, child, local) {
+				for k, val := range local {
+					binds[k] = val
+				}
+				putPatternBinds(local)
+				return true
+			}
+			putPatternBinds(local)
+		}
+		return false
+	case patternAlias:
+		if !matchPatternCompiled(v, node.Child, binds) {
+			return false
+		}
+		binds[node.Name] = v
+		return true
+	case patternTypeCtor:
+		if fmt.Sprint(lookupPart(v, "type")) != node.Name && fmt.Sprint(lookupPart(v, "__type")) != node.Name {
+			return false
+		}
+		for _, child := range node.Children {
+			if !matchPatternCompiled(v, child, binds) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+type missingValue struct{}
+
+func bindObjectRest(v any, fields []patternField, restName string, binds map[string]any) {
+	used := make(map[string]bool, len(fields))
+	for _, field := range fields {
+		used[field.Key] = true
+	}
+	rest := map[string]any{}
+	switch m := v.(type) {
+	case map[string]any:
+		for k, val := range m {
+			if !used[k] {
+				rest[k] = val
+			}
+		}
+	default:
+		rv := reflect.ValueOf(v)
+		if rv.IsValid() && rv.Kind() == reflect.Struct {
+			rt := rv.Type()
+			for i := 0; i < rv.NumField(); i++ {
+				field := rt.Field(i)
+				if field.PkgPath != "" || used[field.Name] {
+					continue
+				}
+				rest[field.Name] = rv.Field(i).Interface()
+			}
+		}
+	}
+	binds[restName] = rest
+}
+
 func matchPatternRaw(v any, pattern string, binds map[string]any) bool {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "" {
@@ -1301,6 +1704,20 @@ func matchPatternRaw(v any, pattern string, binds map[string]any) bool {
 			return true
 		}
 	}
+	if strings.HasPrefix(pattern, "not ") {
+		return !matchPatternRaw(v, strings.TrimSpace(pattern[len("not "):]), map[string]any{})
+	}
+	if parts := splitTopLevelWord(pattern, "as"); len(parts) == 2 {
+		name := strings.TrimSpace(parts[1])
+		if !isBindName(name) || name == "_" {
+			return false
+		}
+		if !matchPatternRaw(v, parts[0], binds) {
+			return false
+		}
+		binds[name] = v
+		return true
+	}
 	if pattern == "_" || pattern == "ANY" {
 		return true
 	}
@@ -1310,12 +1727,37 @@ func matchPatternRaw(v any, pattern string, binds map[string]any) bool {
 		}
 		return v == nil || v == SymbolNONE
 	}
+	if pattern == "NULL" {
+		return v == nil
+	}
+	if pattern == "MISSING" {
+		_, ok := v.(missingValue)
+		return ok
+	}
 	if strings.HasPrefix(pattern, "SOME(") && strings.HasSuffix(pattern, ")") {
 		opt, ok := v.(OptionalValue)
 		if !ok || !opt.Present {
 			return false
 		}
 		return matchPatternRaw(opt.Value, pattern[len("SOME("):len(pattern)-1], binds)
+	}
+	if (strings.HasPrefix(pattern, "ANY(") || strings.HasPrefix(pattern, "EXISTS(")) && strings.HasSuffix(pattern, ")") {
+		xs, ok := sliceValues(v)
+		if !ok {
+			return false
+		}
+		open := strings.IndexByte(pattern, '(')
+		inner := pattern[open+1 : len(pattern)-1]
+		for _, item := range xs {
+			local := map[string]any{}
+			if matchPatternRaw(item, inner, local) {
+				for k, val := range local {
+					binds[k] = val
+				}
+				return true
+			}
+		}
+		return false
 	}
 	if strings.HasPrefix(pattern, "ALL(") && strings.HasSuffix(pattern, ")") {
 		xs, ok := sliceValues(v)
@@ -1383,6 +1825,8 @@ func matchPatternValue(v, pattern any, binds map[string]any) bool {
 		return matchPatternValue(v, p.Value, binds)
 	case AllPattern:
 		return matchPatternRaw(v, "ALL("+p.Pattern+")", binds)
+	case AnyPattern:
+		return matchPatternRaw(v, "ANY("+p.Pattern+")", binds)
 	default:
 		return equalLoose(v, p)
 	}
@@ -1390,7 +1834,7 @@ func matchPatternValue(v, pattern any, binds map[string]any) bool {
 
 func isPatternValue(v any) bool {
 	switch v.(type) {
-	case Symbol, OptionalValue, AllPattern:
+	case Symbol, OptionalValue, AllPattern, AnyPattern:
 		return true
 	default:
 		return false
@@ -1398,9 +1842,18 @@ func isPatternValue(v any) bool {
 }
 
 func matchObjectPattern(v any, body string, binds map[string]any) bool {
+	used := map[string]bool{}
+	restName := ""
 	for _, field := range splitTopLevel(body, ',') {
 		field = strings.TrimSpace(field)
-		if field == "" || strings.HasPrefix(field, "...") {
+		if field == "" {
+			continue
+		}
+		if strings.HasPrefix(field, "...") {
+			name := strings.TrimSpace(strings.TrimPrefix(field, "..."))
+			if isBindName(name) && name != "_" {
+				restName = name
+			}
 			continue
 		}
 		parts := splitTopLevel(field, ':')
@@ -1408,10 +1861,39 @@ func matchObjectPattern(v any, body string, binds map[string]any) bool {
 			return false
 		}
 		key := unquotePatternKey(parts[0])
+		used[key] = true
 		pat := strings.Join(parts[1:], ":")
-		if !matchPatternRaw(lookupPart(v, key), pat, binds) {
+		val, exists := lookupPartPresence(v, key)
+		if !exists {
+			val = missingValue{}
+		}
+		if !matchPatternRaw(val, pat, binds) {
 			return false
 		}
+	}
+	if restName != "" {
+		rest := map[string]any{}
+		switch m := v.(type) {
+		case map[string]any:
+			for k, val := range m {
+				if !used[k] {
+					rest[k] = val
+				}
+			}
+		default:
+			rv := reflect.ValueOf(v)
+			if rv.IsValid() && rv.Kind() == reflect.Struct {
+				rt := rv.Type()
+				for i := 0; i < rv.NumField(); i++ {
+					field := rt.Field(i)
+					if field.PkgPath != "" || used[field.Name] {
+						continue
+					}
+					rest[field.Name] = rv.Field(i).Interface()
+				}
+			}
+		}
+		binds[restName] = rest
 	}
 	return true
 }
@@ -1430,6 +1912,10 @@ func matchListPattern(v any, body string, binds map[string]any) bool {
 			continue
 		}
 		if strings.HasPrefix(part, "...") {
+			name := strings.TrimSpace(strings.TrimPrefix(part, "..."))
+			if isBindName(name) && name != "_" {
+				binds[name] = append([]any(nil), items[need:]...)
+			}
 			hasRest = true
 			continue
 		}
@@ -1569,6 +2055,9 @@ func sliceValues(v any) ([]any, bool) {
 }
 
 func mergeVars(vars map[string]any, binds map[string]any) map[string]any {
+	if len(binds) == 0 {
+		return vars
+	}
 	out := make(map[string]any, len(vars)+len(binds))
 	for k, v := range vars {
 		out[k] = v
@@ -1680,6 +2169,21 @@ func lookupPart(cur any, part string) any {
 		}
 	}
 	return nil
+}
+
+func lookupPartPresence(cur any, part string) (any, bool) {
+	if m, ok := cur.(map[string]any); ok {
+		v, ok := m[part]
+		return v, ok
+	}
+	rv := reflect.ValueOf(cur)
+	if rv.IsValid() && rv.Kind() == reflect.Struct {
+		f := rv.FieldByName(part)
+		if f.IsValid() {
+			return f.Interface(), true
+		}
+	}
+	return nil, false
 }
 
 func lookupParts(vars map[string]any, parts []string) any {

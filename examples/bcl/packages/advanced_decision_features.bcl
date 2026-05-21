@@ -1,0 +1,164 @@
+module "advanced-decision-features" {
+  version "1"
+  environment "example"
+  metadata { owner "risk-platform" domain "decisioning" }
+
+  decision_schema "customer-review" {
+    effects [allow, deny, require_review]
+    default deny
+    strategy first_match
+  }
+
+  decision_table "customer-review" {
+    default deny
+    strategy first_match
+
+    row "deny-blacklisted" {
+      phase guard
+      priority 100
+      when {
+        customer.blacklisted == true
+      }
+      then {
+        outcome {
+          decision deny
+          reason "customer is blacklisted"
+          attributes {
+            band "blocked"
+            channel "manual"
+          }
+          metadata {
+            queue "fraud"
+            severity "critical"
+          }
+        }
+      }
+    }
+
+    row "score-high-value-request" {
+      phase score
+      priority 90
+      when {
+        application.amount >= 50000
+      }
+      then {
+        score += 25
+        event risk_signal { type "high_value_request" }
+      }
+      reason "large requests increase review score"
+    }
+
+    row "allow-prime-digital-loan" {
+      phase decide
+      priority 80
+      when {
+        match(application, case({kind: "loan", amount: amount:number, channel: not "broker", tags: EXISTS("prime"), ...rest} if amount <= 75000, true), false)
+        customer.verified == true
+      }
+      then {
+        outcome {
+          decision allow
+          reason "verified prime digital loan"
+          attributes {
+            band "prime"
+            route "auto"
+          }
+          metadata {
+            queue "straight-through"
+          }
+        }
+      }
+    }
+
+    row "review-large-loan" {
+      phase decide
+      priority 40
+      when {
+        application.kind == "loan"
+        application.amount >= 20000
+      }
+      then {
+        outcome {
+          decision require_review
+          reason "large loan requires analyst review"
+          attributes {
+            band "large"
+            route "analyst"
+          }
+          metadata {
+            queue "credit-risk"
+          }
+        }
+      }
+    }
+
+    row "notify-review-team" {
+      phase notify
+      priority 1
+      when {
+        application.amount >= 20000
+      }
+      then {
+        event review_notification { team "credit-risk" }
+      }
+      reason "notify credit-risk for large requests"
+    }
+  }
+
+  test_matrix "customer review outcomes" {
+    decision "customer-review"
+
+    case "prime digital loan is allowed" {
+      input {
+        customer.verified true
+        customer.blacklisted false
+        application.kind "loan"
+        application.amount 60000
+        application.channel "mobile"
+        application.tags ["prime", "existing_customer"]
+      }
+      expect {
+        effect "allow"
+        allowed true
+        score 25
+        attributes.band "prime"
+        outcome.attributes.route "auto"
+        metadata.queue "straight-through"
+      }
+    }
+
+    case "broker large loan requires review" {
+      input {
+        customer.verified true
+        customer.blacklisted false
+        application.kind "loan"
+        application.amount 30000
+        application.channel "broker"
+        application.tags ["prime"]
+      }
+      expect {
+        effect "require_review"
+        allowed false
+        attributes.band "large"
+        metadata.queue "credit-risk"
+      }
+    }
+
+    case "blacklisted customer is denied" {
+      input {
+        customer.verified true
+        customer.blacklisted true
+        application.kind "loan"
+        application.amount 15000
+        application.channel "mobile"
+        application.tags ["prime"]
+      }
+      expect {
+        effect "deny"
+        allowed false
+        attributes.band "blocked"
+        metadata.queue "fraud"
+      }
+    }
+  }
+}

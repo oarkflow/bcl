@@ -3,6 +3,7 @@ package bcl
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 )
 
 type TestResult struct {
@@ -17,6 +18,11 @@ type TestSuiteResult struct {
 	Passed      bool         `json:"passed"`
 	Tests       []TestResult `json:"tests,omitempty"`
 	Diagnostics []Diagnostic `json:"diagnostics,omitempty"`
+}
+
+type decisionTestCase struct {
+	Block    *Block
+	Decision string
 }
 
 func Test(doc *Document, input map[string]any, opts *Options) TestResult {
@@ -40,15 +46,16 @@ func TestFile(path string, opts *Options) (*TestSuiteResult, error) {
 	opts.ResolveImports = true
 	opts.ResolveModules = true
 	suite := &TestSuiteResult{Passed: true}
-	tests := collectTestBlocks(doc.Items)
+	tests := collectTestCases(doc.Items)
 	if len(tests) == 0 {
 		return suite, nil
 	}
 	decisionProgram, _ := CompileDecisionDocument(doc, opts)
-	for _, testBlock := range tests {
+	for _, testCase := range tests {
+		testBlock := testCase.Block
 		input := testInputFromBlock(testBlock, opts)
 		testOpts := cloneOptionsForTest(opts, input)
-		if decisionName := decisionNameFromTestBlock(testBlock, opts); decisionName != "" && decisionProgram != nil {
+		if decisionName := firstNonEmpty(decisionNameFromTestBlock(testBlock, opts), testCase.Decision); decisionName != "" && decisionProgram != nil {
 			result := runDecisionTest(decisionProgram, testBlock, decisionName, testOpts)
 			if !result.Passed {
 				suite.Passed = false
@@ -75,6 +82,35 @@ func TestFile(path string, opts *Options) (*TestSuiteResult, error) {
 		suite.Tests = append(suite.Tests, result)
 	}
 	return suite, nil
+}
+
+func collectTestCases(nodes []Node) []decisionTestCase {
+	var out []decisionTestCase
+	var walk func([]Node, string)
+	walk = func(nodes []Node, inheritedDecision string) {
+		for _, n := range nodes {
+			b, ok := n.(*Block)
+			if !ok {
+				continue
+			}
+			switch b.Type {
+			case "test":
+				out = append(out, decisionTestCase{Block: b, Decision: inheritedDecision})
+			case "test_matrix":
+				matrixDecision := firstNonEmpty(decisionNameFromTestBlock(b, &Options{}), inheritedDecision)
+				for _, child := range b.Body {
+					if c, ok := child.(*Block); ok && c.Type == "case" {
+						out = append(out, decisionTestCase{Block: c, Decision: matrixDecision})
+					}
+				}
+				walk(b.Body, matrixDecision)
+			default:
+				walk(b.Body, inheritedDecision)
+			}
+		}
+	}
+	walk(nodes, "")
+	return out
 }
 
 func decisionNameFromTestBlock(test *Block, opts *Options) string {
@@ -176,11 +212,16 @@ func runDecisionTest(program *DecisionProgram, testBlock *Block, decisionName st
 	}
 	result.Simulation = &SimulationResult{
 		Decision: map[string]any{
-			"effect":    decision.Effect,
-			"allowed":   decision.Allowed,
-			"policy_id": decision.PolicyID,
-			"rank":      decision.Rank,
-			"score":     decision.Score,
+			"effect":      decision.Effect,
+			"allowed":     decision.Allowed,
+			"policy_id":   decision.PolicyID,
+			"rank":        decision.Rank,
+			"score":       decision.Score,
+			"outcome":     decision.Outcome,
+			"attributes":  decision.Attributes,
+			"metadata":    decision.Metadata,
+			"obligations": decision.Obligations,
+			"advice":      decision.Advice,
 		},
 		Diagnostics: decision.Diagnostics,
 	}
@@ -191,6 +232,30 @@ func runDecisionTest(program *DecisionProgram, testBlock *Block, decisionName st
 	if wantAllowed, ok := test.Expect["allowed"].(bool); ok && decision.Allowed != wantAllowed {
 		result.Passed = false
 		result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected allowed %v", test.Name, wantAllowed)})
+	}
+	if want := scalarString(test.Expect["obligation"]); want != "" && !decisionActionsContain(decision.Obligations, want) {
+		result.Passed = false
+		result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected obligation %q", test.Name, want)})
+	}
+	if want := scalarString(test.Expect["advice"]); want != "" && !decisionActionsContain(decision.Advice, want) {
+		result.Passed = false
+		result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected advice %q", test.Name, want)})
+	}
+	for key, want := range test.Expect {
+		switch {
+		case strings.HasPrefix(key, "attributes."):
+			path := strings.TrimPrefix(key, "attributes.")
+			if !equalLoose(lookupMapPath(decision.Attributes, path), want) {
+				result.Passed = false
+				result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected attributes.%s %#v", test.Name, path, want)})
+			}
+		case strings.HasPrefix(key, "metadata."):
+			path := strings.TrimPrefix(key, "metadata.")
+			if !equalLoose(lookupMapPath(decision.Metadata, path), want) {
+				result.Passed = false
+				result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: fmt.Sprintf("test %q expected metadata.%s %#v", test.Name, path, want)})
+			}
+		}
 	}
 	result.Diagnostics = append(result.Diagnostics, decision.Diagnostics...)
 	if len(decision.Diagnostics) > 0 {

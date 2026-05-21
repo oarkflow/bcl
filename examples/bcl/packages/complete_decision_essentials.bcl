@@ -1,0 +1,209 @@
+module "complete-decision-essentials" {
+  version "1"
+  environment "example"
+  metadata { owner "risk-platform" domain "complete-decision-example" }
+
+  schema complete_review {
+    required request object {
+      required kind string enum ["loan", "card"]
+      required amount number min 0
+      required tags list
+      optional channel string
+      optional note string
+    }
+
+    required customer object {
+      required verified bool
+      required blacklisted bool
+      optional segment string
+    }
+
+    optional time object {
+      optional now datetime
+    }
+  }
+
+  decision_schema "complete_review" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  predicate "prime_digital_loan" {
+    match(request, case({kind: "loan", amount: _:number as amount, tags: EXISTS("prime"), channel: not "broker", note: MISSING} if amount <= 75000, true), false)
+  }
+
+  decision_table "complete_review" {
+    default require_review
+    strategy first_match
+
+    row "deny-blacklisted" {
+      phase guard
+      priority 100
+      version "2026.05"
+      status active
+      owner "risk-platform"
+      rationale "blocked customers are never auto-approved"
+      effective_from "2020-01-01"
+      effective_until "2030-01-01"
+      when { customer.blacklisted == true }
+      then {
+        outcome {
+          decision deny
+          reason "customer is blacklisted"
+          attributes { band "blocked" route "manual" }
+          metadata { queue "fraud" severity "critical" }
+        }
+        obligation audit_log { category "fraud" }
+        advice appeal { channel "support" }
+      }
+      reason "customer is blacklisted"
+    }
+
+    row "score-large-request" {
+      phase score
+      priority 80
+      status active
+      effective_from "2020-01-01"
+      when { request.amount >= 50000 }
+      then {
+        score += 20
+        event risk_signal { type "large_request" }
+      }
+      reason "large requests increase risk score"
+    }
+
+    row "allow-prime-digital-loan" {
+      phase decide
+      priority 60
+      status active
+      effective_from "2020-01-01"
+      when {
+        predicate.prime_digital_loan
+        customer.verified == true
+      }
+      then {
+        outcome {
+          decision allow
+          reason "verified prime digital loan"
+          attributes { band "prime" route "straight-through" }
+          metadata { queue "auto" }
+        }
+        obligation notify_customer { template "approved" }
+        advice next_best_action { action "offer_credit_line" }
+      }
+      reason "verified prime digital loan"
+    }
+
+    row "review-card-request" {
+      phase decide
+      priority 50
+      status active
+      effective_from "2020-01-01"
+      when { request.kind == "card" }
+      then {
+        outcome {
+          decision require_review
+          reason "card requests require analyst review"
+          attributes { band "card" route "analyst" }
+          metadata { queue "card-risk" }
+        }
+      }
+      reason "card requests require analyst review"
+    }
+
+    row "review-explicit-note" {
+      phase decide
+      priority 40
+      status active
+      effective_from "2020-01-01"
+      when { match(request, case({kind: "loan", note: NULL}, true), false) }
+      then {
+        outcome {
+          decision require_review
+          reason "explicit null note requires review"
+          attributes { band "note-null" route "analyst" }
+          metadata { queue "data-quality" }
+        }
+      }
+      reason "explicit null note requires review"
+    }
+  }
+
+  dataset "complete_review_batch" {
+    record "prime-loan" {
+      time.now "2026-05-20T00:00:00Z"
+      customer.verified true
+      customer.blacklisted false
+      customer.segment "prime"
+      request.kind "loan"
+      request.amount 60000
+      request.channel "mobile"
+      request.tags ["prime", "existing_customer"]
+    }
+
+    record "card-review" {
+      time.now "2026-05-20T00:00:00Z"
+      customer.verified true
+      customer.blacklisted false
+      request.kind "card"
+      request.amount 12000
+      request.channel "web"
+      request.tags ["standard"]
+    }
+
+    record "blocked" {
+      time.now "2026-05-20T00:00:00Z"
+      customer.verified true
+      customer.blacklisted true
+      request.kind "loan"
+      request.amount 25000
+      request.channel "mobile"
+      request.tags ["prime"]
+    }
+  }
+
+  test_matrix "complete review outcomes" {
+    decision "complete_review"
+
+    case "prime loan is allowed" {
+      input {
+        time.now "2026-05-20T00:00:00Z"
+        customer.verified true
+        customer.blacklisted false
+        request.kind "loan"
+        request.amount 60000
+        request.channel "mobile"
+        request.tags ["prime", "existing_customer"]
+      }
+      expect {
+        effect "allow"
+        allowed true
+        score 20
+        attributes.band "prime"
+        metadata.queue "auto"
+        obligation "notify_customer"
+        advice "next_best_action"
+      }
+    }
+
+    case "explicit null note is reviewed" {
+      input {
+        time.now "2026-05-20T00:00:00Z"
+        customer.verified true
+        customer.blacklisted false
+        request.kind "loan"
+        request.amount 5000
+        request.channel "mobile"
+        request.note null
+        request.tags ["prime"]
+      }
+      expect {
+        effect "require_review"
+        allowed false
+        attributes.band "note-null"
+        metadata.queue "data-quality"
+      }
+    }
+  }
+}
