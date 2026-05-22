@@ -1,0 +1,3 @@
+{"id":"blocked","input":{"subject":{"blocked":true,"role":"analyst","mfa":true},"resource":{"sensitivity":"normal","required_role":"analyst"},"request":{"action":"read"}}}
+{"id":"privileged","input":{"subject":{"blocked":false,"role":"admin","mfa":false},"resource":{"sensitivity":"high","required_role":"admin"},"request":{"action":"admin"}}}
+{"id":"allowed","input":{"subject":{"blocked":false,"role":"analyst","mfa":true},"resource":{"sensitivity":"normal","required_role":"analyst"},"request":{"action":"read"}}}

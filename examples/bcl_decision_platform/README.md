@@ -34,6 +34,14 @@ batch, err := bcl.EvaluateDecisionDataset(program, "fraud_aml", "fraud_aml_batch
 gates, err := bcl.EvaluateDecisionGates(program, "fraud_aml_bundle", nil)
 result, err = bcl.CounterfactualDecision(program, "fraud_aml", input, nil)
 observation := bcl.DecisionResultObservation(result, input, nil)
+platform, err := bcl.EvaluateDecisionPlatform(program, bcl.DecisionPlatformRequest{
+    Decision: "fraud_aml",
+    Bundle: "fraud_aml_bundle",
+    Input: input,
+    IncludeGates: true,
+    Counterfactuals: true,
+    IncludeFeatures: true,
+}, nil)
 ```
 
 ## Use Cases
@@ -61,5 +69,7 @@ observation := bcl.DecisionResultObservation(result, input, nil)
 - Separate `decision.schema` files plus `decision_schema` effect contracts.
 - `decision_table` rows with lifecycle metadata, reason codes, tags, outcomes, obligations, and advice.
 - `dataset` records for batch evaluation and coverage reporting.
+- External dataset adapters for streaming JSONL/CSV/HTTP-backed decision data.
 - `gate` and `decision_bundle` metadata for release checks.
+- Unified platform reports with decision result, observation, gates, dataset sources, diagnostics, and capability inventory.
 - Domain-specific Go `main.go` programs for allow, deny, review, scoring, matching, and ranked routing scenarios.

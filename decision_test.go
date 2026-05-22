@@ -1,7 +1,11 @@
 package bcl
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -104,6 +108,201 @@ func TestDecisionRuleSetRecordsScoreAndActions(t *testing.T) {
 	}
 	if result.Effect != "require_review" || result.Score != 40 || len(result.Actions) != 1 || result.Actions[0].Name != "notify" {
 		t.Fatalf("decision = %#v", result)
+	}
+}
+
+func TestDecisionDatasetFileAdapters(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "batch.jsonl"), `{"id":"high","input":{"request":{"amount":20}}}
+{"id":"low","input":{"request":{"amount":1}}}
+`)
+	mustWrite(t, filepath.Join(dir, "batch.csv"), "id,amount\nhigh,20\nlow,1\n")
+	mustWrite(t, filepath.Join(dir, "batch.json"), `[{"id":"high","input":{"request":{"amount":20}}},{"id":"low","input":{"request":{"amount":1}}}]`)
+	doc, err := Parse([]byte(`module "adapter-test" {
+  decision_table "demo" {
+    default deny
+    hit_policy first
+    row "allow-high" { when { request.amount > 10 } then { decision allow } }
+  }
+  decision_table "csv_demo" {
+    default deny
+    hit_policy first
+    row "allow-high" { when { amount > 10 } then { decision allow } }
+  }
+  dataset "jsonl_batch" { source { adapter file path "./batch.jsonl" format jsonl facts_path "input" } }
+  dataset "json_batch" { source { adapter file path "./batch.json" format json facts_path "input" } }
+  dataset "csv_batch" { source { adapter file path "./batch.csv" format csv id_path "id" } }
+  gate "demo_gate" { decision "demo" dataset "jsonl_batch" min_pass_rate 1.0 }
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := CompileDecisionDocument(doc, &Options{BaseDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		decision string
+		dataset  string
+	}{
+		{"demo", "jsonl_batch"},
+		{"demo", "json_batch"},
+		{"csv_demo", "csv_batch"},
+	} {
+		report, err := EvaluateDecisionDataset(prog, tc.decision, tc.dataset, &Options{BaseDir: dir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.EffectCounts["allow"] != 1 || report.EffectCounts["deny"] != 1 {
+			t.Fatalf("%s report = %#v", tc.dataset, report.EffectCounts)
+		}
+	}
+	gates, err := EvaluateDecisionGates(prog, "", &Options{BaseDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gates.Passed {
+		t.Fatalf("gate failed: %#v", gates)
+	}
+	compare, err := CompareDecisionDataset(prog, prog, "demo", "jsonl_batch", &Options{BaseDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compare.ChangedCases) != 0 {
+		t.Fatalf("compare changed: %#v", compare.ChangedCases)
+	}
+}
+
+func TestDecisionDatasetHTTPAdapter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Test") != "yes" {
+			http.Error(w, "missing header", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"records":[{"id":"high","input":{"request":{"amount":20}}},{"id":"low","input":{"request":{"amount":1}}}]}`)
+	}))
+	defer server.Close()
+	doc, err := Parse([]byte(fmt.Sprintf(`module "http-adapter-test" {
+  decision_table "demo" {
+    default deny
+    hit_policy first
+    row "allow-high" { when { request.amount > 10 } then { decision allow } }
+  }
+  dataset "http_batch" {
+    source {
+      adapter http
+      url "%s"
+      format json
+      response_path "records"
+      facts_path "input"
+      headers { "X-Test" "yes" }
+    }
+  }
+}`, server.URL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := CompileDecisionDocument(doc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := EvaluateDecisionDataset(prog, "demo", "http_batch", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.EffectCounts["allow"] != 1 || report.EffectCounts["deny"] != 1 {
+		t.Fatalf("http report = %#v", report.EffectCounts)
+	}
+}
+
+func TestDecisionDatasetCustomAdapterAndRanking(t *testing.T) {
+	doc, err := Parse([]byte(`module "custom-adapter-test" {
+  decision_table "route" {
+    default deny
+    hit_policy first
+    row "allow" { when { request.ready == true } then { decision allow } }
+  }
+  ranking "route" {
+    dataset "providers"
+    priority_path "provider.priority"
+    rule "active" { when { provider.active == true } }
+  }
+  dataset "providers" { source { adapter db table "providers" } }
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := CompileDecisionDocument(doc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := DecisionDatasetAdapterFunc(func(ctx context.Context, source DatasetSource, opts *Options) (DecisionRecordIterator, error) {
+		return &sliceDecisionIterator{records: []DecisionCandidate{
+			{ID: "slow", Facts: map[string]any{"provider": map[string]any{"active": true, "priority": int64(1)}}},
+			{ID: "fast", Facts: map[string]any{"provider": map[string]any{"active": true, "priority": int64(10)}}},
+		}}, nil
+	})
+	result, err := EvaluateDecision(prog, "route", map[string]any{"request": map[string]any{"ready": true}}, &Options{DecisionDatasetAdapters: map[string]DecisionDatasetAdapter{"db": adapter}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Effect != "allow" || result.Rank == nil || result.Rank.ID != "fast" {
+		t.Fatalf("decision = %#v", result)
+	}
+}
+
+func TestDecisionPlatformReport(t *testing.T) {
+	prog, err := CompileDecisionFile("examples/bcl_decision_platform/use_cases/iam-access/decision.bcl", &Options{AllowTime: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := EvaluateDecisionPlatform(prog, DecisionPlatformRequest{
+		Decision:        "iam_access",
+		Bundle:          "iam_access_bundle",
+		IncludeGates:    true,
+		Counterfactuals: true,
+		IncludeFeatures: true,
+		Input: map[string]any{
+			"subject":  map[string]any{"blocked": false, "role": "analyst", "mfa": true},
+			"resource": map[string]any{"sensitivity": "normal", "required_role": "analyst"},
+			"request":  map[string]any{"action": "read"},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Decision == nil || report.Decision.Effect != "allow" {
+		t.Fatalf("platform decision = %#v", report.Decision)
+	}
+	if report.Observation.DecisionID != "iam_access" || len(report.Observation.SelectedRules) == 0 {
+		t.Fatalf("platform observation = %#v", report.Observation)
+	}
+	if report.Gates == nil || !report.Gates.Passed {
+		t.Fatalf("platform gates = %#v", report.Gates)
+	}
+	if report.Features.DecisionCount == 0 || report.Features.ExternalDatasets == 0 || !stringIn("external_dataset_adapters", report.Features.Capabilities) {
+		t.Fatalf("platform features = %#v", report.Features)
+	}
+	if source := report.DatasetSources["iam_access_batch"]; source.Adapter != "file" {
+		t.Fatalf("dataset sources = %#v", report.DatasetSources)
+	}
+}
+
+func TestDecisionDatasetRejectsMixedSourceAndRecords(t *testing.T) {
+	doc, err := Parse([]byte(`module "bad-adapter-test" {
+  decision_table "demo" { row "allow" { then { decision allow } } }
+  dataset "bad" {
+    source { adapter file path "./batch.jsonl" }
+    record "inline" { request.amount 1 }
+  }
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = CompileDecisionDocument(doc, nil)
+	if err == nil || !strings.Contains(err.Error(), "cannot mix source and inline records") {
+		t.Fatalf("expected mixed dataset validation error, got %v", err)
 	}
 }
 

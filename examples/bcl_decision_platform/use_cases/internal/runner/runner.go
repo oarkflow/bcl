@@ -83,6 +83,34 @@ func Observation(result *bcl.DecisionResult, input map[string]any) bcl.DecisionO
 	return obs
 }
 
+func Platform(program *bcl.DecisionProgram, decision, bundle string, scenario Scenario) *bcl.DecisionPlatformReport {
+	report, err := bcl.EvaluateDecisionPlatform(program, bcl.DecisionPlatformRequest{
+		Decision:        decision,
+		Bundle:          bundle,
+		Input:           scenario.Input,
+		IncludeGates:    true,
+		Counterfactuals: true,
+		IncludeFeatures: true,
+	}, &bcl.Options{Verbose: Verbose()})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("\n== %s platform report ==\n", scenario.Name)
+	if Verbose() {
+		Print(report)
+	} else {
+		Print(map[string]any{
+			"decision":        report.Decision.Answer(),
+			"observation":     report.Observation,
+			"gate_passed":     report.Gates != nil && report.Gates.Passed,
+			"capabilities":    report.Features.Capabilities,
+			"missing":         report.Features.Missing,
+			"dataset_sources": report.DatasetSources,
+		})
+	}
+	return report
+}
+
 func RankID(result *bcl.DecisionResult) string {
 	if result == nil || result.Rank == nil {
 		return "none"

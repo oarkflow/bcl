@@ -1,6 +1,7 @@
 package bcl
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -91,7 +92,14 @@ type RankingScore struct {
 type DatasetDefinition struct {
 	ID      string              `json:"id"`
 	Module  string              `json:"module,omitempty"`
+	Source  DatasetSource       `json:"source,omitempty"`
 	Records []DecisionCandidate `json:"records,omitempty"`
+	Span    Span                `json:"span,omitempty"`
+}
+
+type DatasetSource struct {
+	Adapter string         `json:"adapter,omitempty"`
+	Config  map[string]any `json:"config,omitempty"`
 }
 
 type DecisionCandidate struct {
@@ -182,6 +190,41 @@ type DecisionObservation struct {
 	DiagnosticsCount int      `json:"diagnostics_count,omitempty"`
 	InputHash        string   `json:"input_hash,omitempty"`
 	LatencyMS        int64    `json:"latency_ms,omitempty"`
+}
+
+type DecisionPlatformRequest struct {
+	Decision        string         `json:"decision"`
+	Input           map[string]any `json:"input,omitempty"`
+	Bundle          string         `json:"bundle,omitempty"`
+	IncludeGates    bool           `json:"include_gates,omitempty"`
+	Counterfactuals bool           `json:"counterfactuals,omitempty"`
+	IncludeFeatures bool           `json:"include_features,omitempty"`
+}
+
+type DecisionPlatformReport struct {
+	Decision       *DecisionResult          `json:"decision,omitempty"`
+	Observation    DecisionObservation      `json:"observation,omitempty"`
+	Gates          *DecisionGateReport      `json:"gates,omitempty"`
+	Features       DecisionPlatformFeatures `json:"features,omitempty"`
+	DatasetSources map[string]DatasetSource `json:"dataset_sources,omitempty"`
+	Diagnostics    []Diagnostic             `json:"diagnostics,omitempty"`
+	Metadata       map[string]any           `json:"metadata,omitempty"`
+}
+
+type DecisionPlatformFeatures struct {
+	DecisionCount      int      `json:"decision_count,omitempty"`
+	RuleCount          int      `json:"rule_count,omitempty"`
+	DatasetCount       int      `json:"dataset_count,omitempty"`
+	ExternalDatasets   int      `json:"external_datasets,omitempty"`
+	GateCount          int      `json:"gate_count,omitempty"`
+	BundleCount        int      `json:"bundle_count,omitempty"`
+	ReleaseCount       int      `json:"release_count,omitempty"`
+	SchemaCount        int      `json:"schema_count,omitempty"`
+	ActionCount        int      `json:"action_count,omitempty"`
+	RankingCount       int      `json:"ranking_count,omitempty"`
+	ReasonCatalogCount int      `json:"reason_catalog_count,omitempty"`
+	Capabilities       []string `json:"capabilities,omitempty"`
+	Missing            []string `json:"missing,omitempty"`
 }
 
 type DecisionResult struct {
@@ -1292,16 +1335,64 @@ func (b *decisionBuilder) rankingFromBlock(block *Block, module string) *Ranking
 }
 
 func (b *decisionBuilder) datasetFromBlock(block *Block, module string) *DatasetDefinition {
-	d := &DatasetDefinition{ID: block.ID, Module: module}
+	d := &DatasetDefinition{ID: block.ID, Module: module, Span: block.Span}
 	for _, n := range block.Body {
-		child, ok := n.(*Block)
-		if !ok || child.Type != "record" {
-			continue
+		switch x := n.(type) {
+		case *Block:
+			switch x.Type {
+			case "record":
+				body := b.nodesToBody(x.Body)
+				d.Records = append(d.Records, DecisionCandidate{ID: x.ID, Facts: body})
+			case "source":
+				d.Source = b.resolveDatasetSource(b.datasetSourceFromNodes(x.Body))
+			}
+		case *Assignment:
+			if x.Name == "source" {
+				d.Source = b.resolveDatasetSource(b.datasetSourceFromValue(x.Value))
+			}
 		}
-		body := b.nodesToBody(child.Body)
-		d.Records = append(d.Records, DecisionCandidate{ID: child.ID, Facts: body})
 	}
 	return d
+}
+
+func (b *decisionBuilder) datasetSourceFromNodes(nodes []Node) DatasetSource {
+	cfg := b.nodesToBody(nodes)
+	return datasetSourceFromConfig(cfg)
+}
+
+func (b *decisionBuilder) datasetSourceFromValue(v Value) DatasetSource {
+	switch x := v.(type) {
+	case *Object:
+		return datasetSourceFromConfig(b.nodesToBody(x.Fields))
+	default:
+		if m, ok := b.compiler.value(v).(map[string]any); ok {
+			return datasetSourceFromConfig(m)
+		}
+		if adapter := scalarString(b.compiler.value(v)); adapter != "" {
+			return DatasetSource{Adapter: adapter, Config: map[string]any{"adapter": adapter}}
+		}
+	}
+	return DatasetSource{}
+}
+
+func datasetSourceFromConfig(cfg map[string]any) DatasetSource {
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	adapter := firstNonEmpty(scalarString(cfg["adapter"]), scalarString(cfg["type"]), scalarString(cfg["kind"]))
+	return DatasetSource{Adapter: adapter, Config: cfg}
+}
+
+func (b *decisionBuilder) resolveDatasetSource(source DatasetSource) DatasetSource {
+	if !strings.EqualFold(source.Adapter, "file") || b == nil || b.opts == nil || b.opts.BaseDir == "" || source.Config == nil {
+		return source
+	}
+	path := scalarString(source.Config["path"])
+	if path == "" || filepath.IsAbs(path) {
+		return source
+	}
+	source.Config["path"] = filepath.Join(b.opts.BaseDir, path)
+	return source
 }
 
 func (b *decisionBuilder) testFromBlock(block *Block) DecisionTest {
@@ -2185,9 +2276,25 @@ func evaluateDecisionRank(program *DecisionProgram, decision string, vars, input
 	if ranking == nil {
 		return nil
 	}
-	candidates := candidatesFor(program, ranking, input)
+	ctx := context.Background()
+	candidates, iterator, err := candidateSourceFor(ctx, program, ranking, input, opts)
+	if err != nil {
+		result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: err.Error(), Span: ranking.Span})
+		return nil
+	}
+	if iterator != nil {
+		defer iterator.Close()
+	}
 	var best *DecisionRank
-	for _, candidate := range candidates {
+	for i := 0; ; i++ {
+		candidate, ok, err := nextRankingCandidate(ctx, candidates, i, iterator)
+		if err != nil {
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{Severity: "error", Message: err.Error(), Span: ranking.Span})
+			break
+		}
+		if !ok {
+			break
+		}
 		candidateVars := cloneStringAny(vars)
 		candidateVars["provider"] = providerFacts(candidate)
 		pass := true
@@ -2242,7 +2349,32 @@ func evaluateDecisionRank(program *DecisionProgram, decision string, vars, input
 	return best
 }
 
-func candidatesFor(program *DecisionProgram, ranking *RankingDefinition, input map[string]any) []DecisionCandidate {
+func candidateSourceFor(ctx context.Context, program *DecisionProgram, ranking *RankingDefinition, input map[string]any, opts *Options) ([]DecisionCandidate, DecisionRecordIterator, error) {
+	candidates := candidatesForInput(input)
+	if len(candidates) > 0 {
+		return candidates, nil, nil
+	}
+	if ranking.Dataset != "" {
+		it, err := OpenDecisionDataset(ctx, program, ranking.Dataset, opts)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, it, nil
+	}
+	return nil, nil, nil
+}
+
+func nextRankingCandidate(ctx context.Context, candidates []DecisionCandidate, idx int, iterator DecisionRecordIterator) (DecisionCandidate, bool, error) {
+	if iterator == nil {
+		if idx >= len(candidates) {
+			return DecisionCandidate{}, false, nil
+		}
+		return candidates[idx], true, nil
+	}
+	return iterator.Next(ctx)
+}
+
+func candidatesForInput(input map[string]any) []DecisionCandidate {
 	var out []DecisionCandidate
 	for _, item := range asAnySlice(input["candidates"]) {
 		m, ok := item.(map[string]any)
@@ -2256,15 +2388,7 @@ func candidatesFor(program *DecisionProgram, ranking *RankingDefinition, input m
 		}
 		out = append(out, DecisionCandidate{ID: id, Facts: facts})
 	}
-	if len(out) > 0 {
-		return out
-	}
-	if ranking.Dataset != "" {
-		if d := program.Datasets[ranking.Dataset]; d != nil {
-			return d.Records
-		}
-	}
-	return nil
+	return out
 }
 
 func scoreCandidate(candidate DecisionCandidate, ranking *RankingDefinition, input map[string]any, opts *Options) (float64, bool, error) {
@@ -2604,6 +2728,17 @@ func validateDecisionProgram(prog *DecisionProgram) []Diagnostic {
 		}
 		if ranking.Dataset != "" && prog.Datasets[ranking.Dataset] == nil {
 			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("ranking %q references unknown dataset %q", id, ranking.Dataset), Span: ranking.Span})
+		}
+	}
+	for id, dataset := range prog.Datasets {
+		if dataset == nil {
+			continue
+		}
+		if dataset.Source.Adapter != "" && len(dataset.Records) > 0 {
+			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("dataset %q cannot mix source and inline records", id), Span: dataset.Span})
+		}
+		if dataset.Source.Adapter == "" && len(dataset.Source.Config) > 0 {
+			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("dataset %q source requires adapter", id), Span: dataset.Span})
 		}
 	}
 	for id, contract := range prog.Contracts {
@@ -3231,67 +3366,95 @@ func EvaluateDecisionBatch(program *DecisionProgram, decisionID string, cases []
 		if id == "" {
 			id = fmt.Sprintf("case-%d", i+1)
 		}
-		verbose := opts != nil && opts.Verbose
-		result, err := evaluateDecisionInternal(program, decisionID, c.Input, opts, DecisionEvaluateOptions{Explain: true, ValidateInput: true, Verbose: verbose})
-		cr := DecisionBatchCaseResult{ID: id, Result: result, Passed: true}
-		if err != nil {
-			cr.Passed = false
-			cr.Diagnostics = append(cr.Diagnostics, Diagnostic{Severity: "error", Message: err.Error()})
-			report.Diagnostics = append(report.Diagnostics, cr.Diagnostics...)
-			report.FailedCount++
-			report.Cases = append(report.Cases, cr)
-			continue
-		}
-		report.EffectCounts[result.Effect]++
-		for _, step := range result.Explain {
-			if step.RuleID == "" {
-				continue
-			}
-			switch step.Status {
-			case "matched":
-				report.MatchedRuleCounts[step.RuleID]++
-				report.RuleHitCounts[step.RuleID]++
-			case "selected":
-				report.SelectedRuleCounts[step.RuleID]++
-				report.RuleHitCounts[step.RuleID]++
-			}
-		}
-		cr.DefaultOnly = result.PolicyID == ""
-		if cr.DefaultOnly {
-			report.DefaultOnlyCount++
-			report.DefaultOnlyCases = append(report.DefaultOnlyCases, id)
-		}
-		cr.Diagnostics = append(cr.Diagnostics, result.Diagnostics...)
-		if !decisionBatchExpectationPassed(result, c.Expect, &cr.Diagnostics) || len(result.Diagnostics) > 0 {
-			cr.Passed = false
-			report.FailedCount++
-		}
-		if !verbose {
-			result.Trace = nil
-			result.Explain = nil
-			result.ExplainGraph = nil
-		}
-		report.Diagnostics = append(report.Diagnostics, cr.Diagnostics...)
-		report.Cases = append(report.Cases, cr)
+		appendDecisionBatchCase(report, program, decisionID, id, c.Input, c.Expect, opts)
 	}
 	report.HitRules = sortedMapKeys(report.RuleHitCounts)
 	report.UnhitRules = decisionUnhitRules(program, decisionID, report.RuleHitCounts)
 	return report, nil
 }
 
+func appendDecisionBatchCase(report *DecisionBatchReport, program *DecisionProgram, decisionID, id string, input, expect map[string]any, opts *Options) {
+	verbose := opts != nil && opts.Verbose
+	result, err := evaluateDecisionInternal(program, decisionID, input, opts, DecisionEvaluateOptions{Explain: true, ValidateInput: true, Verbose: verbose})
+	cr := DecisionBatchCaseResult{ID: id, Result: result, Passed: true}
+	if err != nil {
+		cr.Passed = false
+		cr.Diagnostics = append(cr.Diagnostics, Diagnostic{Severity: "error", Message: err.Error()})
+		report.Diagnostics = append(report.Diagnostics, cr.Diagnostics...)
+		report.FailedCount++
+		report.Cases = append(report.Cases, cr)
+		return
+	}
+	report.EffectCounts[result.Effect]++
+	for _, step := range result.Explain {
+		if step.RuleID == "" {
+			continue
+		}
+		switch step.Status {
+		case "matched":
+			report.MatchedRuleCounts[step.RuleID]++
+			report.RuleHitCounts[step.RuleID]++
+		case "selected":
+			report.SelectedRuleCounts[step.RuleID]++
+			report.RuleHitCounts[step.RuleID]++
+		}
+	}
+	cr.DefaultOnly = result.PolicyID == ""
+	if cr.DefaultOnly {
+		report.DefaultOnlyCount++
+		report.DefaultOnlyCases = append(report.DefaultOnlyCases, id)
+	}
+	cr.Diagnostics = append(cr.Diagnostics, result.Diagnostics...)
+	if !decisionBatchExpectationPassed(result, expect, &cr.Diagnostics) || len(result.Diagnostics) > 0 {
+		cr.Passed = false
+		report.FailedCount++
+	}
+	if !verbose {
+		result.Trace = nil
+		result.Explain = nil
+		result.ExplainGraph = nil
+	}
+	report.Diagnostics = append(report.Diagnostics, cr.Diagnostics...)
+	report.Cases = append(report.Cases, cr)
+}
+
 func EvaluateDecisionDataset(program *DecisionProgram, decisionID, datasetID string, opts *Options) (*DecisionBatchReport, error) {
 	if program == nil {
 		return nil, fmt.Errorf("nil decision program")
 	}
-	dataset := program.Datasets[datasetID]
-	if dataset == nil {
-		return nil, fmt.Errorf("unknown dataset %q", datasetID)
+	if decisionID == "" {
+		return nil, fmt.Errorf("missing decision id")
 	}
-	cases := make([]DecisionBatchCase, 0, len(dataset.Records))
-	for _, record := range dataset.Records {
-		cases = append(cases, DecisionBatchCase{ID: record.ID, Input: record.Facts})
+	ctx := context.Background()
+	it, err := OpenDecisionDataset(ctx, program, datasetID, opts)
+	if err != nil {
+		return nil, err
 	}
-	return EvaluateDecisionBatch(program, decisionID, cases, opts)
+	defer it.Close()
+	report := &DecisionBatchReport{
+		DecisionID:         decisionID,
+		EffectCounts:       map[string]int{},
+		RuleHitCounts:      map[string]int{},
+		MatchedRuleCounts:  map[string]int{},
+		SelectedRuleCounts: map[string]int{},
+	}
+	for i := 0; ; i++ {
+		record, ok, err := it.Next(ctx)
+		if err != nil {
+			return report, err
+		}
+		if !ok {
+			break
+		}
+		id := record.ID
+		if id == "" {
+			id = fmt.Sprintf("case-%d", i+1)
+		}
+		appendDecisionBatchCase(report, program, decisionID, id, record.Facts, nil, opts)
+	}
+	report.HitRules = sortedMapKeys(report.RuleHitCounts)
+	report.UnhitRules = decisionUnhitRules(program, decisionID, report.RuleHitCounts)
+	return report, nil
 }
 
 func decisionUnhitRules(program *DecisionProgram, decisionID string, hits map[string]int) []string {
@@ -3384,15 +3547,25 @@ func CompareDecisionDataset(base, candidate *DecisionProgram, decisionID, datase
 	if base == nil {
 		return nil, fmt.Errorf("nil base decision program")
 	}
-	dataset := base.Datasets[datasetID]
-	if dataset == nil && candidate != nil {
-		dataset = candidate.Datasets[datasetID]
+	sourceProgram := base
+	if base.Datasets[datasetID] == nil && candidate != nil {
+		sourceProgram = candidate
 	}
-	if dataset == nil {
-		return nil, fmt.Errorf("unknown dataset %q", datasetID)
+	ctx := context.Background()
+	it, err := OpenDecisionDataset(ctx, sourceProgram, datasetID, opts)
+	if err != nil {
+		return nil, err
 	}
-	cases := make([]DecisionBatchCase, 0, len(dataset.Records))
-	for _, record := range dataset.Records {
+	defer it.Close()
+	var cases []DecisionBatchCase
+	for {
+		record, ok, err := it.Next(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			break
+		}
 		cases = append(cases, DecisionBatchCase{ID: record.ID, Input: record.Facts})
 	}
 	return CompareDecisionBatch(base, candidate, decisionID, cases, opts)
@@ -3461,6 +3634,142 @@ func EvaluateDecisionGates(program *DecisionProgram, bundleID string, opts *Opti
 		report.Diagnostics = append(report.Diagnostics, Diagnostic{Severity: "warning", Message: fmt.Sprintf("bundle %q has no decision gates", bundleID)})
 	}
 	return report, nil
+}
+
+func EvaluateDecisionPlatform(program *DecisionProgram, req DecisionPlatformRequest, opts *Options) (*DecisionPlatformReport, error) {
+	if program == nil {
+		return nil, fmt.Errorf("nil decision program")
+	}
+	if req.Decision == "" {
+		return nil, fmt.Errorf("missing decision id")
+	}
+	report := &DecisionPlatformReport{
+		DatasetSources: decisionDatasetSources(program),
+		Metadata:       map[string]any{},
+	}
+	start := time.Now()
+	var result *DecisionResult
+	var err error
+	if req.Counterfactuals {
+		result, err = CounterfactualDecision(program, req.Decision, req.Input, opts)
+	} else {
+		result, err = EvaluateDecision(program, req.Decision, req.Input, opts)
+	}
+	if result != nil {
+		if result.Metadata == nil {
+			result.Metadata = map[string]any{}
+		}
+		result.Metadata["latency_ms"] = time.Since(start).Milliseconds()
+		report.Decision = result
+		report.Observation = DecisionResultObservation(result, req.Input, opts)
+		report.Diagnostics = append(report.Diagnostics, result.Diagnostics...)
+	}
+	if err != nil {
+		report.Diagnostics = append(report.Diagnostics, Diagnostic{Severity: "error", Message: err.Error()})
+		return report, err
+	}
+	if req.IncludeGates || req.Bundle != "" {
+		bundleID := req.Bundle
+		if bundleID == "" {
+			bundleID = decisionBundleFor(program, req.Decision)
+		}
+		gates, gateErr := EvaluateDecisionGates(program, bundleID, opts)
+		report.Gates = gates
+		if gates != nil {
+			report.Diagnostics = append(report.Diagnostics, gates.Diagnostics...)
+		}
+		if gateErr != nil {
+			report.Diagnostics = append(report.Diagnostics, Diagnostic{Severity: "error", Message: gateErr.Error()})
+			return report, gateErr
+		}
+	}
+	if req.IncludeFeatures {
+		report.Features = InspectDecisionPlatform(program)
+	}
+	report.Metadata["latency_ms"] = time.Since(start).Milliseconds()
+	return report, nil
+}
+
+func InspectDecisionPlatform(program *DecisionProgram) DecisionPlatformFeatures {
+	if program == nil {
+		return DecisionPlatformFeatures{Missing: []string{"program"}}
+	}
+	features := DecisionPlatformFeatures{
+		DecisionCount:      len(program.Decisions),
+		DatasetCount:       len(program.Datasets),
+		GateCount:          len(program.Gates),
+		BundleCount:        len(program.Bundles),
+		ReleaseCount:       len(program.Releases),
+		SchemaCount:        len(program.Schemas),
+		ActionCount:        len(program.Actions),
+		RankingCount:       len(program.Rankings),
+		ReasonCatalogCount: len(program.ReasonCodeCatalogs),
+	}
+	for _, decision := range program.Decisions {
+		if decision != nil {
+			features.RuleCount += len(decision.Rules)
+		}
+	}
+	for _, dataset := range program.Datasets {
+		if dataset != nil && dataset.Source.Adapter != "" && !strings.EqualFold(dataset.Source.Adapter, "inline") {
+			features.ExternalDatasets++
+		}
+	}
+	addCapability := func(name string, ok bool) {
+		if ok {
+			features.Capabilities = append(features.Capabilities, name)
+		} else {
+			features.Missing = append(features.Missing, name)
+		}
+	}
+	addCapability("decisions", features.DecisionCount > 0)
+	addCapability("rules", features.RuleCount > 0)
+	addCapability("datasets", features.DatasetCount > 0)
+	addCapability("external_dataset_adapters", features.ExternalDatasets > 0)
+	addCapability("schemas", features.SchemaCount > 0)
+	addCapability("gates", features.GateCount > 0)
+	addCapability("bundles", features.BundleCount > 0)
+	addCapability("reason_catalogs", features.ReasonCatalogCount > 0)
+	addCapability("rankings", features.RankingCount > 0)
+	addCapability("actions", features.ActionCount > 0)
+	sort.Strings(features.Capabilities)
+	sort.Strings(features.Missing)
+	return features
+}
+
+func decisionDatasetSources(program *DecisionProgram) map[string]DatasetSource {
+	if program == nil || len(program.Datasets) == 0 {
+		return nil
+	}
+	out := map[string]DatasetSource{}
+	for id, dataset := range program.Datasets {
+		if dataset == nil {
+			continue
+		}
+		source := dataset.Source
+		if source.Adapter == "" {
+			source = DatasetSource{Adapter: "inline", Config: map[string]any{"records": int64(len(dataset.Records))}}
+		}
+		out[id] = source
+	}
+	return out
+}
+
+func decisionBundleFor(program *DecisionProgram, decisionID string) string {
+	if program == nil || decisionID == "" {
+		return ""
+	}
+	var ids []string
+	for id, bundle := range program.Bundles {
+		if bundle != nil && stringIn(decisionID, bundle.Decisions) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
 }
 
 func CounterfactualDecision(program *DecisionProgram, decisionID string, input map[string]any, opts *Options) (*DecisionResult, error) {

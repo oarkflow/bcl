@@ -63,9 +63,12 @@ module "iam-access-catalog" {
   }
 
   dataset "iam_access_batch" {
-    record "blocked" { subject.blocked true subject.role "analyst" subject.mfa true resource.sensitivity "normal" resource.required_role "analyst" request.action "read" }
-    record "privileged" { subject.blocked false subject.role "admin" subject.mfa false resource.sensitivity "high" resource.required_role "admin" request.action "admin" }
-    record "allowed" { subject.blocked false subject.role "analyst" subject.mfa true resource.sensitivity "normal" resource.required_role "analyst" request.action "read" }
+    source {
+      adapter file
+      path "./inputs/batch.jsonl"
+      format jsonl
+      facts_path "input"
+    }
   }
   gate "iam_access_gate" { bundle "iam_access_bundle" decision "iam_access" dataset "iam_access_batch" min_pass_rate 1.0 no_default_only true required_rules ["deny-blocked-identity", "review-privileged-access", "allow-role-access"] }
   decision_bundle "iam_access_bundle" { decisions ["iam_access"] datasets ["iam_access_batch"] approval { status approved approved_by "security-governance@example.com" approved_at "2026-05-20T00:00:00Z" } metadata { owner "security-platform" } }

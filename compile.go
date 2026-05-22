@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,29 +15,31 @@ import (
 )
 
 type Options struct {
-	Profile                string
-	Env                    func(string) (string, bool)
-	EnvFiles               []string
-	Context                map[string]any
-	Session                map[string]any
-	AllowEnv               bool
-	AllowTime              bool
-	AllowHash              bool
-	AllowEncoding          bool
-	ResolveImports         bool
-	ResolveModules         bool
-	Interpolate            bool
-	DisableInterpolation   bool
-	Partial                bool
-	Strict                 bool
-	Verbose                bool
-	LockfilePath           string
-	BaseDir                string
-	Redact                 bool
-	EvalFunctions          map[string]EvalFunction
-	DecisionActions        map[string]DecisionActionHandler
-	DecisionRankers        map[string]DecisionRankingScorer
-	DecisionInputValidator DecisionInputValidator
+	Profile                 string
+	Env                     func(string) (string, bool)
+	EnvFiles                []string
+	Context                 map[string]any
+	Session                 map[string]any
+	AllowEnv                bool
+	AllowTime               bool
+	AllowHash               bool
+	AllowEncoding           bool
+	ResolveImports          bool
+	ResolveModules          bool
+	Interpolate             bool
+	DisableInterpolation    bool
+	Partial                 bool
+	Strict                  bool
+	Verbose                 bool
+	LockfilePath            string
+	BaseDir                 string
+	Redact                  bool
+	EvalFunctions           map[string]EvalFunction
+	DecisionActions         map[string]DecisionActionHandler
+	DecisionRankers         map[string]DecisionRankingScorer
+	DecisionDatasetAdapters map[string]DecisionDatasetAdapter
+	HTTPClient              *http.Client
+	DecisionInputValidator  DecisionInputValidator
 }
 
 func Compile(doc *Document, opts *Options) (*Normalized, error) {

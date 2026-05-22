@@ -19,4 +19,5 @@ func main() {
 	}
 	runner.Batch(program, "iam_access", "iam_access_batch")
 	runner.Gate(program, "iam_access_bundle")
+	runner.Platform(program, "iam_access", "iam_access_bundle", scenarios[2])
 }
