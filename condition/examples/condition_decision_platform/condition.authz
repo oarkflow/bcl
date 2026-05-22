@@ -1,0 +1,224 @@
+# AuthZ DSL Configuration
+# Syntax:
+#   <directive> <args...> [options...]
+#   <directive> <id> {
+#     field value
+#     list_field [
+#       value
+#     ]
+#   }
+#
+# This file is the initial static authorization configuration for the
+# Condition demo server. Production deployments can update tenants,
+# policies, ACLs, roles, and memberships at runtime through the authz
+# Engine API or an admin service.
+
+# Define tenants
+tenant condition {
+  name "Condition Decision Platform"
+}
+
+tenant operations {
+  name "Condition Operations"
+  parent condition
+}
+
+# Define route policies
+policy condition-admin-api {
+  tenant condition
+  effect allow
+  actions [
+    GET
+    POST
+    PUT
+    DELETE
+  ]
+  resources [
+    route:*
+  ]
+  when {
+    subject.roles contains any [
+      condition-admin
+    ]
+  }
+  priority 100
+}
+
+policy condition-publish-api {
+  tenant condition
+  effect allow
+  actions [
+    GET
+    POST
+  ]
+  resources [
+    route:POST:/v1/definitions
+    route:POST:/v1/definitions/validate
+    route:GET:/v1/definitions/:name/versions
+    route:POST:/v1/definitions/:name/versions/:version/activate
+    route:POST:/v1/definitions/:name/rollback
+    route:POST:/v1/reload
+  ]
+  when {
+    subject.roles contains any [
+      condition-publisher
+      condition-admin
+    ]
+  }
+  priority 80
+}
+
+policy condition-operate-api {
+  tenant condition
+  effect allow
+  actions [
+    GET
+    POST
+  ]
+  resources [
+    route:GET:/readyz
+    route:GET:/v1/definitions
+    route:GET:/v1/definitions/:name
+    route:POST:/v1/definitions/:name/evaluate
+    route:POST:/v1/definitions/:name/tests
+    route:POST:/v1/definitions/:name/gates
+    route:POST:/v1/definitions/:name/workflows/:workflow/start
+    route:POST:/v1/workflows/:id/advance
+    route:GET:/v1/workflows
+    route:GET:/v1/workflows/:id
+  ]
+  when {
+    subject.roles contains any [
+      condition-operator
+      condition-admin
+    ]
+  }
+  priority 70
+}
+
+policy condition-simulate-api {
+  tenant condition
+  effect allow
+  actions [POST]
+  resources [
+    route:POST:/v1/definitions/:name/simulate
+    route:POST:/v1/definitions/:name/compare
+  ]
+  when {
+    subject.roles contains any [
+      condition-simulator
+      condition-admin
+    ]
+  }
+  priority 70
+}
+
+policy condition-audit-api {
+  tenant condition
+  effect allow
+  actions [
+    GET
+    POST
+  ]
+  resources [
+    route:GET:/v1/audits
+    route:GET:/v1/audits/:id
+    route:POST:/v1/audits/verify
+    route:GET:/v1/reports
+    route:GET:/v1/metrics
+  ]
+  when {
+    subject.roles contains any [
+      condition-auditor
+      condition-admin
+    ]
+  }
+  priority 70
+}
+
+# Define roles
+role condition-admin {
+  tenant condition
+  name "Condition Admin"
+  permissions [
+    *:*
+  ]
+}
+
+role condition-publisher {
+  tenant condition
+  name "Condition Publisher"
+  permissions [
+    GET:route:GET:/v1/definitions/:name/versions
+    POST:route:POST:/v1/definitions
+    POST:route:POST:/v1/definitions/validate
+    POST:route:POST:/v1/definitions/:name/versions/:version/activate
+    POST:route:POST:/v1/definitions/:name/rollback
+    POST:route:POST:/v1/reload
+  ]
+}
+
+role condition-operator {
+  tenant operations
+  name "Condition Operator"
+  permissions [
+    GET:route:GET:/readyz
+    GET:route:GET:/v1/definitions
+    GET:route:GET:/v1/definitions/:name
+    GET:route:GET:/v1/workflows
+    GET:route:GET:/v1/workflows/:id
+    POST:route:POST:/v1/definitions/:name/evaluate
+    POST:route:POST:/v1/definitions/:name/tests
+    POST:route:POST:/v1/definitions/:name/gates
+    POST:route:POST:/v1/definitions/:name/workflows/:workflow/start
+    POST:route:POST:/v1/workflows/:id/advance
+  ]
+}
+
+role condition-simulator {
+  tenant condition
+  name "Condition Simulator"
+  permissions [
+    POST:route:POST:/v1/definitions/:name/simulate
+    POST:route:POST:/v1/definitions/:name/compare
+  ]
+}
+
+role condition-auditor {
+  tenant condition
+  name "Condition Auditor"
+  permissions [
+    GET:route:GET:/v1/audits
+    GET:route:GET:/v1/audits/:id
+    GET:route:GET:/v1/reports
+    GET:route:GET:/v1/metrics
+    POST:route:POST:/v1/audits/verify
+  ]
+}
+
+# Define ACLs
+acl condition-public-health {
+  resource route:GET:/healthz
+  subject guest
+  actions [GET]
+  effect allow
+}
+
+# Define role memberships for examples that use a stable subject id.
+# Header-based demos can still pass X-Roles directly.
+members {
+  service:condition-admin     [condition-admin]
+  service:policy-author       [condition-publisher]
+  service:operations          [condition-operator]
+  service:simulation-runner   [condition-simulator]
+  service:audit-reader        [condition-auditor]
+}
+
+# Engine configuration
+engine {
+  cache_ttl      5000
+  attr_ttl       10000
+  batch_size     128
+  flush_interval 50
+  workers        8
+}

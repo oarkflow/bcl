@@ -1,0 +1,31 @@
+import "./decision.schema"
+
+module "case-review-workflow-condition" {
+  decision_schema "case_review_workflow" { effects [allow, deny, require_review, escalate] default require_review strategy first_match }
+  decision_table "case_review_workflow" {
+    default require_review
+    hit_policy first
+    row "senior-review" {
+      priority 80
+      when { any { case.amount >= 100000 case.severity == "critical" } }
+      then { outcome { decision escalate reason "senior review required" attributes { queue "senior-review" stage "senior_review" role "risk-manager" } } event workflow_stage { stage "senior_review" } }
+      reason "senior review required" reason_code "SENIOR_REVIEW"
+    }
+    row "intake-review" {
+      priority 20
+      when { case.status == "open" }
+      then { outcome { decision require_review reason "case assigned to intake" attributes { queue "risk-intake" stage "intake" } } }
+      reason "case assigned to intake" reason_code "INTAKE"
+    }
+  }
+  workflow "manual_review" {
+    start "intake"
+    stage "intake" { assign queue "risk-intake" sla "15m" }
+    stage "senior_review" { assign role "risk-manager" sla "2h" }
+  }
+  test "critical" {
+    decision "case_review_workflow"
+    input { case.amount 125000 case.severity "critical" case.status "open" }
+    expect { effect "escalate" reason_code "SENIOR_REVIEW" }
+  }
+}

@@ -1,0 +1,3 @@
+schema offer_ranking {
+  required customer object
+}

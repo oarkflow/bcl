@@ -1,0 +1,3 @@
+{
+  "ticket": { "minutes_open": 65, "sla_minutes": 60, "warning_minutes": 45 }
+}

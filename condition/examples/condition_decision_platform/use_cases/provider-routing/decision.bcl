@@ -1,0 +1,32 @@
+import "./decision.schema"
+
+module "provider-routing-condition" {
+  decision_schema "provider_routing" { effects [allow, deny, require_review] default deny strategy first_match }
+  decision_table "provider_routing" {
+    default deny
+    hit_policy first
+    row "allow-routable-request" {
+      priority 10
+      when { request.channel == "sms" request.country == "NP" }
+      then { decision allow reason "request is routable" }
+      reason "request is routable" reason_code "ROUTABLE"
+    }
+  }
+  ranking "provider_routing" {
+    dataset "providers"
+    priority_path "provider.priority"
+    cost_path "provider.cost"
+    rule "active-provider" { when { provider.active == true } }
+    score "quality" { metric "provider.quality" weight 0.8 normalize [0, 100] }
+    score "cost" { metric "provider.cost" weight 0.2 normalize [1, 0] }
+  }
+  dataset "providers" {
+    record "provider-a" { provider.active true provider.priority 10 provider.quality 98 provider.cost 0.05 }
+    record "provider-b" { provider.active true provider.priority 7 provider.quality 91 provider.cost 0.02 }
+  }
+  test "sms_np" {
+    decision "provider_routing"
+    input { request.channel "sms" request.country "NP" }
+    expect { effect "allow" }
+  }
+}

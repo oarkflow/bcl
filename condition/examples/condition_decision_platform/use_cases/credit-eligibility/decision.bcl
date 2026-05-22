@@ -1,0 +1,32 @@
+import "./decision.schema"
+
+module "credit-eligibility-condition" {
+  decision_schema "credit_eligibility" { effects [allow, deny, require_review] default require_review strategy first_match }
+  decision_table "credit_eligibility" {
+    default require_review
+    hit_policy first
+    row "deny-credit-policy" {
+      priority 100
+      when { any { applicant.blacklisted == true applicant.credit_score < 580 loan.debt_to_income > 0.55 } }
+      then { outcome { decision deny reason "credit policy failed" attributes { queue "credit-decline" stage "closed" } } }
+      reason "credit policy failed" reason_code "CREDIT_POLICY_FAILED" tags ["credit", "deny"]
+    }
+    row "review-borderline" {
+      priority 50
+      when { any { applicant.credit_score < 680 loan.amount > 250000 } }
+      then { outcome { decision require_review reason "manual underwriting required" attributes { queue "underwriting" stage "manual_review" } } }
+      reason "manual underwriting required" reason_code "UNDERWRITING_REVIEW" tags ["review"]
+    }
+    row "approve-prime" {
+      priority 10
+      when { applicant.credit_score >= 720 loan.debt_to_income <= 0.35 applicant.blacklisted == false }
+      then { decision allow reason "prime borrower approved" }
+      reason "prime borrower approved" reason_code "PRIME_APPROVED" tags ["approved"]
+    }
+  }
+  test "prime" {
+    decision "credit_eligibility"
+    input { applicant.credit_score 742 applicant.blacklisted false loan.debt_to_income 0.28 loan.amount 50000 }
+    expect { effect "allow" reason_code "PRIME_APPROVED" }
+  }
+}

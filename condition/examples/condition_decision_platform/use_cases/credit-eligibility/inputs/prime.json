@@ -1,0 +1,4 @@
+{
+  "applicant": { "credit_score": 742, "blacklisted": false },
+  "loan": { "debt_to_income": 0.28, "amount": 50000 }
+}

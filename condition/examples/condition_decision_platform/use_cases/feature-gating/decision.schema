@@ -1,0 +1,4 @@
+schema feature_gating {
+  required subject object
+  required feature object
+}

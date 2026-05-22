@@ -1,0 +1,32 @@
+import "./decision.schema"
+
+module "compliance-approval-condition" {
+  decision_schema "compliance_approval" { effects [allow, deny, require_review] default require_review strategy first_match }
+  decision_table "compliance_approval" {
+    default require_review
+    hit_policy first
+    row "deny-sanctioned-party" {
+      priority 100
+      when { request.sanctions_hit == true }
+      then { outcome { decision deny reason "sanctions hit found" attributes { queue "compliance-blocks" stage "closed" } } obligation audit_log { category "compliance" } }
+      reason "sanctions hit found" reason_code "SANCTIONS_HIT" tags ["sanctions", "deny"]
+    }
+    row "review-export-control" {
+      priority 50
+      when { request.export_controlled == true }
+      then { outcome { decision require_review reason "export control review required" attributes { queue "trade-compliance" stage "legal_review" } } }
+      reason "export control review required" reason_code "EXPORT_REVIEW" tags ["review"]
+    }
+    row "approve-clear-request" {
+      priority 10
+      when { request.sanctions_hit == false request.export_controlled == false }
+      then { decision allow reason "compliance checks passed" }
+      reason "compliance checks passed" reason_code "COMPLIANCE_CLEAR" tags ["approved"]
+    }
+  }
+  test "clear" {
+    decision "compliance_approval"
+    input { request.sanctions_hit false request.export_controlled false }
+    expect { effect "allow" reason_code "COMPLIANCE_CLEAR" }
+  }
+}

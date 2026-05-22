@@ -1,0 +1,4 @@
+{
+  "customer": { "blocked": false, "risk_score": 91 },
+  "transaction": { "amount": 125000, "country": "NP" }
+}

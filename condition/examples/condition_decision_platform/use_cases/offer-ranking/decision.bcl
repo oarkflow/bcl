@@ -1,0 +1,32 @@
+import "./decision.schema"
+
+module "offer-ranking-condition" {
+  decision_schema "offer_ranking" { effects [allow, deny] default deny strategy first_match }
+  decision_table "offer_ranking" {
+    default deny
+    hit_policy first
+    row "eligible-customer" {
+      priority 10
+      when { customer.segment in ["premium", "growth"] customer.opted_out == false }
+      then { decision allow reason "customer is eligible for offers" }
+      reason "customer is eligible for offers" reason_code "OFFER_ELIGIBLE"
+    }
+  }
+  ranking "offer_ranking" {
+    dataset "offers"
+    priority_path "offer.priority"
+    cost_path "offer.cost"
+    rule "segment-match" { when { offer.segment == customer.segment } }
+    score "conversion" { metric "offer.conversion" weight 0.7 normalize [0, 1] }
+    score "margin" { metric "offer.margin" weight 0.3 normalize [0, 100] }
+  }
+  dataset "offers" {
+    record "cashback-plus" { offer.segment "premium" offer.priority 10 offer.cost 3 offer.conversion 0.42 offer.margin 80 }
+    record "starter-discount" { offer.segment "growth" offer.priority 8 offer.cost 1 offer.conversion 0.35 offer.margin 70 }
+  }
+  test "premium" {
+    decision "offer_ranking"
+    input { customer.segment "premium" customer.opted_out false }
+    expect { effect "allow" reason_code "OFFER_ELIGIBLE" }
+  }
+}

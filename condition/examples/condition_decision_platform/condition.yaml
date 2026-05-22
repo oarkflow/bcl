@@ -1,0 +1,12 @@
+address: ":8080"
+authz_path: "./examples/condition_decision_platform/condition.authz"
+store:
+  kind: sqlite
+  path: "./.condition/condition.db"
+service:
+  environment: development
+  request_timeout: 5s
+  max_request_bytes: 1048576
+rate_limit:
+  limit: 120
+  window: 1m
