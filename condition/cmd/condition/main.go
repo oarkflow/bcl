@@ -517,9 +517,13 @@ type RuntimeConfig struct {
 		Path string `json:"path" yaml:"path"`
 	} `json:"store" yaml:"store"`
 	Service struct {
-		Environment     string `json:"environment" yaml:"environment"`
-		RequestTimeout  string `json:"request_timeout" yaml:"request_timeout"`
-		MaxRequestBytes int64  `json:"max_request_bytes" yaml:"max_request_bytes"`
+		Environment               string `json:"environment" yaml:"environment"`
+		RequestTimeout            string `json:"request_timeout" yaml:"request_timeout"`
+		MaxRequestBytes           int64  `json:"max_request_bytes" yaml:"max_request_bytes"`
+		StrictValidation          bool   `json:"strict_validation" yaml:"strict_validation"`
+		StrictEvaluation          bool   `json:"strict_evaluation" yaml:"strict_evaluation"`
+		RequireTests              bool   `json:"require_tests" yaml:"require_tests"`
+		RequireActivationApproval bool   `json:"require_activation_approval" yaml:"require_activation_approval"`
 	} `json:"service" yaml:"service"`
 	RateLimit struct {
 		Limit  int    `json:"limit" yaml:"limit"`
@@ -546,7 +550,14 @@ func loadConfig(path string) (RuntimeConfig, error) {
 }
 
 func serviceConfig(cfg RuntimeConfig) condition.Config {
-	out := condition.Config{Environment: cfg.Service.Environment, MaxRequestBytes: cfg.Service.MaxRequestBytes}
+	out := condition.Config{
+		Environment:               cfg.Service.Environment,
+		MaxRequestBytes:           cfg.Service.MaxRequestBytes,
+		StrictValidation:          cfg.Service.StrictValidation,
+		StrictEvaluation:          cfg.Service.StrictEvaluation,
+		RequireTests:              cfg.Service.RequireTests,
+		RequireActivationApproval: cfg.Service.RequireActivationApproval,
+	}
 	if cfg.Service.RequestTimeout != "" {
 		if d, err := time.ParseDuration(cfg.Service.RequestTimeout); err == nil {
 			out.RequestTimeout = d

@@ -9,21 +9,27 @@ import (
 )
 
 type Config struct {
-	Environment     string        `json:"environment,omitempty"`
-	RequestTimeout  time.Duration `json:"request_timeout,omitempty"`
-	MaxRequestBytes int64         `json:"max_request_bytes,omitempty"`
+	Environment               string        `json:"environment,omitempty"`
+	RequestTimeout            time.Duration `json:"request_timeout,omitempty"`
+	MaxRequestBytes           int64         `json:"max_request_bytes,omitempty"`
+	StrictValidation          bool          `json:"strict_validation,omitempty"`
+	StrictEvaluation          bool          `json:"strict_evaluation,omitempty"`
+	RequireActivationApproval bool          `json:"require_activation_approval,omitempty"`
+	RequireTests              bool          `json:"require_tests,omitempty"`
 }
 
 type PublishRequest struct {
-	Name        string         `json:"name,omitempty"`
-	Version     string         `json:"version,omitempty"`
-	Environment string         `json:"environment,omitempty"`
-	Path        string         `json:"path,omitempty"`
-	Source      string         `json:"source,omitempty"`
-	BaseDir     string         `json:"base_dir,omitempty"`
-	RunTests    bool           `json:"run_tests,omitempty"`
-	Bundle      string         `json:"bundle,omitempty"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Version      string         `json:"version,omitempty"`
+	Environment  string         `json:"environment,omitempty"`
+	Path         string         `json:"path,omitempty"`
+	Source       string         `json:"source,omitempty"`
+	BaseDir      string         `json:"base_dir,omitempty"`
+	RunTests     bool           `json:"run_tests,omitempty"`
+	Strict       bool           `json:"strict,omitempty"`
+	RequireTests bool           `json:"require_tests,omitempty"`
+	Bundle       string         `json:"bundle,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
 }
 
 type PublishResponse struct {
@@ -34,17 +40,22 @@ type PublishResponse struct {
 }
 
 type EvaluateRequest struct {
-	Decision        string         `json:"decision"`
-	Input           map[string]any `json:"input,omitempty"`
-	Bundle          string         `json:"bundle,omitempty"`
-	IncludeGates    bool           `json:"include_gates,omitempty"`
-	Counterfactuals bool           `json:"counterfactuals,omitempty"`
-	IncludeFeatures bool           `json:"include_features,omitempty"`
-	Environment     string         `json:"environment,omitempty"`
+	Decision               string         `json:"decision"`
+	Input                  map[string]any `json:"input,omitempty"`
+	Bundle                 string         `json:"bundle,omitempty"`
+	IncludeGates           bool           `json:"include_gates,omitempty"`
+	Counterfactuals        bool           `json:"counterfactuals,omitempty"`
+	IncludeFeatures        bool           `json:"include_features,omitempty"`
+	Strict                 bool           `json:"strict,omitempty"`
+	Environment            string         `json:"environment,omitempty"`
+	ShadowCandidateSource  string         `json:"shadow_candidate_source,omitempty"`
+	ShadowCandidatePath    string         `json:"shadow_candidate_path,omitempty"`
+	ShadowCandidateBaseDir string         `json:"shadow_candidate_base_dir,omitempty"`
 }
 
 type EvaluateResponse struct {
 	Report   *bcl.DecisionPlatformReport `json:"report"`
+	Shadow   *bcl.DecisionCompareReport  `json:"shadow,omitempty"`
 	Workflow *WorkflowResult             `json:"workflow,omitempty"`
 	Audit    audit.Envelope              `json:"audit"`
 }
@@ -58,33 +69,61 @@ type TestReport struct {
 }
 
 type ValidationRequest struct {
-	Name        string `json:"name,omitempty"`
-	Version     string `json:"version,omitempty"`
-	Environment string `json:"environment,omitempty"`
-	Path        string `json:"path,omitempty"`
-	Source      string `json:"source,omitempty"`
-	BaseDir     string `json:"base_dir,omitempty"`
-	RunTests    bool   `json:"run_tests,omitempty"`
-	Bundle      string `json:"bundle,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Version      string `json:"version,omitempty"`
+	Environment  string `json:"environment,omitempty"`
+	Path         string `json:"path,omitempty"`
+	Source       string `json:"source,omitempty"`
+	BaseDir      string `json:"base_dir,omitempty"`
+	RunTests     bool   `json:"run_tests,omitempty"`
+	Strict       bool   `json:"strict,omitempty"`
+	RequireTests bool   `json:"require_tests,omitempty"`
+	Bundle       string `json:"bundle,omitempty"`
 }
 
 type ValidationReport struct {
-	Valid       bool                         `json:"valid"`
-	Publishable bool                         `json:"publishable"`
-	Name        string                       `json:"name,omitempty"`
-	Version     string                       `json:"version,omitempty"`
-	Environment string                       `json:"environment,omitempty"`
-	Digest      string                       `json:"digest,omitempty"`
-	Decisions   []string                     `json:"decisions,omitempty"`
-	Tests       *TestReport                  `json:"tests,omitempty"`
-	Gates       *bcl.DecisionGateReport      `json:"gates,omitempty"`
-	Features    bcl.DecisionPlatformFeatures `json:"features,omitempty"`
-	Diagnostics []bcl.Diagnostic             `json:"diagnostics,omitempty"`
+	Valid         bool                         `json:"valid"`
+	Publishable   bool                         `json:"publishable"`
+	Strict        bool                         `json:"strict,omitempty"`
+	TestsRequired bool                         `json:"tests_required,omitempty"`
+	Name          string                       `json:"name,omitempty"`
+	Version       string                       `json:"version,omitempty"`
+	Environment   string                       `json:"environment,omitempty"`
+	Digest        string                       `json:"digest,omitempty"`
+	Decisions     []string                     `json:"decisions,omitempty"`
+	Tests         *TestReport                  `json:"tests,omitempty"`
+	Gates         *bcl.DecisionGateReport      `json:"gates,omitempty"`
+	Features      bcl.DecisionPlatformFeatures `json:"features,omitempty"`
+	Diagnostics   []bcl.Diagnostic             `json:"diagnostics,omitempty"`
 }
 
 type ActivationResponse struct {
 	Definition storage.DefinitionRecord `json:"definition"`
 	Audit      audit.Envelope           `json:"audit"`
+}
+
+type ApprovalRequest struct {
+	Environment string `json:"environment,omitempty"`
+	ApprovedBy  string `json:"approved_by,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+type LifecycleResponse struct {
+	Definition storage.DefinitionRecord `json:"definition"`
+	Audit      audit.Envelope           `json:"audit"`
+}
+
+type ProductionReadinessReport struct {
+	Ready       bool            `json:"ready"`
+	Environment string          `json:"environment,omitempty"`
+	Checks      map[string]bool `json:"checks,omitempty"`
+	Missing     []string        `json:"missing,omitempty"`
+}
+
+type DisableRequest struct {
+	Version     string `json:"version,omitempty"`
+	Environment string `json:"environment,omitempty"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 type SimulationRequest struct {

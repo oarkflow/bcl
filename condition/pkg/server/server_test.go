@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -326,6 +328,105 @@ func TestServerMetricsAndRateLimit(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("health status = %d", rec.Code)
+	}
+}
+
+func TestServerProductionLifecycleEndpoints(t *testing.T) {
+	svc := condition.NewService(storage.NewMemoryStore(), condition.Config{
+		StrictValidation:          true,
+		StrictEvaluation:          true,
+		RequireTests:              true,
+		RequireActivationApproval: true,
+	})
+	handler := New(svc).Handler()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "module.bcl"), []byte(`bcl { version "1.0" }`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	source := `bcl { version "1.0" strict true }
+module "demo" {
+  source "./module.bcl"
+  decision_schema "access" { effects [allow, deny] default deny strategy first_match }
+  decision_table "access" {
+    default deny
+    hit_policy first
+    row "allow-ok" { when { request.ok == true } then { decision allow reason "ok" } reason "ok" reason_code "OK" }
+  }
+  test "ok" { decision "access" input { request.ok true } expect { effect "allow" reason_code "OK" diagnostics "none" } }
+}`
+	body, _ := json.Marshal(map[string]any{"name": "demo", "version": "1", "source": source, "base_dir": dir})
+	req := httptest.NewRequest(http.MethodPost, "/v1/definitions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Roles", "condition-admin")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("publish version %d: %s", rec.Code, rec.Body.String())
+	}
+	body, _ = json.Marshal(map[string]any{"decision": "access", "input": map[string]any{"request": map[string]any{"ok": true}}})
+	req = httptest.NewRequest(http.MethodPost, "/v1/definitions/demo/evaluate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Roles", "condition-admin")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unactivated evaluate status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	body, _ = json.Marshal(map[string]any{"approved_by": "ops"})
+	req = httptest.NewRequest(http.MethodPost, "/v1/definitions/demo/versions/1/approve", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Roles", "condition-admin")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approve %d: %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/definitions/demo/versions/1/activate", nil)
+	req.Header.Set("X-Roles", "condition-admin")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("activate %d: %s", rec.Code, rec.Body.String())
+	}
+
+	body, _ = json.Marshal(map[string]any{"reason": "incident"})
+	req = httptest.NewRequest(http.MethodPost, "/v1/definitions/demo/disable", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Roles", "condition-admin")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("disable %d: %s", rec.Code, rec.Body.String())
+	}
+
+	body, _ = json.Marshal(map[string]any{"decision": "access", "input": map[string]any{"request": map[string]any{"ok": true}}})
+	req = httptest.NewRequest(http.MethodPost, "/v1/definitions/demo/evaluate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Roles", "condition-admin")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("disabled evaluate status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	body, _ = json.Marshal(map[string]any{"reason": "resolved"})
+	req = httptest.NewRequest(http.MethodPost, "/v1/definitions/demo/enable", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Roles", "condition-admin")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable %d: %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/readiness", nil)
+	req.Header.Set("X-Roles", "condition-admin")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("readiness %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

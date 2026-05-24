@@ -1,6 +1,13 @@
 import "./decision.schema"
 
+bcl {
+  version "1.0"
+  strict true
+}
+
 module "sla-escalation-condition" {
+  source "./module.bcl"
+
   decision_schema "sla_escalation" { effects [allow, require_review, escalate] default require_review strategy first_match }
   decision_table "sla_escalation" {
     default require_review

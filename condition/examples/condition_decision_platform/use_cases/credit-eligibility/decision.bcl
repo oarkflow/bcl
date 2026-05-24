@@ -1,6 +1,13 @@
 import "./decision.schema"
 
+bcl {
+  version "1.0"
+  strict true
+}
+
 module "credit-eligibility-condition" {
+  source "./module.bcl"
+
   decision_schema "credit_eligibility" { effects [allow, deny, require_review] default require_review strategy first_match }
   decision_table "credit_eligibility" {
     default require_review

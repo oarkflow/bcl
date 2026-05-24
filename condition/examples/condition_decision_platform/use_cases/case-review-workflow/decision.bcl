@@ -1,6 +1,13 @@
 import "./decision.schema"
 
+bcl {
+  version "1.0"
+  strict true
+}
+
 module "case-review-workflow-condition" {
+  source "./module.bcl"
+
   decision_schema "case_review_workflow" { effects [allow, deny, require_review, escalate] default require_review strategy first_match }
   decision_table "case_review_workflow" {
     default require_review

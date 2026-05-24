@@ -1,6 +1,13 @@
 import "./decision.schema"
 
+bcl {
+  version "1.0"
+  strict true
+}
+
 module "offer-ranking-condition" {
+  source "./module.bcl"
+
   decision_schema "offer_ranking" { effects [allow, deny] default deny strategy first_match }
   decision_table "offer_ranking" {
     default deny

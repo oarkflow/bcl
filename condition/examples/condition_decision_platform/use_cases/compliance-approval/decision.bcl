@@ -1,6 +1,13 @@
 import "./decision.schema"
 
+bcl {
+  version "1.0"
+  strict true
+}
+
 module "compliance-approval-condition" {
+  source "./module.bcl"
+
   decision_schema "compliance_approval" { effects [allow, deny, require_review] default require_review strategy first_match }
   decision_table "compliance_approval" {
     default require_review

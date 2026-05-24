@@ -7,6 +7,10 @@ service:
   environment: development
   request_timeout: 5s
   max_request_bytes: 1048576
+  strict_validation: true
+  strict_evaluation: true
+  require_tests: true
+  require_activation_approval: true
 rate_limit:
   limit: 120
   window: 1m

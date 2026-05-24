@@ -6,6 +6,8 @@ bcl {
 }
 
 module "provider-routing-condition" {
+  source "./module.bcl"
+
   decision_schema "provider_routing" { effects [allow, deny, require_review] default deny strategy first_match }
   decision_table "provider_routing" {
     default deny

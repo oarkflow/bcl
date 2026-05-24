@@ -116,10 +116,10 @@ func defaultRoles() []*authz.Role {
 	}
 	return []*authz.Role{
 		{ID: "condition-admin", Name: "Condition Admin", Permissions: perms([]string{"GET", "POST", "PUT", "DELETE"}, "route:*")},
-		{ID: "condition-publisher", Name: "Condition Publisher", Permissions: perms([]string{"GET", "POST"}, "route:POST:/v1/definitions", "route:POST:/v1/definitions/validate", "route:GET:/v1/definitions/:name/versions", "route:POST:/v1/definitions/:name/versions/:version/activate", "route:POST:/v1/definitions/:name/rollback", "route:POST:/v1/reload")},
+		{ID: "condition-publisher", Name: "Condition Publisher", Permissions: perms([]string{"GET", "POST"}, "route:POST:/v1/definitions", "route:POST:/v1/definitions/validate", "route:GET:/v1/definitions/:name/versions", "route:POST:/v1/definitions/:name/versions/:version/approve", "route:POST:/v1/definitions/:name/versions/:version/activate", "route:POST:/v1/definitions/:name/disable", "route:POST:/v1/definitions/:name/enable", "route:POST:/v1/definitions/:name/rollback", "route:POST:/v1/reload")},
 		{ID: "condition-operator", Name: "Condition Operator", Permissions: perms([]string{"GET", "POST"}, "route:GET:/v1/definitions", "route:GET:/v1/definitions/:name", "route:POST:/v1/definitions/:name/evaluate", "route:POST:/v1/definitions/:name/tests", "route:POST:/v1/definitions/:name/gates", "route:POST:/v1/definitions/:name/workflows/:workflow/start", "route:POST:/v1/workflows/:id/advance", "route:GET:/v1/workflows", "route:GET:/v1/workflows/:id")},
 		{ID: "condition-simulator", Name: "Condition Simulator", Permissions: perms([]string{"POST"}, "route:POST:/v1/definitions/:name/simulate", "route:POST:/v1/definitions/:name/compare")},
-		{ID: "condition-auditor", Name: "Condition Auditor", Permissions: perms([]string{"GET", "POST"}, "route:GET:/v1/audits", "route:GET:/v1/audits/:id", "route:POST:/v1/audits/verify", "route:GET:/v1/reports", "route:GET:/v1/metrics")},
+		{ID: "condition-auditor", Name: "Condition Auditor", Permissions: perms([]string{"GET", "POST"}, "route:GET:/v1/readiness", "route:GET:/v1/audits", "route:GET:/v1/audits/:id", "route:POST:/v1/audits/verify", "route:GET:/v1/reports", "route:GET:/v1/metrics")},
 	}
 }
 
@@ -133,6 +133,15 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) productionReadiness(w http.ResponseWriter, r *http.Request) {
+	report := s.service.ProductionReadiness(r.Context())
+	status := http.StatusOK
+	if !report.Ready {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, report)
 }
 
 func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
@@ -174,10 +183,49 @@ func (s *Server) listVersions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, records)
 }
 
+func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
+	var req condition.ApprovalRequest
+	if r.Body != nil && r.ContentLength != 0 && !decodeJSON(w, r, s.maxBody, &req) {
+		return
+	}
+	resp, err := s.service.Approve(r.Context(), r.PathValue("name"), r.PathValue("version"), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "approve_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) activate(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.service.Activate(r.Context(), r.PathValue("name"), r.PathValue("version"), r.URL.Query().Get("environment"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "activate_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) disable(w http.ResponseWriter, r *http.Request) {
+	var req condition.DisableRequest
+	if r.Body != nil && r.ContentLength != 0 && !decodeJSON(w, r, s.maxBody, &req) {
+		return
+	}
+	resp, err := s.service.Disable(r.Context(), r.PathValue("name"), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "disable_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) enable(w http.ResponseWriter, r *http.Request) {
+	var req condition.DisableRequest
+	if r.Body != nil && r.ContentLength != 0 && !decodeJSON(w, r, s.maxBody, &req) {
+		return
+	}
+	resp, err := s.service.Enable(r.Context(), r.PathValue("name"), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "enable_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)

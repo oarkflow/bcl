@@ -50,6 +50,9 @@ func (s *Service) Publish(ctx context.Context, req PublishRequest) (*PublishResp
 	if err != nil {
 		return resp, err
 	}
+	if s.cfg.RequireActivationApproval && resp != nil && !metadataBool(resp.Definition.Metadata, "approved") {
+		return resp, nil
+	}
 	if _, err := s.Activate(ctx, resp.Definition.Name, resp.Definition.Version, resp.Definition.Environment); err != nil {
 		return resp, err
 	}
@@ -59,7 +62,7 @@ func (s *Service) Publish(ctx context.Context, req PublishRequest) (*PublishResp
 func (s *Service) PublishVersion(ctx context.Context, req PublishRequest) (*PublishResponse, error) {
 	start := time.Now()
 	report, program, source, err := s.validatePublish(ctx, ValidationRequest{
-		Name: req.Name, Version: req.Version, Environment: req.Environment, Path: req.Path, Source: req.Source, BaseDir: req.BaseDir, RunTests: req.RunTests, Bundle: req.Bundle,
+		Name: req.Name, Version: req.Version, Environment: req.Environment, Path: req.Path, Source: req.Source, BaseDir: req.BaseDir, RunTests: req.RunTests, Strict: req.Strict, RequireTests: req.RequireTests, Bundle: req.Bundle,
 	})
 	if err != nil {
 		return nil, err
@@ -80,6 +83,10 @@ func (s *Service) PublishVersion(ctx context.Context, req PublishRequest) (*Publ
 		Program:     program,
 		PublishedAt: time.Now(),
 		Metadata:    req.Metadata,
+	}
+	if s.cfg.RequireActivationApproval && !metadataBool(record.Metadata, "approved") {
+		record.Metadata = copyMetadata(record.Metadata)
+		record.Metadata["activation_pending"] = true
 	}
 	if err := s.store.SaveDefinitionVersion(ctx, record); err != nil {
 		return nil, err
@@ -111,15 +118,94 @@ func (s *Service) ListVersions(ctx context.Context, name, environment string) ([
 func (s *Service) Activate(ctx context.Context, name, version, environment string) (*ActivationResponse, error) {
 	start := time.Now()
 	env := first(environment, s.cfg.Environment)
-	if err := s.store.ActivateDefinition(ctx, name, version, env); err != nil {
-		return nil, err
+	record, err := s.store.GetDefinitionVersion(ctx, name, version, env)
+	if err != nil {
+		envelope := s.audit(ctx, "activate_failed", name, version, env, "", map[string]any{"name": name, "version": version, "environment": env}, map[string]any{"error": err.Error()}, start, nil)
+		return &ActivationResponse{Audit: envelope}, err
 	}
-	record, err := s.store.GetActiveDefinition(ctx, name, env)
+	if s.cfg.RequireActivationApproval && !metadataBool(record.Metadata, "approved") {
+		err := fmt.Errorf("definition %q version %q requires approval before activation", name, version)
+		envelope := s.audit(ctx, "activate_failed", name, version, env, record.Digest, map[string]any{"name": name, "version": version, "environment": env}, map[string]any{"error": err.Error()}, start, nil)
+		return &ActivationResponse{Definition: record, Audit: envelope}, err
+	}
+	if metadataBool(record.Metadata, "activation_pending") {
+		record.Metadata = copyMetadata(record.Metadata)
+		record.Metadata["activation_pending"] = false
+		if err := s.store.SaveDefinitionVersion(ctx, record); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.store.ActivateDefinition(ctx, name, version, env); err != nil {
+		envelope := s.audit(ctx, "activate_failed", name, version, env, record.Digest, map[string]any{"name": name, "version": version, "environment": env}, map[string]any{"error": err.Error()}, start, nil)
+		return &ActivationResponse{Definition: record, Audit: envelope}, err
+	}
+	record, err = s.store.GetActiveDefinition(ctx, name, env)
 	if err != nil {
 		return nil, err
 	}
 	envelope := s.audit(ctx, "activate", name, version, env, record.Digest, map[string]any{"name": name, "version": version, "environment": env}, map[string]any{"active": true}, start, nil)
 	return &ActivationResponse{Definition: record, Audit: envelope}, nil
+}
+
+func (s *Service) Approve(ctx context.Context, name, version string, req ApprovalRequest) (*LifecycleResponse, error) {
+	start := time.Now()
+	env := first(req.Environment, s.cfg.Environment)
+	record, err := s.store.GetDefinitionVersion(ctx, name, version, env)
+	if err != nil {
+		return nil, err
+	}
+	record.Metadata = copyMetadata(record.Metadata)
+	record.Metadata["approved"] = true
+	record.Metadata["approved_by"] = first(req.ApprovedBy, SubjectFromContext(ctx), "system")
+	record.Metadata["approval_reason"] = req.Reason
+	record.Metadata["approved_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.store.SaveDefinitionVersion(ctx, record); err != nil {
+		return nil, err
+	}
+	envelope := s.audit(ctx, "approve", name, version, env, record.Digest, req, map[string]any{"approved": true}, start, nil)
+	return &LifecycleResponse{Definition: record, Audit: envelope}, nil
+}
+
+func (s *Service) Disable(ctx context.Context, name string, req DisableRequest) (*LifecycleResponse, error) {
+	return s.setDisabled(ctx, name, req, true)
+}
+
+func (s *Service) Enable(ctx context.Context, name string, req DisableRequest) (*LifecycleResponse, error) {
+	return s.setDisabled(ctx, name, req, false)
+}
+
+func (s *Service) setDisabled(ctx context.Context, name string, req DisableRequest, disabled bool) (*LifecycleResponse, error) {
+	start := time.Now()
+	env := first(req.Environment, s.cfg.Environment)
+	var record storage.DefinitionRecord
+	var err error
+	if req.Version != "" {
+		record, err = s.store.GetDefinitionVersion(ctx, name, req.Version, env)
+	} else {
+		record, err = s.store.GetActiveDefinition(ctx, name, env)
+	}
+	if err != nil {
+		return nil, err
+	}
+	record.Metadata = copyMetadata(record.Metadata)
+	record.Metadata["disabled"] = disabled
+	record.Metadata["disabled_reason"] = req.Reason
+	record.Metadata["disabled_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	if !disabled {
+		record.Metadata["enabled_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if err := s.store.SaveDefinitionVersion(ctx, record); err != nil {
+		return nil, err
+	}
+	if err := s.store.ActivateDefinition(ctx, record.Name, record.Version, record.Environment); err != nil {
+		return nil, err
+	}
+	operation := "disable"
+	if !disabled {
+		operation = "enable"
+	}
+	envelope := s.audit(ctx, operation, name, record.Version, env, record.Digest, req, map[string]any{"disabled": disabled}, start, nil)
+	return &LifecycleResponse{Definition: record, Audit: envelope}, nil
 }
 
 func (s *Service) Rollback(ctx context.Context, name, targetVersion, environment string) (*ActivationResponse, error) {
@@ -138,6 +224,16 @@ func (s *Service) Evaluate(ctx context.Context, definition string, req EvaluateR
 	if err != nil {
 		return nil, err
 	}
+	if metadataBool(record.Metadata, "disabled") {
+		err := fmt.Errorf("definition %q version %q is disabled", definition, record.Version)
+		envelope := s.audit(ctx, "evaluate_disabled", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error(), "disabled": true}, start, nil)
+		return &EvaluateResponse{Audit: envelope}, err
+	}
+	if metadataBool(record.Metadata, "activation_pending") {
+		err := fmt.Errorf("definition %q version %q is not activated", definition, record.Version)
+		envelope := s.audit(ctx, "evaluate_not_active", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error(), "activation_pending": true}, start, nil)
+		return &EvaluateResponse{Audit: envelope}, err
+	}
 	if req.Decision == "" {
 		req.Decision = firstDecision(record.Program)
 	}
@@ -148,18 +244,28 @@ func (s *Service) Evaluate(ctx context.Context, definition string, req EvaluateR
 		IncludeGates:    req.IncludeGates,
 		Counterfactuals: req.Counterfactuals,
 		IncludeFeatures: req.IncludeFeatures,
+		Strict:          s.strictEvaluation(req.Strict),
 	}, &bcl.Options{AllowTime: true})
 	if err != nil {
 		envelope := s.audit(ctx, "evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error()}, start, nil)
 		return &EvaluateResponse{Report: report, Audit: envelope}, err
+	}
+	shadow, shadowErr := s.shadowEvaluate(req, record.Program)
+	if shadowErr != nil {
+		envelope := s.audit(ctx, "evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": shadowErr.Error()}, start, nil)
+		return &EvaluateResponse{Report: report, Audit: envelope}, shadowErr
 	}
 	trace := []string(nil)
 	if report != nil && report.Decision != nil {
 		trace = report.Decision.Trace
 	}
 	workflow := workflowFromDecision(report)
-	envelope := s.audit(ctx, "evaluate", definition, record.Version, record.Environment, record.Digest, req, report, start, trace)
-	return &EvaluateResponse{Report: report, Workflow: workflow, Audit: envelope}, nil
+	result := map[string]any{"report": report}
+	if shadow != nil {
+		result["shadow"] = shadow
+	}
+	envelope := s.audit(ctx, "evaluate", definition, record.Version, record.Environment, record.Digest, req, result, start, trace)
+	return &EvaluateResponse{Report: report, Shadow: shadow, Workflow: workflow, Audit: envelope}, nil
 }
 
 func (s *Service) Test(ctx context.Context, definition, bundle string) (*TestReport, error) {
@@ -168,7 +274,7 @@ func (s *Service) Test(ctx context.Context, definition, bundle string) (*TestRep
 	if err != nil {
 		return nil, err
 	}
-	report := s.runTests(record.Program, firstDecision(record.Program), bundle)
+	report := s.runTests(record.Program, firstDecision(record.Program), bundle, false)
 	envelope := s.audit(ctx, "test", definition, record.Version, record.Environment, record.Digest, map[string]any{"bundle": bundle}, report, start, nil)
 	report.Audit = &envelope
 	_ = s.store.SaveReport(ctx, storage.ReportRecord{ID: envelope.ID, Kind: "test", Definition: definition, CreatedAt: time.Now(), Payload: map[string]any{"report": report}})
@@ -223,6 +329,24 @@ func (s *Service) comparePrograms(ctx context.Context, operation, definition str
 	return &SimulationResponse{Compare: compare, Audit: envelope}, nil
 }
 
+func (s *Service) shadowEvaluate(req EvaluateRequest, base *bcl.DecisionProgram) (*bcl.DecisionCompareReport, error) {
+	if req.ShadowCandidateSource == "" && req.ShadowCandidatePath == "" {
+		return nil, nil
+	}
+	candidate, err := s.candidateProgram(SimulationRequest{
+		CandidateSource:  req.ShadowCandidateSource,
+		CandidatePath:    req.ShadowCandidatePath,
+		CandidateBaseDir: req.ShadowCandidateBaseDir,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return bcl.CompareDecisionBatch(base, candidate, req.Decision, []bcl.DecisionBatchCase{{
+		ID:    "shadow",
+		Input: req.Input,
+	}}, &bcl.Options{AllowTime: true})
+}
+
 func (s *Service) Reload(ctx context.Context, req ReloadRequest) (*ReloadResponse, error) {
 	start := time.Now()
 	last, err := s.store.GetDefinition(ctx, req.Name)
@@ -265,7 +389,41 @@ func (s *Service) VerifyAudits(ctx context.Context) error {
 
 func (s *Service) Ready(ctx context.Context) error {
 	_, err := s.store.ListDefinitions(ctx)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.VerifyAudits(ctx)
+}
+
+func (s *Service) ProductionReadiness(ctx context.Context) ProductionReadinessReport {
+	report := ProductionReadinessReport{
+		Ready:       true,
+		Environment: s.cfg.Environment,
+		Checks: map[string]bool{
+			"store_available":              false,
+			"audit_chain_valid":            false,
+			"strict_validation_enabled":    s.cfg.StrictValidation,
+			"strict_evaluation_enabled":    s.cfg.StrictEvaluation,
+			"tests_or_gates_required":      s.cfg.RequireTests,
+			"activation_approval_required": s.cfg.RequireActivationApproval,
+			"request_timeout_configured":   s.cfg.RequestTimeout > 0,
+			"max_request_bytes_configured": s.cfg.MaxRequestBytes > 0,
+		},
+	}
+	if _, err := s.store.ListDefinitions(ctx); err == nil {
+		report.Checks["store_available"] = true
+	}
+	if err := s.VerifyAudits(ctx); err == nil {
+		report.Checks["audit_chain_valid"] = true
+	}
+	for name, ok := range report.Checks {
+		if !ok {
+			report.Ready = false
+			report.Missing = append(report.Missing, name)
+		}
+	}
+	sort.Strings(report.Missing)
+	return report
 }
 
 func (s *Service) StartWorkflow(ctx context.Context, definition, workflowID string, input map[string]any) (*WorkflowRun, error) {
@@ -341,8 +499,13 @@ func (s *Service) ListWorkflowRuns(ctx context.Context, opts storage.ListOptions
 	return s.store.ListWorkflowRuns(ctx, opts)
 }
 
-func (s *Service) runTests(program *bcl.DecisionProgram, defaultDecision, bundle string) *TestReport {
+func (s *Service) runTests(program *bcl.DecisionProgram, defaultDecision, bundle string, requireTests bool) *TestReport {
 	report := &TestReport{Passed: true}
+	if requireTests && len(program.Tests) == 0 && bundle == "" {
+		report.Passed = false
+		report.Diagnostics = append(report.Diagnostics, bcl.Diagnostic{Severity: "error", Message: "definition requires at least one test or decision gate"})
+		return report
+	}
 	for _, test := range program.Tests {
 		decision := first(test.Decision, defaultDecision)
 		result, err := bcl.EvaluateDecisionScenario(program, &bcl.DecisionScenario{
@@ -374,21 +537,26 @@ func (s *Service) runTests(program *bcl.DecisionProgram, defaultDecision, bundle
 
 func (s *Service) validatePublish(ctx context.Context, req ValidationRequest) (*ValidationReport, *bcl.DecisionProgram, string, error) {
 	source, baseDir, err := sourceFromValidation(req)
+	strict := s.strictValidation(req.Strict)
+	requireTests := s.requireTests(req.RequireTests)
 	report := &ValidationReport{
-		Name:        first(req.Name, "default"),
-		Version:     first(req.Version, "1"),
-		Environment: first(req.Environment, s.cfg.Environment),
+		Name:          first(req.Name, "default"),
+		Version:       first(req.Version, "1"),
+		Environment:   first(req.Environment, s.cfg.Environment),
+		Strict:        strict,
+		TestsRequired: requireTests,
 	}
 	if err != nil {
 		report.Diagnostics = append(report.Diagnostics, bcl.Diagnostic{Severity: "error", Message: err.Error()})
 		return report, nil, "", err
 	}
 	report.Digest = audit.DigestBytes([]byte(source))
-	program, err := compileSource(source, req.Path, baseDir)
+	program, err := compileSource(source, req.Path, baseDir, strict)
 	if err != nil {
 		report.Diagnostics = append(report.Diagnostics, bcl.Diagnostic{Severity: "error", Message: err.Error()})
 		return report, nil, source, err
 	}
+	report.Diagnostics = append(report.Diagnostics, documentDiagnostics(source, req.Path, baseDir, strict)...)
 	if program != nil {
 		report.Name = first(req.Name, firstModule(program), report.Name)
 		report.Features = bcl.InspectDecisionPlatform(program)
@@ -398,11 +566,14 @@ func (s *Service) validatePublish(ctx context.Context, req ValidationRequest) (*
 		sort.Strings(report.Decisions)
 		report.Diagnostics = append(report.Diagnostics, program.Diagnostics...)
 	}
+	if strict {
+		requireVersionDeclaration(&report.Diagnostics)
+	}
 	if program == nil || len(program.Decisions) == 0 {
 		report.Diagnostics = append(report.Diagnostics, bcl.Diagnostic{Severity: "error", Message: "definition does not contain any decisions"})
 	}
-	if req.RunTests && program != nil {
-		report.Tests = s.runTests(program, firstDecision(program), req.Bundle)
+	if (req.RunTests || requireTests) && program != nil {
+		report.Tests = s.runTests(program, firstDecision(program), req.Bundle, requireTests)
 		report.Diagnostics = append(report.Diagnostics, report.Tests.Diagnostics...)
 		report.Gates = report.Tests.Gates
 	}
@@ -412,12 +583,117 @@ func (s *Service) validatePublish(ctx context.Context, req ValidationRequest) (*
 	return report, program, source, nil
 }
 
+func (s *Service) strictValidation(requested bool) bool {
+	return requested || (s != nil && s.cfg.StrictValidation)
+}
+
+func (s *Service) strictEvaluation(requested bool) bool {
+	return requested || (s != nil && s.cfg.StrictEvaluation)
+}
+
+func (s *Service) requireTests(requested bool) bool {
+	return requested || (s != nil && s.cfg.RequireTests)
+}
+
+func documentDiagnostics(source, path, baseDir string, strict bool) []bcl.Diagnostic {
+	doc, opts, err := parseDocumentForValidation(source, path, baseDir, strict)
+	if err != nil {
+		return []bcl.Diagnostic{{Severity: "error", Message: err.Error()}}
+	}
+	resolved, resolveDiags := bcl.ResolveDocument(doc, opts)
+	diags := append([]bcl.Diagnostic{}, resolveDiags...)
+	diags = append(diags, bcl.Validate(resolved, opts)...)
+	if !strict {
+		return diags
+	}
+	if !hasBCLVersionDeclaration(doc.Items) {
+		diags = append(diags, bcl.Diagnostic{Severity: "error", Message: "missing bcl version declaration", Span: doc.Span})
+	}
+	return diags
+}
+
+func parseDocumentForValidation(source, path, baseDir string, strict bool) (*bcl.Document, *bcl.Options, error) {
+	opts := &bcl.Options{AllowTime: true, ResolveImports: true, ResolveModules: true, Strict: strict}
+	if path != "" {
+		doc, err := bcl.ParsePath(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		opts.BaseDir = filepath.Dir(path)
+		return doc, opts, nil
+	}
+	doc, err := bcl.Parse([]byte(source))
+	if err != nil {
+		return nil, nil, err
+	}
+	opts.BaseDir = baseDir
+	return doc, opts, nil
+}
+
+func hasBCLVersionDeclaration(nodes []bcl.Node) bool {
+	for _, n := range nodes {
+		b, ok := n.(*bcl.Block)
+		if !ok || b.Type != "bcl" {
+			continue
+		}
+		for _, child := range b.Body {
+			a, ok := child.(*bcl.Assignment)
+			if ok && a.Name == "version" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func requireVersionDeclaration(diags *[]bcl.Diagnostic) {
+	if diags == nil {
+		return
+	}
+	hasError := false
+	for _, diag := range *diags {
+		if diag.Message == "missing bcl version declaration" && diag.Severity == "error" {
+			hasError = true
+			break
+		}
+	}
+	if hasError {
+		filtered := (*diags)[:0]
+		for _, diag := range *diags {
+			if diag.Message == "missing bcl version declaration" && diag.Severity != "error" {
+				continue
+			}
+			filtered = append(filtered, diag)
+		}
+		*diags = filtered
+	}
+}
+
+func copyMetadata(in map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func metadataBool(metadata map[string]any, key string) bool {
+	switch v := metadata[key].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(v, "true") || strings.EqualFold(v, "yes") || v == "1"
+	default:
+		return false
+	}
+}
+
 func (s *Service) candidateProgram(req SimulationRequest) (*bcl.DecisionProgram, error) {
 	switch {
 	case req.CandidatePath != "":
 		return bcl.CompileDecisionFile(req.CandidatePath, &bcl.Options{AllowTime: true})
 	case req.CandidateSource != "":
-		return compileSource(req.CandidateSource, "", req.CandidateBaseDir)
+		return compileSource(req.CandidateSource, "", req.CandidateBaseDir, false)
 	default:
 		return nil, fmt.Errorf("candidate_source or candidate_path is required")
 	}
@@ -482,13 +758,13 @@ func hasErrorDiagnostics(diags []bcl.Diagnostic) bool {
 	return false
 }
 
-func compileSource(source, path, baseDir string) (*bcl.DecisionProgram, error) {
+func compileSource(source, path, baseDir string, strict bool) (*bcl.DecisionProgram, error) {
 	if path != "" {
 		doc, err := bcl.ParsePath(path)
 		if err != nil {
 			return nil, err
 		}
-		program, err := bcl.CompileDecisionDocument(doc, &bcl.Options{AllowTime: true, BaseDir: filepath.Dir(path), ResolveImports: true, ResolveModules: true})
+		program, err := bcl.CompileDecisionDocument(doc, &bcl.Options{AllowTime: true, BaseDir: filepath.Dir(path), ResolveImports: true, ResolveModules: true, Strict: strict})
 		attachWorkflowBlocks(program, doc)
 		return program, err
 	}
@@ -496,7 +772,7 @@ func compileSource(source, path, baseDir string) (*bcl.DecisionProgram, error) {
 	if err != nil {
 		return nil, err
 	}
-	program, err := bcl.CompileDecisionDocument(doc, &bcl.Options{AllowTime: true, BaseDir: baseDir, ResolveImports: true, ResolveModules: true})
+	program, err := bcl.CompileDecisionDocument(doc, &bcl.Options{AllowTime: true, BaseDir: baseDir, ResolveImports: true, ResolveModules: true, Strict: strict})
 	attachWorkflowBlocks(program, doc)
 	return program, err
 }

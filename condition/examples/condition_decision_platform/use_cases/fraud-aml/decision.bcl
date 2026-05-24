@@ -1,6 +1,13 @@
 import "./decision.schema"
 
+bcl {
+  version "1.0"
+  strict true
+}
+
 module "fraud-aml-condition" {
+  source "./module.bcl"
+
   decision_schema "fraud_aml" { effects [allow, deny, require_review] default allow strategy first_match }
 
   reason_code_catalog "fraud_aml" {

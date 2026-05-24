@@ -1,6 +1,13 @@
 import "./decision.schema"
 
+bcl {
+  version "1.0"
+  strict true
+}
+
 module "feature-gating-condition" {
+  source "./module.bcl"
+
   decision_schema "feature_gating" { effects [allow, deny, require_review] default deny strategy first_match }
   decision_table "feature_gating" {
     default deny

@@ -199,6 +199,7 @@ type DecisionPlatformRequest struct {
 	IncludeGates    bool           `json:"include_gates,omitempty"`
 	Counterfactuals bool           `json:"counterfactuals,omitempty"`
 	IncludeFeatures bool           `json:"include_features,omitempty"`
+	Strict          bool           `json:"strict,omitempty"`
 }
 
 type DecisionPlatformReport struct {
@@ -3646,10 +3647,11 @@ func EvaluateDecisionPlatform(program *DecisionProgram, req DecisionPlatformRequ
 	start := time.Now()
 	var result *DecisionResult
 	var err error
+	verbose := opts != nil && opts.Verbose
 	if req.Counterfactuals {
 		result, err = CounterfactualDecision(program, req.Decision, req.Input, opts)
 	} else {
-		result, err = EvaluateDecision(program, req.Decision, req.Input, opts)
+		result, err = evaluateDecisionInternal(program, req.Decision, req.Input, opts, DecisionEvaluateOptions{Explain: true, ValidateInput: true, Strict: req.Strict, Verbose: verbose})
 	}
 	if result != nil {
 		if result.Metadata == nil {
@@ -3661,6 +3663,11 @@ func EvaluateDecisionPlatform(program *DecisionProgram, req DecisionPlatformRequ
 		report.Diagnostics = append(report.Diagnostics, result.Diagnostics...)
 	}
 	if err != nil {
+		report.Diagnostics = append(report.Diagnostics, Diagnostic{Severity: "error", Message: err.Error()})
+		return report, err
+	}
+	if req.Strict && result != nil && len(result.Diagnostics) > 0 {
+		err := fmt.Errorf("decision %q evaluation produced diagnostics", req.Decision)
 		report.Diagnostics = append(report.Diagnostics, Diagnostic{Severity: "error", Message: err.Error()})
 		return report, err
 	}
