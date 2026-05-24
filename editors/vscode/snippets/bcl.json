@@ -18,6 +18,74 @@
     ],
     "description": "Schema declaration"
   },
+  "Comprehensive schema": {
+    "prefix": "schema_object",
+    "body": [
+      "schema ${1:name} {",
+      "  required ${2:payload} object {",
+      "    closed true",
+      "    title \"${3:Payload}\"",
+      "    description \"${4:Validated input contract}\"",
+      "",
+      "    required ${5:id} string default uuid() generated format uuid description \"Stable identifier\"",
+      "    optional ${6:created_at} string default current_timestamp() generated format date-time read_only",
+      "    optional ${7:tags} list items string min_items 0 max_items 20 unique_items",
+      "  }",
+      "}"
+    ],
+    "description": "Comprehensive schema object with generated defaults"
+  },
+  "Sectioned schema": {
+    "prefix": "schema_sectioned",
+    "body": [
+      "schema ${1:name} {",
+      "  options {",
+      "    validate_required_fields true",
+      "    validate_field_types true",
+      "  }",
+      "",
+      "  fields {",
+      "    ${2:id} ${3:string} required default ${4:uuid()}",
+      "  }",
+      "",
+      "  ${5:workflow} {",
+      "    owner \"${6:team}\"",
+      "  }",
+      "}"
+    ],
+    "description": "Extensible schema with options, field-first fields, and custom DSL sections"
+  },
+  "Schema field": {
+    "prefix": "sfield",
+    "body": [
+      "${1|required} ${2:name} ${3|string} ${4:description \"${5:description}\"}"
+    ],
+    "description": "Schema field"
+  },
+  "Schema field block": {
+    "prefix": "sfield_block",
+    "body": [
+      "${1|required} ${2:name} ${3|string} {",
+      "  description \"${4:description}\"",
+      "  ${5:format email}",
+      "}"
+    ],
+    "description": "Schema field using block clauses"
+  },
+  "Schema generated id": {
+    "prefix": "sgenid",
+    "body": [
+      "optional ${1:id} string default ${2:uid(\"id\")} generated format uuid"
+    ],
+    "description": "Generated schema identifier"
+  },
+  "Schema generated timestamp": {
+    "prefix": "sgents",
+    "body": [
+      "optional ${1:created_at} string default ${2|current_timestamp(),now()|} generated format date-time"
+    ],
+    "description": "Generated schema timestamp"
+  },
   "Policy": {
     "prefix": "policy",
     "body": [

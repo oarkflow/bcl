@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -31,6 +32,295 @@ func Export(n *Normalized, opts ExportOptions) ([]byte, error) {
 		return MarshalYAML(v), nil
 	default:
 		return json.MarshalIndent(v, "", "  ")
+	}
+}
+
+func ExportJSONSchema(normalized *Normalized, schemaName string) ([]byte, error) {
+	if normalized == nil || normalized.Schemas == nil {
+		return nil, fmt.Errorf("schema %q not found", schemaName)
+	}
+	raw := normalized.Schemas[schemaName]
+	if raw == nil {
+		return nil, fmt.Errorf("schema %q not found", schemaName)
+	}
+	out := bclSchemaToJSONSchema(schemaName, raw)
+	return json.MarshalIndent(out, "", "  ")
+}
+
+func ExportOpenAPIComponents(normalized *Normalized) ([]byte, error) {
+	if normalized == nil {
+		return nil, fmt.Errorf("normalized document is nil")
+	}
+	schemas := map[string]any{}
+	for _, name := range sortedSchemaNames(normalized.Schemas) {
+		schemas[name] = bclSchemaToJSONSchema(name, normalized.Schemas[name])
+	}
+	return json.MarshalIndent(map[string]any{"components": map[string]any{"schemas": schemas}}, "", "  ")
+}
+
+func ImportJSONSchema(name string, data []byte) (*SchemaDecl, []Diagnostic) {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, []Diagnostic{{Severity: "error", Message: err.Error()}}
+	}
+	if name == "" {
+		name = strings.TrimPrefix(scalarString(raw["title"]), "#/")
+	}
+	if name == "" {
+		name = "imported"
+	}
+	decl := &SchemaDecl{Name: name}
+	for _, field := range jsonSchemaPropertiesToFields(raw) {
+		decl.Fields = append(decl.Fields, field)
+	}
+	return decl, nil
+}
+
+func bclSchemaToJSONSchema(name string, raw any) map[string]any {
+	out := map[string]any{"$schema": "https://json-schema.org/draft/2020-12/schema", "title": name, "type": "object"}
+	m, _ := raw.(map[string]any)
+	fields := schemaFieldsFromAny(m["fields"])
+	props := map[string]any{}
+	var required []string
+	for _, field := range fields {
+		fieldName := fieldName(field)
+		if fieldName == "" {
+			continue
+		}
+		props[fieldName] = bclFieldToJSONSchema(field)
+		if req, _ := field["required"].(bool); req {
+			required = append(required, fieldName)
+		}
+	}
+	out["properties"] = props
+	if len(required) > 0 {
+		sort.Strings(required)
+		out["required"] = required
+	}
+	return out
+}
+
+func bclFieldToJSONSchema(field map[string]any) map[string]any {
+	out := map[string]any{}
+	typ := jsonSchemaTypeName(scalarString(field["type"]))
+	if nullable, _ := field["nullable"].(bool); nullable {
+		out["type"] = []string{typ, "null"}
+	} else if typ != "" && typ != "any" {
+		out["type"] = typ
+	}
+	copySchemaKey(out, field, "title", "title")
+	copySchemaKey(out, field, "description", "description")
+	copySchemaKey(out, field, "const", "const")
+	copySchemaKey(out, field, "enum", "enum")
+	copySchemaKey(out, field, "default", "default")
+	copySchemaKey(out, field, "examples", "examples")
+	copySchemaKey(out, field, "format", "format")
+	copySchemaKey(out, field, "pattern", "pattern")
+	copySchemaKey(out, field, "min", "minimum")
+	copySchemaKey(out, field, "max", "maximum")
+	copySchemaKey(out, field, "exclusive_min", "exclusiveMinimum")
+	copySchemaKey(out, field, "exclusive_max", "exclusiveMaximum")
+	copySchemaKey(out, field, "multiple_of", "multipleOf")
+	copySchemaKey(out, field, "min_len", "minLength")
+	copySchemaKey(out, field, "max_len", "maxLength")
+	copySchemaKey(out, field, "min_items", "minItems")
+	copySchemaKey(out, field, "max_items", "maxItems")
+	copySchemaKey(out, field, "unique_items", "uniqueItems")
+	copySchemaKey(out, field, "min_props", "minProperties")
+	copySchemaKey(out, field, "max_props", "maxProperties")
+	copySchemaKey(out, field, "content_encoding", "contentEncoding")
+	copySchemaKey(out, field, "content_media_type", "contentMediaType")
+	copySchemaKey(out, field, "read_only", "readOnly")
+	copySchemaKey(out, field, "write_only", "writeOnly")
+	if ref := scalarString(field["ref"]); ref != "" {
+		out["$ref"] = "#/components/schemas/" + ref
+	}
+	if itemType := scalarString(field["items"]); itemType != "" {
+		out["items"] = map[string]any{"type": jsonSchemaTypeName(itemType)}
+	}
+	if xs := stringList(field["prefix_items"]); len(xs) > 0 {
+		items := make([]any, 0, len(xs))
+		for _, itemType := range xs {
+			items = append(items, map[string]any{"type": jsonSchemaTypeName(itemType)})
+		}
+		out["prefixItems"] = items
+	}
+	if contains := scalarString(field["contains"]); contains != "" {
+		out["contains"] = map[string]any{"type": jsonSchemaTypeName(contains)}
+	}
+	if children := schemaFieldsFromAny(field["fields"]); len(children) > 0 {
+		props := map[string]any{}
+		var required []string
+		for _, child := range children {
+			name := fieldName(child)
+			props[name] = bclFieldToJSONSchema(child)
+			if req, _ := child["required"].(bool); req {
+				required = append(required, name)
+			}
+		}
+		out["properties"] = props
+		if len(required) > 0 {
+			sort.Strings(required)
+			out["required"] = required
+		}
+	}
+	if closed, _ := field["closed"].(bool); closed {
+		out["additionalProperties"] = false
+	}
+	if additional, ok := field["additional_properties"].(bool); ok {
+		out["additionalProperties"] = additional
+	}
+	for _, key := range []string{"classification", "audit", "explain", "pii", "policy_tag", "owner", "severity", "derived", "generated", "sensitive"} {
+		if value, ok := field[key]; ok {
+			out["x-bcl-"+strings.ReplaceAll(key, "_", "-")] = value
+		}
+	}
+	for key, value := range field {
+		if strings.HasPrefix(key, "x_") {
+			out["x-"+strings.TrimPrefix(key, "x_")] = value
+		}
+	}
+	return out
+}
+
+func jsonSchemaTypeName(typ string) string {
+	switch resolveBuiltinAlias(typ) {
+	case "int":
+		return "integer"
+	case "float", "number":
+		return "number"
+	case "bool":
+		return "boolean"
+	case "list", "array":
+		return "array"
+	case "map", "object", "block":
+		return "object"
+	case "any", "":
+		return "any"
+	default:
+		return "string"
+	}
+}
+
+func copySchemaKey(dst, src map[string]any, from, to string) {
+	if value, ok := src[from]; ok {
+		dst[to] = value
+	}
+}
+
+func jsonSchemaPropertiesToFields(raw map[string]any) []SchemaField {
+	requiredSet := map[string]bool{}
+	for _, name := range stringList(raw["required"]) {
+		requiredSet[name] = true
+	}
+	props, _ := raw["properties"].(map[string]any)
+	names := sortedSchemaNames(props)
+	fields := make([]SchemaField, 0, len(names))
+	for _, name := range names {
+		prop, _ := props[name].(map[string]any)
+		field := SchemaField{Name: name, Required: requiredSet[name], Type: bclTypeName(prop["type"])}
+		field.Title = scalarString(prop["title"])
+		field.Description = scalarString(prop["description"])
+		field.Pattern = scalarString(prop["pattern"])
+		field.Format = scalarString(prop["format"])
+		field.ContentEncoding = scalarString(prop["contentEncoding"])
+		field.ContentMediaType = scalarString(prop["contentMediaType"])
+		if v, ok := prop["const"]; ok {
+			field.Const = schemaLiteral(v)
+		}
+		if enum := asAnySlice(prop["enum"]); len(enum) > 0 {
+			for _, item := range enum {
+				field.Enum = append(field.Enum, schemaLiteral(item))
+			}
+		}
+		for key, ptr := range map[string]*Value{
+			"minimum": &field.Min, "maximum": &field.Max, "exclusiveMinimum": &field.ExclusiveMin,
+			"exclusiveMaximum": &field.ExclusiveMax, "multipleOf": &field.MultipleOf,
+			"minLength": &field.MinLen, "maxLength": &field.MaxLen, "minItems": &field.MinItems,
+			"maxItems": &field.MaxItems, "minProperties": &field.MinProps, "maxProperties": &field.MaxProps,
+		} {
+			if value, ok := prop[key]; ok {
+				*ptr = schemaLiteral(value)
+			}
+		}
+		if unique, _ := prop["uniqueItems"].(bool); unique {
+			field.UniqueItems = true
+		}
+		if additional, ok := prop["additionalProperties"].(bool); ok {
+			field.AdditionalProperties = &additional
+			field.ClosedSet = !additional
+			field.Closed = !additional
+		}
+		field.Fields = jsonSchemaPropertiesToFields(prop)
+		fields = append(fields, field)
+	}
+	return fields
+}
+
+func bclTypeName(raw any) string {
+	if s, ok := raw.(string); ok {
+		switch s {
+		case "integer":
+			return "int"
+		case "number":
+			return "number"
+		case "boolean":
+			return "bool"
+		case "array":
+			return "list"
+		case "object":
+			return "object"
+		case "string":
+			return "string"
+		default:
+			return "any"
+		}
+	}
+	if xs, ok := raw.([]any); ok && len(xs) > 0 {
+		for _, item := range xs {
+			if scalarString(item) != "null" {
+				return bclTypeName(item)
+			}
+		}
+		return "any"
+	}
+	switch scalarString(raw) {
+	case "integer":
+		return "int"
+	case "number":
+		return "number"
+	case "boolean":
+		return "bool"
+	case "array":
+		return "list"
+	case "object":
+		return "object"
+	case "string":
+		return "string"
+	default:
+		return "any"
+	}
+}
+
+func schemaLiteral(v any) Value {
+	switch x := v.(type) {
+	case nil:
+		return &Literal{Type: "null", Data: nil}
+	case bool:
+		return &Literal{Type: "bool", Data: x}
+	case string:
+		return &Literal{Type: "string", Data: x}
+	case float64:
+		if math.Trunc(x) == x {
+			return &Literal{Type: "int", Data: int64(x)}
+		}
+		return &Literal{Type: "float", Data: x}
+	case int:
+		return &Literal{Type: "int", Data: int64(x)}
+	case int64:
+		return &Literal{Type: "int", Data: x}
+	default:
+		return &Literal{Type: "string", Data: fmt.Sprint(v)}
 	}
 }
 

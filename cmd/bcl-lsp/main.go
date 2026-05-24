@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -245,6 +246,12 @@ func (s *server) analyzeURI(uri string) *bcl.Analysis {
 		}
 	}
 	a, diags := bcl.AnalyzeFile(path, []byte(text), &bcl.Options{Strict: true, Partial: s.suppressVersionWarning(path), ResolveImports: true, BaseDir: filepath.Dir(path)})
+	includeDiags := missingIncludeDiagnostics(path, []byte(text))
+	if len(includeDiags) > 0 {
+		diags = replaceRawMissingFileDiagnostics(diags, includeDiags)
+		diags = append(diags, includeDiags...)
+		a.Diagnostics = diags
+	}
 	s.mu.Lock()
 	s.index[uri] = a
 	s.mu.Unlock()
@@ -1018,6 +1025,87 @@ func importedPaths(nodes []bcl.Node, base string) []string {
 	return out
 }
 
+func missingIncludeDiagnostics(path string, src []byte) []bcl.Diagnostic {
+	doc, err := bcl.ParseFile(path, src)
+	if err != nil {
+		return nil
+	}
+	return missingIncludeDiagnosticsForNodes(doc.Items, filepath.Dir(path))
+}
+
+func missingIncludeDiagnosticsForNodes(nodes []bcl.Node, base string) []bcl.Diagnostic {
+	var out []bcl.Diagnostic
+	for _, n := range nodes {
+		switch x := n.(type) {
+		case *bcl.ImportDecl:
+			if resolved, ok := includedPathExists(x.Path, base); !ok {
+				out = append(out, bcl.Diagnostic{Severity: "error", Message: fmt.Sprintf("included file not found: %s", resolved), Span: x.Span})
+			}
+		case *bcl.Block:
+			if x.Type == "module" {
+				if source, span, ok := blockStringAssignmentWithSpan(x, "source"); ok {
+					if resolved, exists := includedPathExists(source, base); !exists {
+						out = append(out, bcl.Diagnostic{Severity: "error", Message: fmt.Sprintf("module source not found: %s", resolved), Span: span})
+					}
+				}
+			}
+			out = append(out, missingIncludeDiagnosticsForNodes(x.Body, base)...)
+		}
+	}
+	return out
+}
+
+func includedPathExists(path, base string) (string, bool) {
+	if isRemoteSourcePath(path) {
+		return path, true
+	}
+	resolved := path
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(base, resolved)
+	}
+	if strings.ContainsAny(resolved, "*?[") {
+		matches, err := filepath.Glob(resolved)
+		return resolved, err == nil && len(matches) > 0
+	}
+	_, err := os.Stat(resolved)
+	return resolved, err == nil || !errors.Is(err, os.ErrNotExist)
+}
+
+func replaceRawMissingFileDiagnostics(diags, replacements []bcl.Diagnostic) []bcl.Diagnostic {
+	if len(diags) == 0 || len(replacements) == 0 {
+		return diags
+	}
+	out := diags[:0]
+	for _, d := range diags {
+		if isRawMissingFileDiagnostic(d, replacements) {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+func isRawMissingFileDiagnostic(d bcl.Diagnostic, replacements []bcl.Diagnostic) bool {
+	msg := strings.ToLower(d.Message)
+	if !strings.Contains(msg, "no such file") && !strings.Contains(msg, "cannot find") {
+		return false
+	}
+	for _, repl := range replacements {
+		if sameSpan(d.Span, repl.Span) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameSpan(a, b bcl.Span) bool {
+	return samePath(a.File, b.File) &&
+		a.Start.Line == b.Start.Line &&
+		a.Start.Column == b.Start.Column &&
+		a.End.Line == b.End.Line &&
+		a.End.Column == b.End.Column
+}
+
 func moduleSourceDirs(nodes []bcl.Node, base string) []string {
 	var out []string
 	for _, n := range nodes {
@@ -1039,6 +1127,14 @@ func moduleSourceDirs(nodes []bcl.Node, base string) []string {
 }
 
 func blockStringAssignment(b *bcl.Block, name string) string {
+	value, _, ok := blockStringAssignmentWithSpan(b, name)
+	if !ok {
+		return ""
+	}
+	return value
+}
+
+func blockStringAssignmentWithSpan(b *bcl.Block, name string) (string, bcl.Span, bool) {
 	for _, n := range b.Body {
 		a, ok := n.(*bcl.Assignment)
 		if !ok || a.Name != name {
@@ -1046,11 +1142,15 @@ func blockStringAssignment(b *bcl.Block, name string) string {
 		}
 		if lit, ok := a.Value.(*bcl.Literal); ok {
 			if s, ok := lit.Data.(string); ok {
-				return s
+				return s, a.Span, true
 			}
 		}
 	}
-	return ""
+	return "", bcl.Span{}, false
+}
+
+func isRemoteSourcePath(path string) bool {
+	return strings.HasPrefix(path, "git::") || strings.HasSuffix(path, ".git") || strings.Contains(path, "://")
 }
 
 func samePath(a, b string) bool {

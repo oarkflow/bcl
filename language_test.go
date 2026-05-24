@@ -40,6 +40,116 @@ policy "allow-admin" {
 	}
 }
 
+func TestTokenizeSchemaExposesExpandedSchemaTokens(t *testing.T) {
+	toks, diags := TokenizeFile("decision.schema", []byte(`schema ticket {
+  options {
+    validate_required_fields true
+    validate_field_types true
+  }
+  fields {
+    id string required default uuid()
+  }
+  required payload object {
+    closed true
+    title "Payload"
+    optional id string default uuid() generated format uuid
+  }
+}
+`))
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	var sawKeyword, sawType, sawFunction bool
+	for _, tok := range toks {
+		switch tok.Type {
+		case "keyword":
+			if tok.Text == "closed" || tok.Text == "generated" || tok.Text == "format" || tok.Text == "options" || tok.Text == "fields" || tok.Text == "validate_required_fields" {
+				sawKeyword = true
+			}
+		case "type":
+			if tok.Text == "object" || tok.Text == "string" || tok.Text == "uuid" {
+				sawType = true
+			}
+		case "function":
+			if tok.Text == "uuid" {
+				sawFunction = true
+			}
+		}
+	}
+	if !sawKeyword || !sawType || !sawFunction {
+		t.Fatalf("missing schema token classes: keyword=%v type=%v function=%v tokens=%+v", sawKeyword, sawType, sawFunction, toks)
+	}
+}
+
+func TestAnalyzeSectionedSchemaExampleHasCleanDiagnosticsAndCompletions(t *testing.T) {
+	src := []byte(`bcl {
+  version "1.0"
+  strict true
+}
+
+schema route {
+  required upstream url
+}
+
+schema transaction_review {
+  options {
+    validate_required_fields true
+    validate_field_types true
+  }
+
+  fields {
+    id string required default uuid()
+    customer.id string required default "unknown_customer"
+    transaction.amount number required default 0.0
+    transaction.currency string optional default "USD"
+    transaction.created_at string optional default current_timestamp()
+  }
+
+  workflow {
+    owner "risk-platform"
+    retry {
+      attempts 3
+    }
+  }
+}
+
+route "schema-backed-route" {
+  upstream url("https://schema.internal.example.com")
+}
+
+transaction_review "sectioned-schema-example" {
+  id "txn_123"
+  customer {
+    id "cust_123"
+  }
+  transaction {
+    amount 42.50
+    currency "USD"
+    created_at "2026-05-22T10:15:00Z"
+  }
+}
+`)
+	a, diags := AnalyzeFile("example/features/08-schemas-types-validation.bcl", src, nil)
+	text := FormatDiagnostics(diags)
+	for _, unwanted := range []string{`schema "route" value "upstream" should be url`, `unknown field "customer"`, `unknown field "transaction"`, "current_timestamp requires time capability"} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("unexpected editor diagnostic %q in:\n%s", unwanted, text)
+		}
+	}
+	if len(a.Completions) == 0 {
+		t.Fatal("expected completions")
+	}
+	labels := map[string]bool{}
+	for _, completion := range a.Completions {
+		labels[completion.Label] = true
+	}
+	for _, want := range []string{"schema sectioned block", "options", "fields", "validate_required_fields", "current_timestamp"} {
+		if !labels[want] {
+			t.Fatalf("missing completion %q", want)
+		}
+	}
+}
+
 func TestAnalyzeFileIndexesSymbolsReferencesAndCompletions(t *testing.T) {
 	src := []byte(`bcl {
   version "1.0"
@@ -192,10 +302,13 @@ database_url sensitive(env.required("DATABASE_URL"))
 func TestDefaultCompletionsIncludeDetailedRuntimeAndFunctionHints(t *testing.T) {
 	comps := DefaultCompletions()
 	want := map[string]string{
-		"time.now":         "Current evaluation timestamp",
-		"decision.effect":  "Final decision effect",
-		"env.required":     "missing",
-		"context.required": "required context value",
+		"time.now":           "Current evaluation timestamp",
+		"decision.effect":    "Final decision effect",
+		"env.required":       "missing",
+		"context.required":   "required context value",
+		"current_timestamp":  "generated schema defaults",
+		"closed":             "Rejects properties",
+		"schema field block": "Readable schema field",
 	}
 	for label, doc := range want {
 		var found Completion
@@ -205,7 +318,8 @@ func TestDefaultCompletionsIncludeDetailedRuntimeAndFunctionHints(t *testing.T) 
 				break
 			}
 		}
-		if found.Label == "" || !strings.Contains(found.Documentation, doc) {
+		haystack := found.Documentation + " " + found.Detail
+		if found.Label == "" || !strings.Contains(haystack, doc) {
 			t.Fatalf("completion %q missing documentation %q: %+v", label, doc, found)
 		}
 	}

@@ -22,6 +22,9 @@
       "include": "#functions"
     },
     {
+      "include": "#types"
+    },
+    {
       "include": "#blocks"
     },
     {
@@ -100,7 +103,7 @@
       "patterns": [
         {
           "name": "keyword.control.bcl",
-          "match": "\\b(import|as|const|type|schema|required|optional|enum|default|description|doc|deprecated|sensitive|generated|min|max|pattern|format|examples|when|override|use|match|case|else|if|then|row|record|approval|outcome|obligation|advice|event|governance)\\b"
+          "match": "\\b(import|as|const|type|schema|options|fields|validate_required_fields|validate_field_types|required|optional|ref|enum|default|title|description|doc|deprecated|sensitive|generated|derived|read_only|write_only|nullable|unique_items|closed|additional_properties|min|max|exclusive_min|exclusive_max|multiple_of|min_len|max_len|min_items|max_items|min_props|max_props|pattern|format|content_encoding|content_media_type|examples|items|prefix_items|contains|pattern_properties|dependent_required|lt_field|lte_field|gt_field|gte_field|eq_field|all_of|any_of|one_of|not|classification|audit|explain|pii|policy_tag|owner|severity|when|override|use|match|case|else|if|then|row|record|approval|outcome|obligation|advice|event|governance)\\b|\\bx_[A-Za-z0-9_]+\\b"
         },
         {
           "name": "constant.language.boolean.bcl",
@@ -146,11 +149,27 @@
       "patterns": [
         {
           "name": "entity.name.function.bcl",
+          "match": "\\b(env(?:\\.(?:required|int|bool|float|duration|bytes|list))?|context(?:\\.(?:required|int|bool|float|duration|bytes|list))?|session(?:\\.(?:required|int|bool|float|duration|bytes|list))?|set|sensitive|regex|cidr|duration|ip|url|email|bytes|json|concat|lower|upper|trim|coalesce|now|current_timestamp|current_date|current_time|unix_timestamp|unix_millis|today|uuid|uuid_v4|random_uuid|unique_id|uid|date|time|datetime|timestamp|match|case|contains|exists|hash|base64)\\b(?=\\s*\\()"
+        },
+        {
+          "name": "entity.name.function.bcl",
           "match": "\\b[A-Za-z_][A-Za-z0-9_.]*(?=\\s*\\()"
         },
         {
           "name": "support.function.pattern.bcl",
           "match": "\\b(MISSING|NULL|EXISTS|ANY)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.bcl",
+          "match": "\\b(any|string|number|int|float|bool|boolean|object|map|block|list|array|tuple|email|url|uri|date|date-time|datetime|time|duration|bytes|regex|cidr|ip|ipv4|ipv6|uuid)\\b"
+        },
+        {
+          "name": "constant.other.schema-format.bcl",
+          "match": "\\b(public|internal|confidential|restricted|operational|low|medium|high|critical|contact|phone|name|address|identifier|decision_input|customer_segment)\\b"
         }
       ]
     },

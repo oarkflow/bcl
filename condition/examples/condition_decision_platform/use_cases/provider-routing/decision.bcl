@@ -1,5 +1,10 @@
 import "./decision.schema"
 
+bcl {
+  version "1.0"
+  strict true
+}
+
 module "provider-routing-condition" {
   decision_schema "provider_routing" { effects [allow, deny, require_review] default deny strategy first_match }
   decision_table "provider_routing" {

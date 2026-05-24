@@ -749,7 +749,7 @@ func (c *compiler) call(x *Call) any {
 		if len(x.Args) == 1 {
 			return map[string]any{"$json": c.value(x.Args[0])}
 		}
-	case "now", "today", "uuid", "unique_id", "date", "time", "datetime", "timestamp":
+	case "now", "current_timestamp", "current_date", "current_time", "unix_timestamp", "unix_millis", "today", "uuid", "uuid_v4", "random_uuid", "uid", "unique_id", "date", "time", "datetime", "timestamp":
 		v, err := c.generatedCall(x)
 		if err != nil {
 			c.errs = append(c.errs, Diagnostic{Severity: "error", Message: err.Error(), Span: x.Span})
@@ -775,22 +775,46 @@ func (c *compiler) call(x *Call) any {
 
 func (c *compiler) generatedCall(x *Call) (any, error) {
 	switch x.Name {
-	case "now":
+	case "now", "current_timestamp":
 		if len(x.Args) != 0 {
-			return nil, fmt.Errorf("now requires 0 arguments")
+			return nil, fmt.Errorf("%s requires 0 arguments", x.Name)
 		}
 		if !c.opts.AllowTime {
-			return nil, fmt.Errorf("now requires time capability")
+			return nil, fmt.Errorf("%s requires time capability", x.Name)
 		}
 		return time.Now().UTC().Format(time.RFC3339), nil
-	case "today":
+	case "today", "current_date":
 		if len(x.Args) != 0 {
-			return nil, fmt.Errorf("today requires 0 arguments")
+			return nil, fmt.Errorf("%s requires 0 arguments", x.Name)
 		}
 		if !c.opts.AllowTime {
-			return nil, fmt.Errorf("today requires time capability")
+			return nil, fmt.Errorf("%s requires time capability", x.Name)
 		}
 		return time.Now().UTC().Format("2006-01-02"), nil
+	case "current_time":
+		if len(x.Args) != 0 {
+			return nil, fmt.Errorf("current_time requires 0 arguments")
+		}
+		if !c.opts.AllowTime {
+			return nil, fmt.Errorf("current_time requires time capability")
+		}
+		return time.Now().UTC().Format("15:04:05"), nil
+	case "unix_timestamp":
+		if len(x.Args) != 0 {
+			return nil, fmt.Errorf("unix_timestamp requires 0 arguments")
+		}
+		if !c.opts.AllowTime {
+			return nil, fmt.Errorf("unix_timestamp requires time capability")
+		}
+		return time.Now().UTC().Unix(), nil
+	case "unix_millis":
+		if len(x.Args) != 0 {
+			return nil, fmt.Errorf("unix_millis requires 0 arguments")
+		}
+		if !c.opts.AllowTime {
+			return nil, fmt.Errorf("unix_millis requires time capability")
+		}
+		return time.Now().UTC().UnixMilli(), nil
 	case "date":
 		if len(x.Args) == 0 {
 			if !c.opts.AllowTime {
@@ -828,12 +852,12 @@ func (c *compiler) generatedCall(x *Call) (any, error) {
 			return map[string]any{"$" + name: c.value(x.Args[0])}, nil
 		}
 		return nil, fmt.Errorf("%s requires 0 or 1 arguments", x.Name)
-	case "uuid":
+	case "uuid", "uuid_v4", "random_uuid":
 		if len(x.Args) != 0 {
-			return nil, fmt.Errorf("uuid requires 0 arguments")
+			return nil, fmt.Errorf("%s requires 0 arguments", x.Name)
 		}
 		return randomUUID()
-	case "unique_id":
+	case "unique_id", "uid":
 		prefix := "id"
 		if len(x.Args) > 0 {
 			if s := stringValue(c.value(x.Args[0])); s != "" {
@@ -1118,7 +1142,22 @@ func (c *compiler) applyOverrides() {
 }
 
 func schemaToMap(s *SchemaDecl, c *compiler) any {
-	return map[string]any{"fields": schemaFieldsToMaps(s.Fields, c)}
+	m := map[string]any{"fields": schemaFieldsToMaps(s.Fields, c)}
+	if len(s.Options) > 0 {
+		options := map[string]any{}
+		for _, key := range sortedValueKeys(s.Options) {
+			options[key] = c.value(s.Options[key])
+		}
+		m["options"] = options
+	}
+	if len(s.Sections) > 0 {
+		sections := map[string]any{}
+		for _, key := range sortedValueKeys(s.Sections) {
+			sections[key] = c.value(s.Sections[key])
+		}
+		m["sections"] = sections
+	}
+	return m
 }
 
 func schemaFieldsToMaps(schemaFields []SchemaField, c *compiler) []map[string]any {
@@ -1131,6 +1170,12 @@ func schemaFieldsToMaps(schemaFields []SchemaField, c *compiler) []map[string]an
 
 func schemaFieldToMap(f SchemaField, c *compiler) map[string]any {
 	m := map[string]any{"name": f.Name, "type": f.Type, "required": f.Required}
+	if f.Ref != "" {
+		m["ref"] = f.Ref
+	}
+	if f.Const != nil {
+		m["const"] = c.value(f.Const)
+	}
 	if f.Default != nil {
 		m["default"] = c.value(f.Default)
 	}
@@ -1144,8 +1189,20 @@ func schemaFieldToMap(f SchemaField, c *compiler) map[string]any {
 	if len(f.Fields) > 0 {
 		m["fields"] = schemaFieldsToMaps(f.Fields, c)
 	}
+	if f.Items != "" {
+		m["items"] = f.Items
+	}
+	if len(f.PrefixItems) > 0 {
+		m["prefix_items"] = append([]string(nil), f.PrefixItems...)
+	}
+	if f.Contains != "" {
+		m["contains"] = f.Contains
+	}
 	if f.Description != "" {
 		m["description"] = f.Description
+	}
+	if f.Title != "" {
+		m["title"] = f.Title
 	}
 	if f.Deprecated != "" {
 		m["deprecated"] = f.Deprecated
@@ -1156,11 +1213,59 @@ func schemaFieldToMap(f SchemaField, c *compiler) map[string]any {
 	if f.Generated {
 		m["generated"] = true
 	}
+	if f.Derived {
+		m["derived"] = true
+	}
+	if f.ReadOnly {
+		m["read_only"] = true
+	}
+	if f.WriteOnly {
+		m["write_only"] = true
+	}
+	if f.Nullable {
+		m["nullable"] = true
+	}
+	if f.UniqueItems {
+		m["unique_items"] = true
+	}
+	if f.ClosedSet {
+		m["closed"] = f.Closed
+	}
+	if f.AdditionalProperties != nil {
+		m["additional_properties"] = *f.AdditionalProperties
+	}
 	if f.Min != nil {
 		m["min"] = c.value(f.Min)
 	}
 	if f.Max != nil {
 		m["max"] = c.value(f.Max)
+	}
+	if f.ExclusiveMin != nil {
+		m["exclusive_min"] = c.value(f.ExclusiveMin)
+	}
+	if f.ExclusiveMax != nil {
+		m["exclusive_max"] = c.value(f.ExclusiveMax)
+	}
+	if f.MultipleOf != nil {
+		m["multiple_of"] = c.value(f.MultipleOf)
+	}
+	if f.MinLen != nil {
+		m["min_len"] = c.value(f.MinLen)
+	}
+	if f.MaxLen != nil {
+		m["max_len"] = c.value(f.MaxLen)
+	}
+	if f.MinItems != nil {
+		m["min_items"] = c.value(f.MinItems)
+	}
+	if f.MaxItems != nil {
+		m["max_items"] = c.value(f.MaxItems)
+	}
+	if f.MinProps != nil {
+		m["min_props"] = c.value(f.MinProps)
+	}
+	if f.MaxProps != nil {
+		m["max_props"] = c.value(f.MaxProps)
 	}
 	if f.Pattern != "" {
 		m["pattern"] = f.Pattern
@@ -1168,12 +1273,84 @@ func schemaFieldToMap(f SchemaField, c *compiler) map[string]any {
 	if f.Format != "" {
 		m["format"] = f.Format
 	}
+	if f.ContentEncoding != "" {
+		m["content_encoding"] = f.ContentEncoding
+	}
+	if f.ContentMediaType != "" {
+		m["content_media_type"] = f.ContentMediaType
+	}
 	if len(f.Examples) > 0 {
 		vals := make([]any, 0, len(f.Examples))
 		for _, v := range f.Examples {
 			vals = append(vals, c.value(v))
 		}
 		m["examples"] = vals
+	}
+	if f.PatternProperties != nil {
+		m["pattern_properties"] = c.value(f.PatternProperties)
+	}
+	if f.DependentRequired != nil {
+		m["dependent_required"] = c.value(f.DependentRequired)
+	}
+	if f.LTField != "" {
+		m["lt_field"] = f.LTField
+	}
+	if f.LTEField != "" {
+		m["lte_field"] = f.LTEField
+	}
+	if f.GTField != "" {
+		m["gt_field"] = f.GTField
+	}
+	if f.GTEField != "" {
+		m["gte_field"] = f.GTEField
+	}
+	if f.EqField != "" {
+		m["eq_field"] = f.EqField
+	}
+	if len(f.AllOf) > 0 {
+		m["all_of"] = append([]string(nil), f.AllOf...)
+	}
+	if len(f.AnyOf) > 0 {
+		m["any_of"] = append([]string(nil), f.AnyOf...)
+	}
+	if len(f.OneOf) > 0 {
+		m["one_of"] = append([]string(nil), f.OneOf...)
+	}
+	if f.Not != "" {
+		m["not"] = f.Not
+	}
+	if f.If != "" {
+		m["if"] = f.If
+	}
+	if f.Then != "" {
+		m["then"] = f.Then
+	}
+	if f.Else != "" {
+		m["else"] = f.Else
+	}
+	if f.Classification != "" {
+		m["classification"] = f.Classification
+	}
+	if f.Audit != "" {
+		m["audit"] = f.Audit
+	}
+	if f.Explain != "" {
+		m["explain"] = f.Explain
+	}
+	if f.PII != "" {
+		m["pii"] = f.PII
+	}
+	if f.PolicyTag != "" {
+		m["policy_tag"] = f.PolicyTag
+	}
+	if f.Owner != "" {
+		m["owner"] = f.Owner
+	}
+	if f.Severity != "" {
+		m["severity"] = f.Severity
+	}
+	for k, v := range f.Extensions {
+		m[k] = c.value(v)
 	}
 	return m
 }

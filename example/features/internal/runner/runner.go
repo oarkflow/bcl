@@ -19,6 +19,7 @@ func Run() {
 	path := filepath.Join(filepath.Dir(caller), "main.bcl")
 	n, err := bcl.CompileFile(path, &bcl.Options{
 		AllowEnv:       true,
+		AllowTime:      true,
 		ResolveImports: true,
 		ResolveModules: true,
 		Profile:        "prod",

@@ -81,8 +81,23 @@ func writeNode(b *bytes.Buffer, n Node, indent int) {
 		fmt.Fprintf(b, "%stype %s = %s\n", pad, x.Name, x.Type)
 	case *SchemaDecl:
 		fmt.Fprintf(b, "%sschema %s {\n", pad, x.Name)
-		for _, f := range x.Fields {
-			writeSchemaField(b, f, indent+1)
+		sectioned := len(x.Options) > 0 || len(x.Sections) > 0
+		if len(x.Options) > 0 {
+			writeSchemaOptions(b, x.Options, indent+1)
+		}
+		if sectioned {
+			fmt.Fprintf(b, "%s  fields {\n", pad)
+			for _, f := range x.Fields {
+				writeSchemaSectionField(b, f, indent+2)
+			}
+			fmt.Fprintf(b, "%s  }\n", pad)
+			for _, key := range sortedValueKeys(x.Sections) {
+				writeSchemaSection(b, key, x.Sections[key], indent+1)
+			}
+		} else {
+			for _, f := range x.Fields {
+				writeSchemaField(b, f, indent+1)
+			}
 		}
 		fmt.Fprintf(b, "%s}\n", pad)
 	case *Assignment:
@@ -156,51 +171,350 @@ func writeSchemaField(b *bytes.Buffer, f SchemaField, indent int) {
 	fmt.Fprintf(b, "%s%s %s %s", pad, req, f.Name, f.Type)
 	if len(f.Fields) > 0 {
 		b.WriteString(" {\n")
+		writeSchemaFieldBlockClauses(b, f, indent+1)
 		for _, child := range f.Fields {
 			writeSchemaField(b, child, indent+1)
 		}
 		fmt.Fprintf(b, "%s}\n", pad)
 		return
 	}
+	writeSchemaFieldInlineClauses(b, f, indent)
+	b.WriteByte('\n')
+}
+
+func writeSchemaOptions(b *bytes.Buffer, options map[string]Value, indent int) {
+	pad := strings.Repeat("  ", indent)
+	fmt.Fprintf(b, "%soptions {\n", pad)
+	for _, key := range sortedValueKeys(options) {
+		fmt.Fprintf(b, "%s  %s ", pad, key)
+		writeValue(b, options[key], indent+1)
+		b.WriteByte('\n')
+	}
+	fmt.Fprintf(b, "%s}\n", pad)
+}
+
+func writeSchemaSection(b *bytes.Buffer, name string, value Value, indent int) {
+	pad := strings.Repeat("  ", indent)
+	if obj, ok := value.(*Object); ok {
+		fmt.Fprintf(b, "%s%s {\n", pad, name)
+		writeNodes(b, obj.Fields, indent+1)
+		fmt.Fprintf(b, "%s}\n", pad)
+		return
+	}
+	fmt.Fprintf(b, "%s%s ", pad, name)
+	writeValue(b, value, indent)
+	b.WriteByte('\n')
+}
+
+func writeSchemaSectionField(b *bytes.Buffer, f SchemaField, indent int) {
+	pad := strings.Repeat("  ", indent)
+	req := "optional"
+	if f.Required {
+		req = "required"
+	}
+	fmt.Fprintf(b, "%s%s %s %s", pad, f.Name, f.Type, req)
+	if len(f.Fields) > 0 {
+		b.WriteString(" {\n")
+		writeSchemaFieldBlockClauses(b, f, indent+1)
+		for _, child := range f.Fields {
+			writeSchemaField(b, child, indent+1)
+		}
+		fmt.Fprintf(b, "%s}\n", pad)
+		return
+	}
+	writeSchemaFieldInlineClauses(b, f, indent)
+	b.WriteByte('\n')
+}
+
+func writeSchemaFieldInlineClauses(b *bytes.Buffer, f SchemaField, indent int) {
+	if f.Ref != "" {
+		writeSchemaInlineString(b, "ref", f.Ref)
+	}
+	if f.Const != nil {
+		writeSchemaInlineValue(b, "const", f.Const, indent)
+	}
 	if len(f.Enum) > 0 {
-		b.WriteString(" enum ")
-		writeValue(b, &List{Items: f.Enum}, indent)
+		writeSchemaInlineValue(b, "enum", &List{Items: f.Enum}, indent)
 	}
 	if f.Default != nil {
-		b.WriteString(" default ")
-		writeValue(b, f.Default, indent)
+		writeSchemaInlineValue(b, "default", f.Default, indent)
 	}
-	if f.Description != "" {
-		fmt.Fprintf(b, " description %s", quoteBCLString(f.Description))
+	writeSchemaInlineStringOptional(b, "title", f.Title)
+	writeSchemaInlineStringOptional(b, "description", f.Description)
+	writeSchemaInlineStringOptional(b, "deprecated", f.Deprecated)
+	writeSchemaInlineFlag(b, "sensitive", f.Sensitive)
+	writeSchemaInlineFlag(b, "generated", f.Generated)
+	writeSchemaInlineFlag(b, "derived", f.Derived)
+	writeSchemaInlineFlag(b, "read_only", f.ReadOnly)
+	writeSchemaInlineFlag(b, "write_only", f.WriteOnly)
+	writeSchemaInlineFlag(b, "nullable", f.Nullable)
+	writeSchemaInlineFlag(b, "unique_items", f.UniqueItems)
+	if f.ClosedSet {
+		fmt.Fprintf(b, " closed %t", f.Closed)
 	}
-	if f.Deprecated != "" {
-		fmt.Fprintf(b, " deprecated %s", quoteBCLString(f.Deprecated))
+	if f.AdditionalProperties != nil {
+		fmt.Fprintf(b, " additional_properties %t", *f.AdditionalProperties)
 	}
-	if f.Sensitive {
-		b.WriteString(" sensitive")
+	for _, item := range []struct {
+		name  string
+		value Value
+	}{
+		{"min", f.Min}, {"max", f.Max}, {"exclusive_min", f.ExclusiveMin}, {"exclusive_max", f.ExclusiveMax},
+		{"multiple_of", f.MultipleOf}, {"min_len", f.MinLen}, {"max_len", f.MaxLen}, {"min_items", f.MinItems},
+		{"max_items", f.MaxItems}, {"min_props", f.MinProps}, {"max_props", f.MaxProps},
+	} {
+		if item.value != nil {
+			writeSchemaInlineValue(b, item.name, item.value, indent)
+		}
 	}
-	if f.Generated {
-		b.WriteString(" generated")
-	}
-	if f.Min != nil {
-		b.WriteString(" min ")
-		writeValue(b, f.Min, indent)
-	}
-	if f.Max != nil {
-		b.WriteString(" max ")
-		writeValue(b, f.Max, indent)
-	}
-	if f.Pattern != "" {
-		fmt.Fprintf(b, " pattern %s", quoteBCLString(f.Pattern))
-	}
-	if f.Format != "" {
-		fmt.Fprintf(b, " format %s", quoteBCLString(f.Format))
-	}
+	writeSchemaInlineStringOptional(b, "pattern", f.Pattern)
+	writeSchemaInlineStringOptional(b, "format", f.Format)
+	writeSchemaInlineStringOptional(b, "content_encoding", f.ContentEncoding)
+	writeSchemaInlineStringOptional(b, "content_media_type", f.ContentMediaType)
 	if len(f.Examples) > 0 {
-		b.WriteString(" examples ")
-		writeValue(b, &List{Items: f.Examples}, indent)
+		writeSchemaInlineValue(b, "examples", &List{Items: f.Examples}, indent)
 	}
+	writeSchemaInlineTypeOptional(b, "items", f.Items)
+	if len(f.PrefixItems) > 0 {
+		writeSchemaInlineStringList(b, "prefix_items", f.PrefixItems)
+	}
+	writeSchemaInlineTypeOptional(b, "contains", f.Contains)
+	if f.PatternProperties != nil {
+		writeSchemaInlineValue(b, "pattern_properties", f.PatternProperties, indent)
+	}
+	if f.DependentRequired != nil {
+		writeSchemaInlineValue(b, "dependent_required", f.DependentRequired, indent)
+	}
+	writeSchemaInlineStringOptional(b, "lt_field", f.LTField)
+	writeSchemaInlineStringOptional(b, "lte_field", f.LTEField)
+	writeSchemaInlineStringOptional(b, "gt_field", f.GTField)
+	writeSchemaInlineStringOptional(b, "gte_field", f.GTEField)
+	writeSchemaInlineStringOptional(b, "eq_field", f.EqField)
+	writeSchemaInlineStringListOptional(b, "all_of", f.AllOf)
+	writeSchemaInlineStringListOptional(b, "any_of", f.AnyOf)
+	writeSchemaInlineStringListOptional(b, "one_of", f.OneOf)
+	writeSchemaInlineStringOptional(b, "not", f.Not)
+	writeSchemaInlineStringOptional(b, "if", f.If)
+	writeSchemaInlineStringOptional(b, "then", f.Then)
+	writeSchemaInlineStringOptional(b, "else", f.Else)
+	writeSchemaInlineStringOptional(b, "classification", f.Classification)
+	writeSchemaInlineStringOptional(b, "audit", f.Audit)
+	writeSchemaInlineStringOptional(b, "explain", f.Explain)
+	writeSchemaInlineStringOptional(b, "pii", f.PII)
+	writeSchemaInlineStringOptional(b, "policy_tag", f.PolicyTag)
+	writeSchemaInlineStringOptional(b, "owner", f.Owner)
+	writeSchemaInlineStringOptional(b, "severity", f.Severity)
+	for _, k := range sortedValueKeys(f.Extensions) {
+		writeSchemaInlineValue(b, k, f.Extensions[k], indent)
+	}
+}
+
+func schemaFieldHasBlockClauses(f SchemaField) bool {
+	return f.Ref != "" || f.Const != nil || f.Default != nil || len(f.Enum) > 0 || f.Description != "" || f.Title != "" ||
+		f.Deprecated != "" || f.Sensitive || f.Generated || f.Derived || f.ReadOnly || f.WriteOnly || f.Nullable ||
+		f.UniqueItems || f.ClosedSet || f.AdditionalProperties != nil || f.Min != nil || f.Max != nil ||
+		f.ExclusiveMin != nil || f.ExclusiveMax != nil || f.MultipleOf != nil || f.MinLen != nil || f.MaxLen != nil ||
+		f.MinItems != nil || f.MaxItems != nil || f.MinProps != nil || f.MaxProps != nil || f.Pattern != "" ||
+		f.Format != "" || f.ContentEncoding != "" || f.ContentMediaType != "" || len(f.Examples) > 0 ||
+		f.PatternProperties != nil || f.DependentRequired != nil || f.LTField != "" || f.LTEField != "" ||
+		f.GTField != "" || f.GTEField != "" || f.EqField != "" || len(f.AllOf) > 0 || len(f.AnyOf) > 0 ||
+		len(f.OneOf) > 0 || f.Not != "" || f.If != "" || f.Then != "" || f.Else != "" ||
+		f.Classification != "" || f.Audit != "" || f.Explain != "" || f.PII != "" || f.PolicyTag != "" ||
+		f.Owner != "" || f.Severity != "" || len(f.Extensions) > 0 || f.Items != "" || len(f.PrefixItems) > 0 ||
+		f.Contains != ""
+}
+
+func writeSchemaFieldBlockClauses(b *bytes.Buffer, f SchemaField, indent int) {
+	if f.Ref != "" {
+		writeSchemaClauseString(b, indent, "ref", f.Ref)
+	}
+	if f.Const != nil {
+		writeSchemaClauseValue(b, indent, "const", f.Const)
+	}
+	if len(f.Enum) > 0 {
+		writeSchemaClauseValue(b, indent, "enum", &List{Items: f.Enum})
+	}
+	if f.Default != nil {
+		writeSchemaClauseValue(b, indent, "default", f.Default)
+	}
+	writeSchemaClauseStringOptional(b, indent, "title", f.Title)
+	writeSchemaClauseStringOptional(b, indent, "description", f.Description)
+	writeSchemaClauseStringOptional(b, indent, "deprecated", f.Deprecated)
+	writeSchemaClauseFlag(b, indent, "sensitive", f.Sensitive)
+	writeSchemaClauseFlag(b, indent, "generated", f.Generated)
+	writeSchemaClauseFlag(b, indent, "derived", f.Derived)
+	writeSchemaClauseFlag(b, indent, "read_only", f.ReadOnly)
+	writeSchemaClauseFlag(b, indent, "write_only", f.WriteOnly)
+	writeSchemaClauseFlag(b, indent, "nullable", f.Nullable)
+	writeSchemaClauseFlag(b, indent, "unique_items", f.UniqueItems)
+	if f.ClosedSet {
+		writeSchemaClauseBool(b, indent, "closed", f.Closed)
+	}
+	if f.AdditionalProperties != nil {
+		writeSchemaClauseBool(b, indent, "additional_properties", *f.AdditionalProperties)
+	}
+	for _, item := range []struct {
+		name  string
+		value Value
+	}{
+		{"min", f.Min}, {"max", f.Max}, {"exclusive_min", f.ExclusiveMin}, {"exclusive_max", f.ExclusiveMax},
+		{"multiple_of", f.MultipleOf}, {"min_len", f.MinLen}, {"max_len", f.MaxLen}, {"min_items", f.MinItems},
+		{"max_items", f.MaxItems}, {"min_props", f.MinProps}, {"max_props", f.MaxProps},
+	} {
+		if item.value != nil {
+			writeSchemaClauseValue(b, indent, item.name, item.value)
+		}
+	}
+	writeSchemaClauseStringOptional(b, indent, "pattern", f.Pattern)
+	writeSchemaClauseStringOptional(b, indent, "format", f.Format)
+	writeSchemaClauseStringOptional(b, indent, "content_encoding", f.ContentEncoding)
+	writeSchemaClauseStringOptional(b, indent, "content_media_type", f.ContentMediaType)
+	if len(f.Examples) > 0 {
+		writeSchemaClauseValue(b, indent, "examples", &List{Items: f.Examples})
+	}
+	writeSchemaClauseTypeOptional(b, indent, "items", f.Items)
+	if len(f.PrefixItems) > 0 {
+		writeSchemaClauseStringList(b, indent, "prefix_items", f.PrefixItems)
+	}
+	writeSchemaClauseTypeOptional(b, indent, "contains", f.Contains)
+	if f.PatternProperties != nil {
+		writeSchemaClauseValue(b, indent, "pattern_properties", f.PatternProperties)
+	}
+	if f.DependentRequired != nil {
+		writeSchemaClauseValue(b, indent, "dependent_required", f.DependentRequired)
+	}
+	writeSchemaClauseStringOptional(b, indent, "lt_field", f.LTField)
+	writeSchemaClauseStringOptional(b, indent, "lte_field", f.LTEField)
+	writeSchemaClauseStringOptional(b, indent, "gt_field", f.GTField)
+	writeSchemaClauseStringOptional(b, indent, "gte_field", f.GTEField)
+	writeSchemaClauseStringOptional(b, indent, "eq_field", f.EqField)
+	writeSchemaClauseStringListOptional(b, indent, "all_of", f.AllOf)
+	writeSchemaClauseStringListOptional(b, indent, "any_of", f.AnyOf)
+	writeSchemaClauseStringListOptional(b, indent, "one_of", f.OneOf)
+	writeSchemaClauseStringOptional(b, indent, "not", f.Not)
+	writeSchemaClauseStringOptional(b, indent, "if", f.If)
+	writeSchemaClauseStringOptional(b, indent, "then", f.Then)
+	writeSchemaClauseStringOptional(b, indent, "else", f.Else)
+	writeSchemaClauseStringOptional(b, indent, "classification", f.Classification)
+	writeSchemaClauseStringOptional(b, indent, "audit", f.Audit)
+	writeSchemaClauseStringOptional(b, indent, "explain", f.Explain)
+	writeSchemaClauseStringOptional(b, indent, "pii", f.PII)
+	writeSchemaClauseStringOptional(b, indent, "policy_tag", f.PolicyTag)
+	writeSchemaClauseStringOptional(b, indent, "owner", f.Owner)
+	writeSchemaClauseStringOptional(b, indent, "severity", f.Severity)
+	for _, k := range sortedValueKeys(f.Extensions) {
+		writeSchemaClauseValue(b, indent, k, f.Extensions[k])
+	}
+	if schemaFieldHasBlockClauses(f) && len(f.Fields) > 0 {
+		b.WriteByte('\n')
+	}
+}
+
+func writeSchemaClauseValue(b *bytes.Buffer, indent int, name string, value Value) {
+	fmt.Fprintf(b, "%s%s ", strings.Repeat("  ", indent), name)
+	writeValue(b, value, indent)
 	b.WriteByte('\n')
+}
+
+func writeSchemaClauseString(b *bytes.Buffer, indent int, name, value string) {
+	fmt.Fprintf(b, "%s%s %s\n", strings.Repeat("  ", indent), name, quoteBCLString(value))
+}
+
+func writeSchemaClauseStringOptional(b *bytes.Buffer, indent int, name, value string) {
+	if value != "" {
+		writeSchemaClauseString(b, indent, name, value)
+	}
+}
+
+func writeSchemaClauseTypeOptional(b *bytes.Buffer, indent int, name, value string) {
+	if value != "" {
+		fmt.Fprintf(b, "%s%s %s\n", strings.Repeat("  ", indent), name, value)
+	}
+}
+
+func writeSchemaClauseFlag(b *bytes.Buffer, indent int, name string, enabled bool) {
+	if enabled {
+		fmt.Fprintf(b, "%s%s\n", strings.Repeat("  ", indent), name)
+	}
+}
+
+func writeSchemaClauseBool(b *bytes.Buffer, indent int, name string, value bool) {
+	fmt.Fprintf(b, "%s%s %t\n", strings.Repeat("  ", indent), name, value)
+}
+
+func writeSchemaClauseStringListOptional(b *bytes.Buffer, indent int, name string, values []string) {
+	if len(values) > 0 {
+		writeSchemaClauseStringList(b, indent, name, values)
+	}
+}
+
+func writeSchemaClauseStringList(b *bytes.Buffer, indent int, name string, values []string) {
+	fmt.Fprintf(b, "%s%s [", strings.Repeat("  ", indent), name)
+	for i, value := range values {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(value)
+	}
+	b.WriteString("]\n")
+}
+
+func writeSchemaInlineValue(b *bytes.Buffer, name string, value Value, indent int) {
+	b.WriteByte(' ')
+	b.WriteString(name)
+	b.WriteByte(' ')
+	writeValue(b, value, indent)
+}
+
+func writeSchemaInlineString(b *bytes.Buffer, name, value string) {
+	fmt.Fprintf(b, " %s %s", name, quoteBCLString(value))
+}
+
+func writeSchemaInlineStringOptional(b *bytes.Buffer, name, value string) {
+	if value != "" {
+		writeSchemaInlineString(b, name, value)
+	}
+}
+
+func writeSchemaInlineTypeOptional(b *bytes.Buffer, name, value string) {
+	if value != "" {
+		fmt.Fprintf(b, " %s %s", name, value)
+	}
+}
+
+func writeSchemaInlineFlag(b *bytes.Buffer, name string, enabled bool) {
+	if enabled {
+		b.WriteByte(' ')
+		b.WriteString(name)
+	}
+}
+
+func writeSchemaInlineStringListOptional(b *bytes.Buffer, name string, values []string) {
+	if len(values) > 0 {
+		writeSchemaInlineStringList(b, name, values)
+	}
+}
+
+func writeSchemaInlineStringList(b *bytes.Buffer, name string, values []string) {
+	b.WriteByte(' ')
+	b.WriteString(name)
+	b.WriteString(" [")
+	for i, value := range values {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(value)
+	}
+	b.WriteByte(']')
+}
+
+func sortedValueKeys(m map[string]Value) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func writeValue(b *bytes.Buffer, v Value, indent int) {

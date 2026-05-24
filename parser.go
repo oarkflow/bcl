@@ -181,6 +181,9 @@ func (p *parser) parseNode() Node {
 		if p.peekN(1).kind == tokIdent && p.peekN(2).kind == tokEqual {
 			return p.parseTypeDecl()
 		}
+		if p.peekN(1).kind == tokIdent {
+			return p.parseLineStringAssignment(p.next())
+		}
 	}
 	name := p.next()
 	name.text = strings.TrimSuffix(name.text, ":")
@@ -383,6 +386,34 @@ func (p *parser) parseExprNode(first token) Node {
 	return &Assignment{Name: "$expr", Value: out, Span: out.Span}
 }
 
+func (p *parser) parseLineStringAssignment(name token) Node {
+	rawStart := p.peek().span.Start.Offset
+	rawEnd := rawStart
+	depth := 0
+	for {
+		t := p.peek()
+		if t.kind == tokEOF || (depth == 0 && (t.kind == tokNewline || t.kind == tokRBrace)) {
+			break
+		}
+		if t.kind == tokLBrace || t.kind == tokLBracket || t.kind == tokLParen {
+			depth++
+		}
+		if t.kind == tokRBrace || t.kind == tokRBracket || t.kind == tokRParen {
+			depth--
+		}
+		rawEnd = p.next().span.End.Offset
+	}
+	sp := name.span
+	if p.pos > 0 {
+		sp = spanJoin(sp, p.toks[p.pos-1].span)
+	}
+	return &Assignment{
+		Name:  name.text,
+		Value: &Literal{Type: "string", Data: p.rawExpr(rawStart, rawEnd), Span: sp},
+		Span:  sp,
+	}
+}
+
 func (p *parser) parseImport() Node {
 	start := p.next()
 	path := p.expect(tokString, "expected import path string")
@@ -458,6 +489,7 @@ func (p *parser) parseSchema() Node {
 	name := p.expect(tokIdent, "expected schema name")
 	p.expect(tokLBrace, "expected schema body")
 	s := &SchemaDecl{Name: name.text, Span: spanJoin(start.span, name.span)}
+	fieldsByName := map[string]int{}
 	for {
 		p.skipNewlines()
 		if p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
@@ -466,38 +498,360 @@ func (p *parser) parseSchema() Node {
 			}
 			return s
 		}
-		s.Fields = append(s.Fields, p.parseSchemaField())
+		if p.peek().kind == tokIdent && p.peek().text == "type" {
+			p.parseLegacySchemaTypeClause(s, fieldsByName)
+			continue
+		}
+		if p.peek().kind == tokIdent && p.peekN(1).kind == tokLBrace {
+			name := p.next()
+			p.next()
+			switch name.text {
+			case "options":
+				s.Options = p.parseSchemaOptionsBlock()
+			case "fields":
+				for _, field := range p.parseSchemaFieldsSection() {
+					if i, ok := fieldsByName[field.Name]; ok {
+						s.Fields[i] = mergeSchemaField(s.Fields[i], field)
+						continue
+					}
+					fieldsByName[field.Name] = len(s.Fields)
+					s.Fields = append(s.Fields, field)
+				}
+			default:
+				if s.Sections == nil {
+					s.Sections = map[string]Value{}
+				}
+				s.Sections[name.text] = &Object{Fields: p.parseNodes(tokRBrace), Span: name.span}
+			}
+			continue
+		}
+		field := p.parseSchemaField()
+		if i, ok := fieldsByName[field.Name]; ok {
+			s.Fields[i] = mergeSchemaField(s.Fields[i], field)
+			continue
+		}
+		fieldsByName[field.Name] = len(s.Fields)
+		s.Fields = append(s.Fields, field)
 	}
 }
 
-func (p *parser) parseSchemaField() SchemaField {
-	req := p.expect(tokIdent, "expected required or optional")
-	field := SchemaField{Required: req.text == "required", Span: req.span}
-	field.Name = p.expect(tokIdent, "expected field name").text
-	field.Type = p.parseSchemaType()
-	if field.Type == "" && p.peek().kind == tokIdent && p.peek().text == "enum" {
-		field.Type = "enum"
-	}
-	if p.peek().kind == tokLBrace {
-		p.next()
-		for {
-			p.skipNewlines()
-			if p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
-				if p.peek().kind == tokRBrace {
-					field.Span = spanJoin(field.Span, p.next().span)
-				}
-				break
+func (p *parser) parseSchemaOptionsBlock() map[string]Value {
+	options := map[string]Value{}
+	for {
+		p.skipNewlines()
+		if p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+			if p.peek().kind == tokRBrace {
+				p.next()
 			}
-			field.Fields = append(field.Fields, p.parseSchemaField())
+			return options
 		}
-		return field
+		name := p.expect(tokIdent, "expected schema option name")
+		if p.peek().kind == tokEqual {
+			p.next()
+		}
+		if p.peek().kind == tokNewline || p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+			options[name.text] = &Literal{Type: "bool", Data: true, Span: name.span}
+			continue
+		}
+		options[name.text] = p.parseValueUntilLine()
 	}
+}
+
+func (p *parser) parseSchemaFieldsSection() []SchemaField {
+	var fields []SchemaField
+	for {
+		p.skipNewlines()
+		if p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+			if p.peek().kind == tokRBrace {
+				p.next()
+			}
+			return fields
+		}
+		fields = append(fields, p.parseSchemaSectionField())
+	}
+}
+
+func (p *parser) parseSchemaSectionField() SchemaField {
+	name := p.parseSchemaFieldName()
+	field := SchemaField{Name: name.text, Required: false, Span: name.span}
+	field.Type = p.parseSchemaType()
 	for p.peek().kind != tokNewline && p.peek().kind != tokRBrace && p.peek().kind != tokEOF {
+		if p.peek().kind == tokLBrace {
+			p.next()
+			for {
+				p.skipNewlines()
+				if p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+					if p.peek().kind == tokRBrace {
+						field.Span = spanJoin(field.Span, p.next().span)
+					}
+					break
+				}
+				if p.peek().kind == tokIdent && (p.peek().text == "required" || p.peek().text == "optional") {
+					field.Fields = append(field.Fields, p.parseSchemaField())
+					continue
+				}
+				if p.peek().kind == tokIdent && p.parseSchemaFieldBlockClause(&field) {
+					continue
+				}
+				p.skipLineTail()
+			}
+			continue
+		}
 		if p.peek().kind != tokIdent {
 			p.next()
 			continue
 		}
 		switch p.peek().text {
+		case "required":
+			p.next()
+			field.Required = true
+		case "optional":
+			p.next()
+			field.Required = false
+		default:
+			if !p.parseSchemaFieldBlockClause(&field) {
+				p.skipLineTail()
+			}
+		}
+	}
+	return field
+}
+
+func (p *parser) parseLegacySchemaTypeClause(s *SchemaDecl, fieldsByName map[string]int) {
+	p.next()
+	name := p.parseSchemaFieldName()
+	typ := p.parseSchemaType()
+	if typ == "" {
+		typ = "any"
+	}
+	field := SchemaField{Name: name.text, Type: typ, Span: name.span}
+	if i, ok := fieldsByName[field.Name]; ok {
+		s.Fields[i] = mergeSchemaField(s.Fields[i], field)
+		return
+	}
+	fieldsByName[field.Name] = len(s.Fields)
+	s.Fields = append(s.Fields, field)
+}
+
+func mergeSchemaField(base, next SchemaField) SchemaField {
+	if next.Required {
+		base.Required = true
+	}
+	if base.Type == "" || base.Type == "any" {
+		base.Type = next.Type
+	}
+	if next.Ref != "" {
+		base.Ref = next.Ref
+	}
+	if next.Const != nil {
+		base.Const = next.Const
+	}
+	if next.Default != nil {
+		base.Default = next.Default
+	}
+	if len(next.Enum) > 0 {
+		base.Enum = next.Enum
+	}
+	if len(next.Fields) > 0 {
+		base.Fields = next.Fields
+	}
+	if next.Items != "" {
+		base.Items = next.Items
+	}
+	if len(next.PrefixItems) > 0 {
+		base.PrefixItems = next.PrefixItems
+	}
+	if next.Contains != "" {
+		base.Contains = next.Contains
+	}
+	if next.Description != "" {
+		base.Description = next.Description
+	}
+	if next.Title != "" {
+		base.Title = next.Title
+	}
+	if next.Deprecated != "" {
+		base.Deprecated = next.Deprecated
+	}
+	base.Sensitive = base.Sensitive || next.Sensitive
+	base.Generated = base.Generated || next.Generated
+	base.Derived = base.Derived || next.Derived
+	base.ReadOnly = base.ReadOnly || next.ReadOnly
+	base.WriteOnly = base.WriteOnly || next.WriteOnly
+	base.Nullable = base.Nullable || next.Nullable
+	base.UniqueItems = base.UniqueItems || next.UniqueItems
+	if next.ClosedSet {
+		base.ClosedSet = true
+		base.Closed = next.Closed
+	}
+	if next.AdditionalProperties != nil {
+		base.AdditionalProperties = next.AdditionalProperties
+	}
+	if next.Min != nil {
+		base.Min = next.Min
+	}
+	if next.Max != nil {
+		base.Max = next.Max
+	}
+	if next.ExclusiveMin != nil {
+		base.ExclusiveMin = next.ExclusiveMin
+	}
+	if next.ExclusiveMax != nil {
+		base.ExclusiveMax = next.ExclusiveMax
+	}
+	if next.MultipleOf != nil {
+		base.MultipleOf = next.MultipleOf
+	}
+	if next.MinLen != nil {
+		base.MinLen = next.MinLen
+	}
+	if next.MaxLen != nil {
+		base.MaxLen = next.MaxLen
+	}
+	if next.MinItems != nil {
+		base.MinItems = next.MinItems
+	}
+	if next.MaxItems != nil {
+		base.MaxItems = next.MaxItems
+	}
+	if next.MinProps != nil {
+		base.MinProps = next.MinProps
+	}
+	if next.MaxProps != nil {
+		base.MaxProps = next.MaxProps
+	}
+	if next.Pattern != "" {
+		base.Pattern = next.Pattern
+	}
+	if next.Format != "" {
+		base.Format = next.Format
+	}
+	if next.ContentEncoding != "" {
+		base.ContentEncoding = next.ContentEncoding
+	}
+	if next.ContentMediaType != "" {
+		base.ContentMediaType = next.ContentMediaType
+	}
+	if len(next.Examples) > 0 {
+		base.Examples = next.Examples
+	}
+	if next.PatternProperties != nil {
+		base.PatternProperties = next.PatternProperties
+	}
+	if next.DependentRequired != nil {
+		base.DependentRequired = next.DependentRequired
+	}
+	if next.LTField != "" {
+		base.LTField = next.LTField
+	}
+	if next.LTEField != "" {
+		base.LTEField = next.LTEField
+	}
+	if next.GTField != "" {
+		base.GTField = next.GTField
+	}
+	if next.GTEField != "" {
+		base.GTEField = next.GTEField
+	}
+	if next.EqField != "" {
+		base.EqField = next.EqField
+	}
+	if len(next.AllOf) > 0 {
+		base.AllOf = next.AllOf
+	}
+	if len(next.AnyOf) > 0 {
+		base.AnyOf = next.AnyOf
+	}
+	if len(next.OneOf) > 0 {
+		base.OneOf = next.OneOf
+	}
+	if next.Not != "" {
+		base.Not = next.Not
+	}
+	if next.If != "" {
+		base.If = next.If
+	}
+	if next.Then != "" {
+		base.Then = next.Then
+	}
+	if next.Else != "" {
+		base.Else = next.Else
+	}
+	if next.Classification != "" {
+		base.Classification = next.Classification
+	}
+	if next.Audit != "" {
+		base.Audit = next.Audit
+	}
+	if next.Explain != "" {
+		base.Explain = next.Explain
+	}
+	if next.PII != "" {
+		base.PII = next.PII
+	}
+	if next.PolicyTag != "" {
+		base.PolicyTag = next.PolicyTag
+	}
+	if next.Owner != "" {
+		base.Owner = next.Owner
+	}
+	if next.Severity != "" {
+		base.Severity = next.Severity
+	}
+	if len(next.Extensions) > 0 {
+		if base.Extensions == nil {
+			base.Extensions = map[string]Value{}
+		}
+		for k, v := range next.Extensions {
+			base.Extensions[k] = v
+		}
+	}
+	return base
+}
+
+func (p *parser) parseSchemaField() SchemaField {
+	req := p.expect(tokIdent, "expected required or optional")
+	field := SchemaField{Required: req.text == "required", Span: req.span}
+	name := p.parseSchemaFieldName()
+	field.Name = name.text
+	field.Span = spanJoin(field.Span, name.span)
+	field.Type = p.parseSchemaType()
+	if field.Type == "" && p.peek().kind == tokIdent && p.peek().text == "enum" {
+		field.Type = "enum"
+	}
+	for p.peek().kind != tokNewline && p.peek().kind != tokRBrace && p.peek().kind != tokEOF {
+		if p.peek().kind == tokLBrace {
+			p.next()
+			for {
+				p.skipNewlines()
+				if p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+					if p.peek().kind == tokRBrace {
+						field.Span = spanJoin(field.Span, p.next().span)
+					}
+					break
+				}
+				if p.peek().kind == tokIdent && (p.peek().text == "required" || p.peek().text == "optional") {
+					field.Fields = append(field.Fields, p.parseSchemaField())
+					continue
+				}
+				if p.peek().kind == tokIdent && p.parseSchemaFieldBlockClause(&field) {
+					continue
+				}
+				p.skipLineTail()
+			}
+			continue
+		}
+		if p.peek().kind != tokIdent {
+			p.next()
+			continue
+		}
+		switch p.peek().text {
+		case "ref":
+			p.next()
+			field.Ref = p.schemaStringClause()
+		case "const":
+			p.next()
+			field.Const = p.parseValue()
 		case "enum":
 			p.next()
 			if l, ok := p.parseValue().(*List); ok {
@@ -509,6 +863,9 @@ func (p *parser) parseSchemaField() SchemaField {
 		case "description", "doc":
 			p.next()
 			field.Description = p.schemaStringClause()
+		case "title":
+			p.next()
+			field.Title = p.schemaStringClause()
 		case "deprecated":
 			p.next()
 			if p.peek().kind == tokNewline || p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
@@ -522,28 +879,415 @@ func (p *parser) parseSchemaField() SchemaField {
 		case "generated":
 			p.next()
 			field.Generated = true
+		case "derived":
+			p.next()
+			field.Derived = true
+		case "read_only":
+			p.next()
+			field.ReadOnly = true
+		case "write_only":
+			p.next()
+			field.WriteOnly = true
+		case "nullable":
+			p.next()
+			field.Nullable = true
+		case "unique_items":
+			p.next()
+			field.UniqueItems = true
+		case "closed":
+			p.next()
+			field.ClosedSet = true
+			field.Closed = p.schemaBoolClause(true)
+		case "additional_properties":
+			p.next()
+			v := p.schemaBoolClause(true)
+			field.AdditionalProperties = &v
 		case "min":
 			p.next()
 			field.Min = p.parseValue()
 		case "max":
 			p.next()
 			field.Max = p.parseValue()
+		case "exclusive_min":
+			p.next()
+			field.ExclusiveMin = p.parseValue()
+		case "exclusive_max":
+			p.next()
+			field.ExclusiveMax = p.parseValue()
+		case "multiple_of":
+			p.next()
+			field.MultipleOf = p.parseValue()
+		case "min_len":
+			p.next()
+			field.MinLen = p.parseValue()
+		case "max_len":
+			p.next()
+			field.MaxLen = p.parseValue()
+		case "min_items":
+			p.next()
+			field.MinItems = p.parseValue()
+		case "max_items":
+			p.next()
+			field.MaxItems = p.parseValue()
+		case "min_props":
+			p.next()
+			field.MinProps = p.parseValue()
+		case "max_props":
+			p.next()
+			field.MaxProps = p.parseValue()
 		case "pattern":
 			p.next()
 			field.Pattern = p.schemaStringClause()
 		case "format":
 			p.next()
 			field.Format = p.schemaStringClause()
+		case "content_encoding":
+			p.next()
+			field.ContentEncoding = p.schemaStringClause()
+		case "content_media_type":
+			p.next()
+			field.ContentMediaType = p.schemaStringClause()
 		case "examples":
 			p.next()
 			if l, ok := p.parseValue().(*List); ok {
 				field.Examples = l.Items
 			}
+		case "items":
+			p.next()
+			field.Items = p.parseSchemaType()
+		case "prefix_items":
+			p.next()
+			field.PrefixItems = p.schemaTypeListClause()
+		case "contains":
+			p.next()
+			field.Contains = p.parseSchemaType()
+		case "pattern_properties":
+			p.next()
+			field.PatternProperties = p.parseValue()
+		case "dependent_required":
+			p.next()
+			field.DependentRequired = p.parseValue()
+		case "lt_field":
+			p.next()
+			field.LTField = p.schemaStringClause()
+		case "lte_field":
+			p.next()
+			field.LTEField = p.schemaStringClause()
+		case "gt_field":
+			p.next()
+			field.GTField = p.schemaStringClause()
+		case "gte_field":
+			p.next()
+			field.GTEField = p.schemaStringClause()
+		case "eq_field":
+			p.next()
+			field.EqField = p.schemaStringClause()
+		case "all_of":
+			p.next()
+			field.AllOf = p.schemaTypeListClause()
+		case "any_of":
+			p.next()
+			field.AnyOf = p.schemaTypeListClause()
+		case "one_of":
+			p.next()
+			field.OneOf = p.schemaTypeListClause()
+		case "not":
+			p.next()
+			field.Not = p.parseSchemaType()
+		case "if":
+			p.next()
+			field.If = p.parseSchemaType()
+		case "then":
+			p.next()
+			field.Then = p.parseSchemaType()
+		case "else":
+			p.next()
+			field.Else = p.parseSchemaType()
+		case "classification":
+			p.next()
+			field.Classification = p.schemaStringClause()
+		case "audit":
+			p.next()
+			field.Audit = p.schemaStringClause()
+		case "explain":
+			p.next()
+			field.Explain = p.schemaStringClause()
+		case "pii":
+			p.next()
+			field.PII = p.schemaStringClause()
+		case "policy_tag":
+			p.next()
+			field.PolicyTag = p.schemaStringClause()
+		case "owner":
+			p.next()
+			field.Owner = p.schemaStringClause()
+		case "severity":
+			p.next()
+			field.Severity = p.schemaStringClause()
 		default:
+			if strings.HasPrefix(p.peek().text, "x_") {
+				key := p.next().text
+				if field.Extensions == nil {
+					field.Extensions = map[string]Value{}
+				}
+				field.Extensions[key] = p.parseValue()
+				continue
+			}
 			p.skipLineTail()
 		}
 	}
 	return field
+}
+
+func (p *parser) parseSchemaFieldName() token {
+	first := p.expect(tokIdent, "expected field name")
+	parts := []string{first.text}
+	sp := first.span
+	for p.peek().kind == tokDot {
+		p.next()
+		part := p.expect(tokIdent, "expected field path segment")
+		parts = append(parts, part.text)
+		sp = spanJoin(sp, part.span)
+	}
+	first.text = strings.Join(parts, ".")
+	first.span = sp
+	return first
+}
+
+func (p *parser) schemaBoolClause(defaultValue bool) bool {
+	if p.peek().kind == tokNewline || p.peek().kind == tokRBrace || p.peek().kind == tokLBrace || p.peek().kind == tokEOF {
+		return defaultValue
+	}
+	v := p.parseValue()
+	if lit, ok := v.(*Literal); ok {
+		if b, ok := lit.Data.(bool); ok {
+			return b
+		}
+	}
+	return defaultValue
+}
+
+func (p *parser) parseSchemaFieldBlockClause(field *SchemaField) bool {
+	switch p.peek().text {
+	case "ref":
+		p.next()
+		field.Ref = p.schemaStringClause()
+	case "const":
+		p.next()
+		field.Const = p.parseValue()
+	case "enum":
+		p.next()
+		if l, ok := p.parseValue().(*List); ok {
+			field.Enum = l.Items
+		}
+	case "default":
+		p.next()
+		field.Default = p.parseValue()
+	case "description", "doc":
+		p.next()
+		field.Description = p.schemaStringClause()
+	case "title":
+		p.next()
+		field.Title = p.schemaStringClause()
+	case "deprecated":
+		p.next()
+		if p.peek().kind == tokNewline || p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+			field.Deprecated = "true"
+		} else {
+			field.Deprecated = p.schemaStringClause()
+		}
+	case "sensitive":
+		p.next()
+		field.Sensitive = true
+	case "generated":
+		p.next()
+		field.Generated = true
+	case "derived":
+		p.next()
+		field.Derived = true
+	case "read_only":
+		p.next()
+		field.ReadOnly = true
+	case "write_only":
+		p.next()
+		field.WriteOnly = true
+	case "nullable":
+		p.next()
+		field.Nullable = true
+	case "unique_items":
+		p.next()
+		field.UniqueItems = true
+	case "closed":
+		p.next()
+		field.ClosedSet = true
+		field.Closed = p.schemaBoolClause(true)
+	case "additional_properties":
+		p.next()
+		v := p.schemaBoolClause(true)
+		field.AdditionalProperties = &v
+	case "min":
+		p.next()
+		field.Min = p.parseValue()
+	case "max":
+		p.next()
+		field.Max = p.parseValue()
+	case "exclusive_min":
+		p.next()
+		field.ExclusiveMin = p.parseValue()
+	case "exclusive_max":
+		p.next()
+		field.ExclusiveMax = p.parseValue()
+	case "multiple_of":
+		p.next()
+		field.MultipleOf = p.parseValue()
+	case "min_len":
+		p.next()
+		field.MinLen = p.parseValue()
+	case "max_len":
+		p.next()
+		field.MaxLen = p.parseValue()
+	case "min_items":
+		p.next()
+		field.MinItems = p.parseValue()
+	case "max_items":
+		p.next()
+		field.MaxItems = p.parseValue()
+	case "min_props":
+		p.next()
+		field.MinProps = p.parseValue()
+	case "max_props":
+		p.next()
+		field.MaxProps = p.parseValue()
+	case "pattern":
+		p.next()
+		field.Pattern = p.schemaStringClause()
+	case "format":
+		p.next()
+		field.Format = p.schemaStringClause()
+	case "content_encoding":
+		p.next()
+		field.ContentEncoding = p.schemaStringClause()
+	case "content_media_type":
+		p.next()
+		field.ContentMediaType = p.schemaStringClause()
+	case "examples":
+		p.next()
+		if l, ok := p.parseValue().(*List); ok {
+			field.Examples = l.Items
+		}
+	case "items":
+		p.next()
+		field.Items = p.parseSchemaType()
+	case "prefix_items":
+		p.next()
+		field.PrefixItems = p.schemaTypeListClause()
+	case "contains":
+		p.next()
+		field.Contains = p.parseSchemaType()
+	case "pattern_properties":
+		p.next()
+		field.PatternProperties = p.parseValue()
+	case "dependent_required":
+		p.next()
+		field.DependentRequired = p.parseValue()
+	case "lt_field":
+		p.next()
+		field.LTField = p.schemaStringClause()
+	case "lte_field":
+		p.next()
+		field.LTEField = p.schemaStringClause()
+	case "gt_field":
+		p.next()
+		field.GTField = p.schemaStringClause()
+	case "gte_field":
+		p.next()
+		field.GTEField = p.schemaStringClause()
+	case "eq_field":
+		p.next()
+		field.EqField = p.schemaStringClause()
+	case "all_of":
+		p.next()
+		field.AllOf = p.schemaTypeListClause()
+	case "any_of":
+		p.next()
+		field.AnyOf = p.schemaTypeListClause()
+	case "one_of":
+		p.next()
+		field.OneOf = p.schemaTypeListClause()
+	case "not":
+		p.next()
+		field.Not = p.parseSchemaType()
+	case "if":
+		p.next()
+		field.If = p.parseSchemaType()
+	case "then":
+		p.next()
+		field.Then = p.parseSchemaType()
+	case "else":
+		p.next()
+		field.Else = p.parseSchemaType()
+	case "classification":
+		p.next()
+		field.Classification = p.schemaStringClause()
+	case "audit":
+		p.next()
+		field.Audit = p.schemaStringClause()
+	case "explain":
+		p.next()
+		field.Explain = p.schemaStringClause()
+	case "pii":
+		p.next()
+		field.PII = p.schemaStringClause()
+	case "policy_tag":
+		p.next()
+		field.PolicyTag = p.schemaStringClause()
+	case "owner":
+		p.next()
+		field.Owner = p.schemaStringClause()
+	case "severity":
+		p.next()
+		field.Severity = p.schemaStringClause()
+	default:
+		if strings.HasPrefix(p.peek().text, "x_") {
+			key := p.next().text
+			if field.Extensions == nil {
+				field.Extensions = map[string]Value{}
+			}
+			field.Extensions[key] = p.parseValue()
+			return true
+		}
+		return false
+	}
+	return true
+}
+
+func (p *parser) schemaTypeListClause() []string {
+	if p.peek().kind != tokLBracket {
+		if typ := p.parseSchemaType(); typ != "" {
+			return []string{typ}
+		}
+		return nil
+	}
+	p.next()
+	var out []string
+	for {
+		p.skipNewlines()
+		if p.peek().kind == tokRBracket || p.peek().kind == tokEOF {
+			if p.peek().kind == tokRBracket {
+				p.next()
+			}
+			return out
+		}
+		if typ := p.parseSchemaType(); typ != "" {
+			out = append(out, typ)
+		} else {
+			p.next()
+		}
+		p.skipNewlines()
+		if p.peek().kind == tokComma {
+			p.next()
+		}
+	}
 }
 
 func (p *parser) schemaStringClause() string {
@@ -563,7 +1307,7 @@ func (p *parser) parseSchemaType() string {
 	depth := 0
 	for {
 		t := p.peek()
-		if t.kind == tokEOF || t.kind == tokNewline || t.kind == tokRBrace || t.kind == tokLBrace {
+		if t.kind == tokEOF || t.kind == tokNewline || t.kind == tokRBrace || t.kind == tokRBracket || t.kind == tokComma || t.kind == tokLBrace {
 			break
 		}
 		if depth == 0 && t.kind == tokIdent && isSchemaClause(t.text) {
@@ -585,9 +1329,12 @@ func (p *parser) parseSchemaType() string {
 
 func isSchemaClause(s string) bool {
 	switch s {
-	case "enum", "default", "description", "doc", "deprecated", "sensitive", "generated", "min", "max", "pattern", "format", "examples":
+	case "required", "optional", "ref", "const", "enum", "default", "description", "doc", "title", "deprecated", "sensitive", "generated", "derived", "read_only", "write_only", "nullable", "unique_items", "closed", "additional_properties", "min", "max", "exclusive_min", "exclusive_max", "multiple_of", "min_len", "max_len", "min_items", "max_items", "min_props", "max_props", "pattern", "format", "content_encoding", "content_media_type", "examples", "items", "prefix_items", "contains", "pattern_properties", "dependent_required", "lt_field", "lte_field", "gt_field", "eq_field", "all_of", "any_of", "one_of", "not", "if", "then", "else", "classification", "audit", "explain", "pii", "policy_tag", "owner", "severity":
 		return true
 	default:
+		if strings.HasPrefix(s, "x_") {
+			return true
+		}
 		return false
 	}
 }

@@ -6,6 +6,14 @@ import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } f
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
 
+const LANGUAGE_ID = 'bcl';
+const WATCHED_FILE_GLOBS = ['**/*.bcl', '**/*.schema'];
+const TRUSTED_COMMANDS = [
+  'bcl.compileCurrentFile',
+  'bcl.explainCurrentFile',
+  'bcl.restartLanguageServer'
+];
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   outputChannel = vscode.window.createOutputChannel('BCL Language Server');
   context.subscriptions.push(
@@ -31,7 +39,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('bcl.validateWorkspace', () => runBclCommand(['validate', '--strict', workspacePath()])),
     vscode.commands.registerCommand('bcl.compileCurrentFile', () => runCurrentFileCommand('compile')),
     vscode.commands.registerCommand('bcl.explainCurrentFile', () => runCurrentFileCommand('explain')),
-    vscode.languages.registerHoverProvider({ language: 'bcl', scheme: 'file' }, {
+    vscode.languages.registerHoverProvider({ language: LANGUAGE_ID, scheme: 'file' }, {
       provideHover: async (document, position) => provideRichHover(document, position)
     })
   );
@@ -51,12 +59,9 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     : { command: command.command, transport: TransportKind.stdio };
 
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: 'file', language: 'bcl' }],
+    documentSelector: [{ scheme: 'file', language: LANGUAGE_ID }],
     synchronize: {
-      fileEvents: [
-        vscode.workspace.createFileSystemWatcher('**/*.bcl'),
-        vscode.workspace.createFileSystemWatcher('**/*.schema')
-      ]
+      fileEvents: WATCHED_FILE_GLOBS.map((glob) => vscode.workspace.createFileSystemWatcher(glob))
     },
     middleware: {
       provideHover: async () => null
@@ -120,7 +125,7 @@ function bundledServerPath(context: vscode.ExtensionContext): string | undefined
 
 function runCurrentFileCommand(command: string): void {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'bcl') {
+  if (!editor || editor.document.languageId !== LANGUAGE_ID) {
     vscode.window.showWarningMessage('Open a BCL file first.');
     return;
   }
@@ -148,11 +153,7 @@ async function provideRichHover(document: vscode.TextDocument, position: vscode.
     }
     const markdown = new vscode.MarkdownString(detail.contents, true);
     markdown.isTrusted = {
-      enabledCommands: [
-        'bcl.compileCurrentFile',
-        'bcl.explainCurrentFile',
-        'bcl.restartLanguageServer'
-      ]
+      enabledCommands: TRUSTED_COMMANDS
     };
     markdown.supportHtml = false;
     return new vscode.Hover(markdown, detail.range);

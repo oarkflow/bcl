@@ -777,6 +777,166 @@ func validateBlockAgainstSchema(b *Block, schema *SchemaDecl, aliases map[string
 			}
 		}
 	}
+	for _, d := range ValidateSchemaValue(schema.Name, schemaDeclValidationMap(schema), blockValidationMap(b)) {
+		*diags = append(*diags, d)
+	}
+}
+
+func schemaDeclValidationMap(schema *SchemaDecl) map[string]any {
+	fields := make([]map[string]any, 0, len(schema.Fields))
+	for _, f := range schema.Fields {
+		fields = append(fields, schemaFieldValidationMap(f))
+	}
+	m := map[string]any{"fields": fields}
+	if len(schema.Options) > 0 {
+		options := map[string]any{}
+		for key, value := range schema.Options {
+			options[key] = valueInterface(value)
+		}
+		m["options"] = options
+	}
+	return m
+}
+
+func schemaFieldValidationMap(f SchemaField) map[string]any {
+	m := map[string]any{"name": f.Name, "type": f.Type, "required": f.Required}
+	if f.Ref != "" {
+		m["ref"] = f.Ref
+	}
+	if f.Const != nil {
+		m["const"] = valueInterface(f.Const)
+	}
+	if len(f.Enum) > 0 {
+		vals := make([]any, 0, len(f.Enum))
+		for _, v := range f.Enum {
+			vals = append(vals, valueInterface(v))
+		}
+		m["enum"] = vals
+	}
+	if len(f.Fields) > 0 {
+		children := make([]map[string]any, 0, len(f.Fields))
+		for _, child := range f.Fields {
+			children = append(children, schemaFieldValidationMap(child))
+		}
+		m["fields"] = children
+	}
+	if f.Items != "" {
+		m["items"] = f.Items
+	}
+	if len(f.PrefixItems) > 0 {
+		m["prefix_items"] = append([]string(nil), f.PrefixItems...)
+	}
+	if f.Contains != "" {
+		m["contains"] = f.Contains
+	}
+	if f.Nullable {
+		m["nullable"] = true
+	}
+	if f.UniqueItems {
+		m["unique_items"] = true
+	}
+	if f.ClosedSet {
+		m["closed"] = f.Closed
+	}
+	if f.AdditionalProperties != nil {
+		m["additional_properties"] = *f.AdditionalProperties
+	}
+	for key, value := range map[string]Value{
+		"min": f.Min, "max": f.Max, "exclusive_min": f.ExclusiveMin, "exclusive_max": f.ExclusiveMax,
+		"multiple_of": f.MultipleOf, "min_len": f.MinLen, "max_len": f.MaxLen, "min_items": f.MinItems,
+		"max_items": f.MaxItems, "min_props": f.MinProps, "max_props": f.MaxProps,
+	} {
+		if value != nil {
+			m[key] = valueInterface(value)
+		}
+	}
+	if f.Pattern != "" {
+		m["pattern"] = f.Pattern
+	}
+	if f.Format != "" {
+		m["format"] = f.Format
+	}
+	if f.PatternProperties != nil {
+		m["pattern_properties"] = valueInterface(f.PatternProperties)
+	}
+	if f.DependentRequired != nil {
+		m["dependent_required"] = valueInterface(f.DependentRequired)
+	}
+	if f.LTField != "" {
+		m["lt_field"] = f.LTField
+	}
+	if f.LTEField != "" {
+		m["lte_field"] = f.LTEField
+	}
+	if f.GTField != "" {
+		m["gt_field"] = f.GTField
+	}
+	if f.GTEField != "" {
+		m["gte_field"] = f.GTEField
+	}
+	if f.EqField != "" {
+		m["eq_field"] = f.EqField
+	}
+	if len(f.AllOf) > 0 {
+		m["all_of"] = append([]string(nil), f.AllOf...)
+	}
+	if len(f.AnyOf) > 0 {
+		m["any_of"] = append([]string(nil), f.AnyOf...)
+	}
+	if len(f.OneOf) > 0 {
+		m["one_of"] = append([]string(nil), f.OneOf...)
+	}
+	if f.Not != "" {
+		m["not"] = f.Not
+	}
+	if f.If != "" {
+		m["if"] = f.If
+	}
+	if f.Then != "" {
+		m["then"] = f.Then
+	}
+	if f.Else != "" {
+		m["else"] = f.Else
+	}
+	return m
+}
+
+func blockValidationMap(b *Block) map[string]any {
+	out := map[string]any{}
+	for _, n := range b.Body {
+		if a, ok := n.(*Assignment); ok {
+			out[a.Name] = validationValue(a.Value)
+		}
+	}
+	return out
+}
+
+func validationValue(v Value) any {
+	if ref, ok := v.(*Reference); ok {
+		return ref.Path
+	}
+	if call, ok := v.(*Call); ok && schemaWrapperCall(call.Name) && len(call.Args) == 1 {
+		return map[string]any{"$" + call.Name: validationValue(call.Args[0])}
+	}
+	if obj, ok := v.(*Object); ok {
+		out := map[string]any{}
+		for _, n := range obj.Fields {
+			if a, ok := n.(*Assignment); ok {
+				out[a.Name] = validationValue(a.Value)
+			}
+		}
+		return out
+	}
+	return valueInterface(v)
+}
+
+func schemaWrapperCall(name string) bool {
+	switch name {
+	case "regex", "cidr", "duration", "ip", "url", "email", "bytes":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateObjectAgainstFields(obj *Object, schemaFields []SchemaField, aliases map[string]string, diags *[]Diagnostic) {
@@ -1174,6 +1334,9 @@ func validateUnknownSchemaFields(nodes []Node, schemas map[string]*SchemaDecl, d
 			allowed := map[string]bool{}
 			for _, f := range schema.Fields {
 				allowed[f.Name] = true
+				if prefix, ok := dottedSchemaTopLevel(f.Name); ok {
+					allowed[prefix] = true
+				}
 			}
 			for _, item := range b.Body {
 				a, ok := item.(*Assignment)
@@ -1184,6 +1347,11 @@ func validateUnknownSchemaFields(nodes []Node, schemas map[string]*SchemaDecl, d
 		}
 		validateUnknownSchemaFields(b.Body, schemas, diags)
 	}
+}
+
+func dottedSchemaTopLevel(name string) (string, bool) {
+	head, _, ok := strings.Cut(name, ".")
+	return head, ok && head != ""
 }
 
 func validateWorkflowGraphs(nodes []Node, diags *[]Diagnostic) {

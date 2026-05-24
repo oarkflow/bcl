@@ -88,6 +88,7 @@ func TestFeatureExamplesCompile(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			if _, err := CompileFile(path, &Options{
 				AllowEnv:       true,
+				AllowTime:      true,
 				ResolveImports: true,
 				ResolveModules: true,
 				Profile:        "prod",

@@ -2443,15 +2443,7 @@ func validateDecisionInput(program *DecisionProgram, decisionID string, input ma
 }
 
 func validateDecisionInputSchema(decisionID string, schema any, input map[string]any) []Diagnostic {
-	m, ok := schema.(map[string]any)
-	if !ok {
-		return nil
-	}
-	var diags []Diagnostic
-	for _, field := range schemaFieldsFromAny(m["fields"]) {
-		validateDecisionInputField(decisionID, field, input, fieldName(field), &diags)
-	}
-	return diags
+	return ValidateSchemaValue(decisionID, schema, input)
 }
 
 func validateDecisionInputField(decisionID string, field map[string]any, input map[string]any, path string, diags *[]Diagnostic) {
@@ -2547,8 +2539,12 @@ func runtimeTypeMatches(want string, v any) bool {
 		if ok {
 			return true
 		}
-		_, ok = v.(map[string]any)
-		return ok && (want == "date" || want == "datetime" || want == "duration" || want == "bytes" || want == "regex" || want == "cidr")
+		m, ok := v.(map[string]any)
+		if !ok {
+			return false
+		}
+		_, hasTypedWrapper := m["$"+want]
+		return hasTypedWrapper || want == "date" || want == "datetime" || want == "duration" || want == "bytes" || want == "regex" || want == "cidr"
 	case "bool":
 		_, ok := v.(bool)
 		return ok

@@ -180,8 +180,15 @@ func DefaultCompletions() []Completion {
 	for _, item := range runtimeValueHints {
 		out = append(out, Completion{Label: item.Name, Kind: "field", Detail: item.Signature, Documentation: item.Description})
 	}
+	for _, item := range schemaFieldHints {
+		out = append(out, Completion{Label: item.Name, Kind: "property", Detail: item.Signature, Documentation: item.Description, InsertText: item.InsertText})
+	}
 	for _, snip := range []Completion{
 		{Label: "schema block", Kind: "snippet", Detail: "Schema declaration", InsertText: "schema ${1:name} {\n  required ${2:field} ${3:string}\n}"},
+		{Label: "schema sectioned block", Kind: "snippet", Detail: "Extensible schema declaration", InsertText: "schema ${1:name} {\n  options {\n    validate_required_fields true\n    validate_field_types true\n  }\n\n  fields {\n    ${2:id} ${3:string} required default ${4:uuid()}\n  }\n\n  ${5:workflow} {\n    owner \"${6:team}\"\n  }\n}"},
+		{Label: "schema object block", Kind: "snippet", Detail: "Comprehensive schema object", InsertText: "schema ${1:name} {\n  required ${2:object_name} object {\n    closed true\n    title \"${3:Title}\"\n    description \"${4:Validated input contract}\"\n\n    required ${5:id} string default uuid() generated format uuid\n    optional ${6:created_at} string default current_timestamp() generated format date-time\n  }\n}"},
+		{Label: "schema field", Kind: "snippet", Detail: "Schema field with constraints", InsertText: "${1|required} ${2:name} ${3|string} ${4:description \"${5:description}\"}"},
+		{Label: "schema field block", Kind: "snippet", Detail: "Readable schema field clause block", InsertText: "${1|required} ${2:name} ${3|string} {\n  description \"${4:description}\"\n  ${5:format email}\n}"},
 		{Label: "param block", Kind: "snippet", Detail: "Module input parameter", InsertText: "param ${1:name} ${2:string} {\n  required true\n}"},
 		{Label: "predicate block", Kind: "snippet", Detail: "Reusable condition predicate", InsertText: "predicate \"${1:name}\" {\n  all {\n    ${2:condition}\n  }\n}"},
 		{Label: "test block", Kind: "snippet", Detail: "Executable BCL test", InsertText: "test \"${1:name}\" {\n  input {\n    ${2:key} ${3:value}\n  }\n\n  expect {\n    diagnostics none\n  }\n}"},
@@ -377,8 +384,11 @@ func tokenEditorTypeAt(toks []token, i int) string {
 		if isExprOperator(tok.text) {
 			return "operator"
 		}
-		if nextSignificantToken(toks, i).kind == tokLParen || isBuiltinFunction(tok.text) {
+		if nextSignificantToken(toks, i).kind == tokLParen {
 			return "function"
+		}
+		if isSchemaPrimitiveOrFormat(tok.text) {
+			return "type"
 		}
 		if i == 0 || previousSignificantToken(toks, i).kind == tokNewline || previousSignificantToken(toks, i).kind == tokLBrace {
 			return "property"
@@ -416,6 +426,16 @@ func nextSignificantToken(toks []token, i int) token {
 func isBuiltinFunction(s string) bool {
 	_, ok := builtinFunctionHint(s)
 	return ok
+}
+
+func isSchemaPrimitiveOrFormat(s string) bool {
+	switch s {
+	case "any", "string", "number", "int", "float", "bool", "boolean", "object", "map", "block", "list", "array", "tuple",
+		"email", "url", "uri", "date", "date-time", "datetime", "time", "duration", "bytes", "regex", "cidr", "ip", "ipv4", "ipv6", "uuid":
+		return true
+	default:
+		return false
+	}
 }
 
 func analyzeNodes(nodes []Node, container string, a *Analysis) []LanguageSymbol {
@@ -805,6 +825,22 @@ func expectedValuesForContext(ctx CompletionContext) []string {
 			return []string{"task", "decision", "action", "terminal"}
 		}
 		return []string{"http", "file", "command", "json", "form", "text", "raw"}
+	case "format":
+		return []string{"email", "uri", "url", "uuid", "date", "date-time", "datetime", "time", "ipv4", "ipv6", "ip", "hostname"}
+	case "content_encoding":
+		return []string{"base64", "gzip", "br", "identity"}
+	case "content_media_type":
+		return []string{"application/json", "text/plain", "text/csv", "application/octet-stream"}
+	case "items", "contains", "ref":
+		return []string{"string", "number", "int", "float", "bool", "object", "list", "map", "any"}
+	case "classification":
+		return []string{"public", "internal", "confidential", "restricted", "operational"}
+	case "pii":
+		return []string{"none", "contact", "email", "phone", "name", "address", "identifier"}
+	case "severity":
+		return []string{"low", "medium", "high", "critical"}
+	case "closed", "nullable", "unique_items", "read_only", "write_only", "sensitive", "generated", "derived", "additional_properties":
+		return []string{"true", "false"}
 	case "required":
 		return []string{"true", "false"}
 	default:
@@ -932,6 +968,68 @@ var decisionFieldNames = []string{
 
 var patternHelperNames = []string{"match", "case", "MISSING", "NULL", "EXISTS", "ANY"}
 
+var schemaFieldHints = []hintInfo{
+	{Name: "options", Signature: `options { validate_required_fields true }`, Description: "Schema-level switches and metadata for validation behavior."},
+	{Name: "fields", Signature: `fields { name string required }`, Description: "Sectioned schema fields using field-first syntax."},
+	{Name: "validate_required_fields", Signature: `validate_required_fields true|false`, Description: "Controls required-field validation for this schema."},
+	{Name: "validate_field_types", Signature: `validate_field_types true|false`, Description: "Controls type/ref validation for this schema."},
+	{Name: "required", Signature: `required field type`, Description: "Declares a required schema field."},
+	{Name: "optional", Signature: `optional field type`, Description: "Declares an optional schema field."},
+	{Name: "ref", Signature: `ref "schema"`, Description: "References another schema/type by name."},
+	{Name: "const", Signature: `const value`, Description: "Requires the value to equal a constant."},
+	{Name: "enum", Signature: `enum [a, b]`, Description: "Restricts the field to one of the listed values."},
+	{Name: "default", Signature: `default value`, Description: "Supplies a default value; generated functions such as `uuid()` and `current_timestamp()` are supported."},
+	{Name: "min", Signature: `min number`, Description: "Minimum numeric value."},
+	{Name: "max", Signature: `max number`, Description: "Maximum numeric value."},
+	{Name: "exclusive_min", Signature: `exclusive_min number`, Description: "Exclusive minimum numeric value."},
+	{Name: "exclusive_max", Signature: `exclusive_max number`, Description: "Exclusive maximum numeric value."},
+	{Name: "multiple_of", Signature: `multiple_of number`, Description: "Requires numeric values to be a multiple of the given value."},
+	{Name: "min_len", Signature: `min_len count`, Description: "Minimum string length."},
+	{Name: "max_len", Signature: `max_len count`, Description: "Maximum string length."},
+	{Name: "pattern", Signature: `pattern "regex"`, Description: "Regular expression the string value must match."},
+	{Name: "format", Signature: `format email|uuid|date-time|...`, Description: "Semantic string format validation."},
+	{Name: "content_encoding", Signature: `content_encoding base64`, Description: "Declares the content encoding for encoded strings."},
+	{Name: "content_media_type", Signature: `content_media_type application/json`, Description: "Declares the media type for encoded string content."},
+	{Name: "items", Signature: `items type`, Description: "Element type for a list field."},
+	{Name: "prefix_items", Signature: `prefix_items [type, type]`, Description: "Tuple-like element types by list position."},
+	{Name: "min_items", Signature: `min_items count`, Description: "Minimum list length."},
+	{Name: "max_items", Signature: `max_items count`, Description: "Maximum list length."},
+	{Name: "unique_items", Signature: `unique_items`, Description: "Requires list items to be unique."},
+	{Name: "contains", Signature: `contains type`, Description: "Requires at least one list item matching a type."},
+	{Name: "pattern_properties", Signature: `pattern_properties { "^x_" string }`, Description: "Validates object properties selected by regular-expression property names."},
+	{Name: "closed", Signature: `closed true`, Description: "Rejects properties not declared by the schema."},
+	{Name: "additional_properties", Signature: `additional_properties false`, Description: "Controls whether undeclared object properties are allowed."},
+	{Name: "min_props", Signature: `min_props count`, Description: "Minimum object property count."},
+	{Name: "max_props", Signature: `max_props count`, Description: "Maximum object property count."},
+	{Name: "dependent_required", Signature: `dependent_required { field [other] }`, Description: "Requires sibling fields when a field is present."},
+	{Name: "lt_field", Signature: `lt_field other`, Description: "Cross-field numeric comparison: this field must be less than another field."},
+	{Name: "lte_field", Signature: `lte_field other`, Description: "Cross-field numeric comparison: this field must be less than or equal to another field."},
+	{Name: "gt_field", Signature: `gt_field other`, Description: "Cross-field numeric comparison: this field must be greater than another field."},
+	{Name: "gte_field", Signature: `gte_field other`, Description: "Cross-field numeric comparison: this field must be greater than or equal to another field."},
+	{Name: "eq_field", Signature: `eq_field other`, Description: "Cross-field equality comparison."},
+	{Name: "all_of", Signature: `all_of [schema]`, Description: "Requires all referenced schemas/types to match."},
+	{Name: "any_of", Signature: `any_of [schema]`, Description: "Requires at least one referenced schema/type to match."},
+	{Name: "one_of", Signature: `one_of [schema]`, Description: "Requires exactly one referenced schema/type to match."},
+	{Name: "not", Signature: `not schema`, Description: "Rejects values matching the referenced schema/type."},
+	{Name: "if", Signature: `if schema`, Description: "Conditional validation predicate."},
+	{Name: "then", Signature: `then schema`, Description: "Validation applied when `if` matches."},
+	{Name: "else", Signature: `else schema`, Description: "Validation applied when `if` does not match."},
+	{Name: "nullable", Signature: `nullable`, Description: "Allows null values."},
+	{Name: "read_only", Signature: `read_only`, Description: "OpenAPI-style read-only metadata."},
+	{Name: "write_only", Signature: `write_only`, Description: "OpenAPI-style write-only metadata."},
+	{Name: "title", Signature: `title "..."`, Description: "Human-readable schema title."},
+	{Name: "description", Signature: `description "..."`, Description: "Human-readable schema description."},
+	{Name: "examples", Signature: `examples [...]`, Description: "Example values."},
+	{Name: "classification", Signature: `classification confidential`, Description: "BCL metadata for data classification."},
+	{Name: "audit", Signature: `audit decision_input`, Description: "BCL audit metadata."},
+	{Name: "explain", Signature: `explain "..."`, Description: "Explanation hint for decision traces."},
+	{Name: "pii", Signature: `pii email`, Description: "PII category metadata."},
+	{Name: "policy_tag", Signature: `policy_tag tag`, Description: "Policy classification metadata."},
+	{Name: "owner", Signature: `owner team`, Description: "Owning team or service metadata."},
+	{Name: "severity", Signature: `severity high`, Description: "Operational severity metadata."},
+	{Name: "x_", Signature: `x_name value`, Description: "Custom extension metadata preserved in normalized schema output."},
+}
+
 var builtinFunctionHints = []hintInfo{
 	{Name: "env", Signature: `env(name, default?)`, Description: "Reads an environment variable. Returns the optional default when the variable is absent.", InsertText: "env($1)", Examples: []string{`env("APP_ENV", "dev")`}},
 	{Name: "env.required", Signature: `env.required(name)`, Description: "Reads an environment variable and fails validation/evaluation when it is missing.", InsertText: "env.required($1)", Examples: []string{`env.required("DATABASE_URL")`}},
@@ -960,6 +1058,22 @@ var builtinFunctionHints = []hintInfo{
 	{Name: "email", Signature: `email(value)`, Description: "Treats a string as an email value.", InsertText: "email($1)"},
 	{Name: "url", Signature: `url(value)`, Description: "Treats a string as a URL value.", InsertText: "url($1)"},
 	{Name: "regex", Signature: `regex(pattern)`, Description: "Compiles a regular expression pattern for matching.", InsertText: "regex($1)"},
+	{Name: "uuid", Signature: `uuid()`, Description: "Generates a random UUID for defaults and generated fields.", InsertText: "uuid()"},
+	{Name: "uuid_v4", Signature: `uuid_v4()`, Description: "Alias for `uuid()`.", InsertText: "uuid_v4()"},
+	{Name: "random_uuid", Signature: `random_uuid()`, Description: "Alias for `uuid()`.", InsertText: "random_uuid()"},
+	{Name: "unique_id", Signature: `unique_id(prefix?)`, Description: "Generates a stable-shaped random ID with an optional prefix.", InsertText: "unique_id($1)"},
+	{Name: "uid", Signature: `uid(prefix?)`, Description: "Alias for `unique_id(prefix?)`.", InsertText: "uid($1)"},
+	{Name: "now", Signature: `now()`, Description: "Current UTC timestamp in RFC3339 format when time capability is enabled.", InsertText: "now()"},
+	{Name: "current_timestamp", Signature: `current_timestamp()`, Description: "Alias for `now()` and useful for generated schema defaults.", InsertText: "current_timestamp()"},
+	{Name: "today", Signature: `today()`, Description: "Current UTC date as YYYY-MM-DD.", InsertText: "today()"},
+	{Name: "current_date", Signature: `current_date()`, Description: "Alias for `today()`.", InsertText: "current_date()"},
+	{Name: "current_time", Signature: `current_time()`, Description: "Current UTC time as HH:MM:SS.", InsertText: "current_time()"},
+	{Name: "unix_timestamp", Signature: `unix_timestamp()`, Description: "Current Unix epoch seconds.", InsertText: "unix_timestamp()"},
+	{Name: "unix_millis", Signature: `unix_millis()`, Description: "Current Unix epoch milliseconds.", InsertText: "unix_millis()"},
+	{Name: "date", Signature: `date(value?)`, Description: "Creates a BCL date value or current date when called with no arguments.", InsertText: "date($1)"},
+	{Name: "time", Signature: `time(value?)`, Description: "Creates a BCL time value or current time when called with no arguments.", InsertText: "time($1)"},
+	{Name: "datetime", Signature: `datetime(value?)`, Description: "Creates a BCL datetime value or current timestamp when called with no arguments.", InsertText: "datetime($1)"},
+	{Name: "timestamp", Signature: `timestamp(value?)`, Description: "Alias for `datetime(value?)`.", InsertText: "timestamp($1)"},
 	{Name: "match", Signature: `match(value, cases..., default)`, Description: "Matches a value against typed BCL patterns.", InsertText: "match($1)"},
 	{Name: "case", Signature: `case(pattern, result)`, Description: "Defines one branch inside a pattern match expression.", InsertText: "case($1)"},
 	{Name: "MISSING", Signature: `MISSING`, Description: "Pattern helper that matches a missing object field.", InsertText: "MISSING"},
@@ -1181,7 +1295,7 @@ func symbolEvaluation(a *Analysis, s LanguageSymbol) string {
 		}
 		return "- Parsed as a literal, reference, object, list, call, or expression.\n- References are resolved against known constants, sets, and blocks."
 	case SymbolField:
-		return "- Used by schema validation.\n- Required fields must exist.\n- Type, enum, min/max, pattern, and format constraints are checked when present."
+		return "- Used by schema validation.\n- Required fields must exist.\n- Type, enum, const, numeric/string/list/object constraints, composition, cross-field comparisons, and format constraints are checked when present.\n- Defaults may use generated functions such as `uuid()`, `uid(\"prefix\")`, and `current_timestamp()`."
 	default:
 		_ = a
 		return "- Indexed for hover, completion, symbols, and navigation."
@@ -2005,9 +2119,12 @@ func sourceSnippet(src []byte, sp Span) string {
 
 func isKeyword(s string) bool {
 	switch s {
-	case "import", "as", "const", "type", "schema", "required", "optional", "enum", "default", "description", "doc", "deprecated", "sensitive", "generated", "min", "max", "pattern", "format", "examples", "true", "false", "null", "when", "override":
+	case "import", "as", "const", "type", "schema", "options", "fields", "validate_required_fields", "validate_field_types", "required", "optional", "ref", "enum", "default", "description", "doc", "title", "deprecated", "sensitive", "generated", "derived", "read_only", "write_only", "nullable", "unique_items", "closed", "additional_properties", "min", "max", "exclusive_min", "exclusive_max", "multiple_of", "min_len", "max_len", "min_items", "max_items", "min_props", "max_props", "pattern", "format", "content_encoding", "content_media_type", "examples", "items", "prefix_items", "contains", "pattern_properties", "dependent_required", "lt_field", "lte_field", "gt_field", "gte_field", "eq_field", "all_of", "any_of", "one_of", "not", "if", "then", "else", "classification", "audit", "explain", "pii", "policy_tag", "owner", "severity", "true", "false", "null", "when", "override":
 		return true
 	default:
+		if strings.HasPrefix(s, "x_") {
+			return true
+		}
 		return isKnownBlock(s)
 	}
 }

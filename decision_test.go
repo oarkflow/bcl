@@ -33,6 +33,68 @@ func TestDottedAssignmentWithEqualsParses(t *testing.T) {
 	}
 }
 
+func TestDecisionSchemaBlockLegacyTypePathClauses(t *testing.T) {
+	doc, err := Parse([]byte(`module "legacy" {
+  schema "transaction_review" {
+    required customer.id
+    required transaction.amount
+    type customer.id string
+    type transaction.amount number
+  }
+  decision_schema "transaction_review" { effects [allow, deny] default deny strategy first_match }
+  decision "transaction_review" {
+    rule "allow-valid" {
+      when { transaction.amount > 0 }
+      then { decision "allow" }
+    }
+  }
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := CompileDecisionDocument(doc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := prog.Schemas["transaction_review"].(map[string]any)["fields"].([]map[string]any)
+	if len(fields) != 2 {
+		t.Fatalf("expected merged decision schema fields, got %#v", fields)
+	}
+	for _, field := range fields {
+		switch field["name"] {
+		case "customer.id":
+			if field["type"] != "string" || field["required"] != true {
+				t.Fatalf("bad customer.id field: %#v", field)
+			}
+		case "transaction.amount":
+			if field["type"] != "number" || field["required"] != true {
+				t.Fatalf("bad transaction.amount field: %#v", field)
+			}
+		default:
+			t.Fatalf("unexpected field: %#v", field)
+		}
+	}
+	engine := NewDecisionEngine(prog, nil)
+	_, err = engine.EvaluateWithOptions("transaction_review", map[string]any{
+		"customer":    map[string]any{"id": "cust_123"},
+		"transaction": map[string]any{"amount": 10},
+	}, DecisionEvaluateOptions{ValidateInput: true, Strict: true})
+	if err != nil {
+		t.Fatalf("valid input should pass schema validation: %v", err)
+	}
+	result, err := engine.EvaluateWithOptions("transaction_review", map[string]any{
+		"customer":    map[string]any{"id": 123},
+		"transaction": map[string]any{},
+	}, DecisionEvaluateOptions{ValidateInput: true, Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := FormatDiagnostics(result.Diagnostics)
+	if !strings.Contains(text, "customer.id") || !strings.Contains(text, "transaction.amount") {
+		t.Fatalf("expected path schema validation diagnostics, got %#v", result.Diagnostics)
+	}
+}
+
 func TestDecisionExamplesCompile(t *testing.T) {
 	paths := []string{"examples/bcl_decision_platform/fraud.bcl"}
 	matches, err := filepath.Glob("examples/bcl/packages/*.bcl")

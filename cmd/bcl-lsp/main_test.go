@@ -176,6 +176,97 @@ func TestLSPSupportsSchemaFiles(t *testing.T) {
 	}
 }
 
+func TestLSPReportsMissingImportedFile(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "main.bcl")
+	if err := os.WriteFile(mainPath, []byte(`bcl {
+  version "1.0"
+}
+
+import "./missing.schema"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{out: ioDiscard{}, files: map[string]string{}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+
+	a := s.analyzeURI(pathURI(mainPath))
+	var sawMissing bool
+	for _, d := range a.Diagnostics {
+		if strings.Contains(d.Message, "included file not found:") && strings.Contains(d.Message, "missing.schema") {
+			sawMissing = true
+		}
+		if strings.Contains(d.Message, "no such file") {
+			t.Fatalf("expected friendly missing include diagnostic, got raw diagnostic: %#v", a.Diagnostics)
+		}
+	}
+	if !sawMissing {
+		t.Fatalf("expected missing import diagnostic: %#v", a.Diagnostics)
+	}
+}
+
+func TestLSPReportsMissingModuleSource(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "main.bcl")
+	if err := os.WriteFile(mainPath, []byte(`bcl {
+  version "1.0"
+  strict true
+}
+
+module "demo" {
+  source "./missing-module.bcl"
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{out: ioDiscard{}, files: map[string]string{}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+
+	a := s.analyzeURI(pathURI(mainPath))
+	var sawMissing bool
+	for _, d := range a.Diagnostics {
+		if strings.Contains(d.Message, "module source not found:") && strings.Contains(d.Message, "missing-module.bcl") {
+			sawMissing = true
+			if d.Span.Start.Line != 7 {
+				t.Fatalf("expected diagnostic on source assignment, got span %#v", d.Span)
+			}
+		}
+	}
+	if !sawMissing {
+		t.Fatalf("expected missing module source diagnostic: %#v", a.Diagnostics)
+	}
+}
+
+func TestLSPReportsMissingParentModuleSource(t *testing.T) {
+	dir := t.TempDir()
+	useCaseDir := filepath.Join(dir, "use_cases", "provider-routing")
+	if err := os.MkdirAll(useCaseDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	decisionPath := filepath.Join(useCaseDir, "decision.bcl")
+	if err := os.WriteFile(decisionPath, []byte(`bcl {
+  version "1.0"
+  strict true
+}
+
+module "provider-routing-condition" {
+  source "../module.bcl"
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{out: ioDiscard{}, files: map[string]string{}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+
+	a := s.analyzeURI(pathURI(decisionPath))
+	var sawMissing bool
+	for _, d := range a.Diagnostics {
+		if strings.Contains(d.Message, "module source not found:") && strings.Contains(d.Message, filepath.Join("use_cases", "module.bcl")) {
+			sawMissing = true
+		}
+	}
+	if !sawMissing {
+		t.Fatalf("expected missing parent module source diagnostic: %#v", a.Diagnostics)
+	}
+}
+
 func TestLSPResolvesImportedDefinitionAndWorkspaceRename(t *testing.T) {
 	dir := t.TempDir()
 	commonPath := filepath.Join(dir, "common.bcl")

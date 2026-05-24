@@ -849,7 +849,7 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 			return nil, fmt.Errorf("date requires 0 or 1 arguments")
 		}
 		return fmt.Sprint(args[0]), nil
-	case "datetime", "timestamp":
+	case "datetime", "timestamp", "current_timestamp":
 		if len(args) == 0 {
 			if !opts.AllowTime {
 				return nil, fmt.Errorf("%s requires time capability", name)
@@ -860,14 +860,38 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 			return nil, fmt.Errorf("%s requires 0 or 1 arguments", name)
 		}
 		return fmt.Sprint(args[0]), nil
-	case "today":
+	case "today", "current_date":
 		if len(args) != 0 {
-			return nil, fmt.Errorf("today requires 0 arguments")
+			return nil, fmt.Errorf("%s requires 0 arguments", name)
 		}
 		if !opts.AllowTime {
-			return nil, fmt.Errorf("today requires time capability")
+			return nil, fmt.Errorf("%s requires time capability", name)
 		}
 		return time.Now().UTC().Format("2006-01-02"), nil
+	case "current_time":
+		if len(args) != 0 {
+			return nil, fmt.Errorf("current_time requires 0 arguments")
+		}
+		if !opts.AllowTime {
+			return nil, fmt.Errorf("current_time requires time capability")
+		}
+		return time.Now().UTC().Format("15:04:05"), nil
+	case "unix_timestamp":
+		if len(args) != 0 {
+			return nil, fmt.Errorf("unix_timestamp requires 0 arguments")
+		}
+		if !opts.AllowTime {
+			return nil, fmt.Errorf("unix_timestamp requires time capability")
+		}
+		return time.Now().UTC().Unix(), nil
+	case "unix_millis":
+		if len(args) != 0 {
+			return nil, fmt.Errorf("unix_millis requires 0 arguments")
+		}
+		if !opts.AllowTime {
+			return nil, fmt.Errorf("unix_millis requires time capability")
+		}
+		return time.Now().UTC().UnixMilli(), nil
 	case "duration":
 		if len(args) != 1 {
 			return nil, fmt.Errorf("duration requires 1 argument")
@@ -881,12 +905,12 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 			return nil, fmt.Errorf("now requires time capability")
 		}
 		return time.Now().UTC().Format(time.RFC3339), nil
-	case "uuid":
+	case "uuid", "uuid_v4", "random_uuid":
 		if len(args) != 0 {
-			return nil, fmt.Errorf("uuid requires 0 arguments")
+			return nil, fmt.Errorf("%s requires 0 arguments", name)
 		}
 		return randomUUID()
-	case "unique_id":
+	case "unique_id", "uid":
 		prefix := "id"
 		if len(args) > 0 && fmt.Sprint(args[0]) != "" {
 			prefix = fmt.Sprint(args[0])
