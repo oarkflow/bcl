@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -66,5 +67,27 @@ func TestSQLiteStorePersistsDefinitionAndAudit(t *testing.T) {
 	}
 	if len(records) != 1 {
 		t.Fatalf("audits = %d", len(records))
+	}
+}
+
+func TestSQLiteStoreConfiguresOperationalPragmas(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "condition.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var busyTimeout int
+	if err := store.db.QueryRow(`PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+		t.Fatal(err)
+	}
+	if busyTimeout <= 0 {
+		t.Fatalf("busy_timeout = %d", busyTimeout)
+	}
+	var foreignKeys int
+	if err := store.db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatal(err)
+	}
+	if foreignKeys != 1 {
+		t.Fatalf("foreign_keys = %d", foreignKeys)
 	}
 }

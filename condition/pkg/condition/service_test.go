@@ -2,12 +2,14 @@ package condition
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/oarkflow/bcl"
+	"github.com/oarkflow/condition/pkg/audit"
 	"github.com/oarkflow/condition/pkg/storage"
 )
 
@@ -56,6 +58,26 @@ func TestServicePublishEvaluateTestAndAudit(t *testing.T) {
 	if report.Audit == nil || report.Audit.Operation != "test" {
 		t.Fatalf("missing test audit: %#v", report.Audit)
 	}
+}
+
+func TestServiceFailsClosedWhenAuditAppendFails(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(failingAuditStore{Store: storage.NewMemoryStore()}, Config{})
+	resp, err := svc.Publish(ctx, PublishRequest{Name: "demo", Source: demoSource, RunTests: true})
+	if err == nil {
+		t.Fatalf("expected audit failure, got response %#v", resp)
+	}
+	if !strings.Contains(err.Error(), "audit append failed") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+type failingAuditStore struct {
+	storage.Store
+}
+
+func (s failingAuditStore) AppendAudit(context.Context, audit.Envelope) error {
+	return errors.New("audit sink unavailable")
 }
 
 func TestServiceEvaluateUsesRuntimeContextAndSession(t *testing.T) {

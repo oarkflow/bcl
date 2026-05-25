@@ -51,3 +51,7 @@
 - Added production readiness self-reporting for safety switches, store availability, and audit-chain health.
 - Added persistent-store lifecycle coverage for file and SQLite stores.
 - Added service benchmark harnesses for strict publish, strict evaluate, and shadow evaluate paths.
+- Added fail-closed audit writes for publish, evaluate, lifecycle, workflow, simulation, reload, tests, and gates.
+- Added CLI HTTP server read/header/write/idle timeouts, graceful shutdown, optional TLS, and max header sizing.
+- Added trusted proxy CIDR handling so forwarded client IP headers are ignored unless the peer is trusted.
+- Added SQLite operational tuning: ping on startup, foreign keys, busy timeout, WAL mode for file databases, synchronous NORMAL, and bounded connection pools.

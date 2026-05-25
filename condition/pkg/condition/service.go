@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oarkflow/bcl"
@@ -16,8 +17,9 @@ import (
 )
 
 type Service struct {
-	store storage.Store
-	cfg   Config
+	store   storage.Store
+	cfg     Config
+	auditMu sync.Mutex
 }
 
 func NewService(store storage.Store, cfg Config) *Service {
@@ -69,7 +71,10 @@ func (s *Service) PublishVersion(ctx context.Context, req PublishRequest) (*Publ
 	}
 	if !report.Publishable {
 		err := fmt.Errorf("definition %q is not publishable", report.Name)
-		envelope := s.audit(ctx, "publish_failed", report.Name, report.Version, report.Environment, report.Digest, req, report, start, nil)
+		envelope, auditErr := s.audit(ctx, "publish_failed", report.Name, report.Version, report.Environment, report.Digest, req, report, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
 		return &PublishResponse{Definition: storage.DefinitionRecord{Name: report.Name, Version: report.Version, Environment: report.Environment, Source: source, SourcePath: req.Path, Digest: report.Digest}, Tests: report.Tests, Gates: report.Gates, Audit: envelope}, err
 	}
 	name, version, env := report.Name, report.Version, report.Environment
@@ -91,7 +96,10 @@ func (s *Service) PublishVersion(ctx context.Context, req PublishRequest) (*Publ
 	if err := s.store.SaveDefinitionVersion(ctx, record); err != nil {
 		return nil, err
 	}
-	envelope := s.audit(ctx, "publish_version", name, version, env, record.Digest, req, map[string]any{"published": true}, start, nil)
+	envelope, err := s.audit(ctx, "publish_version", name, version, env, record.Digest, req, map[string]any{"published": true}, start, nil)
+	if err != nil {
+		return nil, err
+	}
 	return &PublishResponse{Definition: record, Tests: report.Tests, Gates: report.Gates, Audit: envelope}, nil
 }
 
@@ -120,12 +128,18 @@ func (s *Service) Activate(ctx context.Context, name, version, environment strin
 	env := first(environment, s.cfg.Environment)
 	record, err := s.store.GetDefinitionVersion(ctx, name, version, env)
 	if err != nil {
-		envelope := s.audit(ctx, "activate_failed", name, version, env, "", map[string]any{"name": name, "version": version, "environment": env}, map[string]any{"error": err.Error()}, start, nil)
+		envelope, auditErr := s.audit(ctx, "activate_failed", name, version, env, "", map[string]any{"name": name, "version": version, "environment": env}, map[string]any{"error": err.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
 		return &ActivationResponse{Audit: envelope}, err
 	}
 	if s.cfg.RequireActivationApproval && !metadataBool(record.Metadata, "approved") {
 		err := fmt.Errorf("definition %q version %q requires approval before activation", name, version)
-		envelope := s.audit(ctx, "activate_failed", name, version, env, record.Digest, map[string]any{"name": name, "version": version, "environment": env}, map[string]any{"error": err.Error()}, start, nil)
+		envelope, auditErr := s.audit(ctx, "activate_failed", name, version, env, record.Digest, map[string]any{"name": name, "version": version, "environment": env}, map[string]any{"error": err.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
 		return &ActivationResponse{Definition: record, Audit: envelope}, err
 	}
 	if metadataBool(record.Metadata, "activation_pending") {
@@ -136,14 +150,20 @@ func (s *Service) Activate(ctx context.Context, name, version, environment strin
 		}
 	}
 	if err := s.store.ActivateDefinition(ctx, name, version, env); err != nil {
-		envelope := s.audit(ctx, "activate_failed", name, version, env, record.Digest, map[string]any{"name": name, "version": version, "environment": env}, map[string]any{"error": err.Error()}, start, nil)
+		envelope, auditErr := s.audit(ctx, "activate_failed", name, version, env, record.Digest, map[string]any{"name": name, "version": version, "environment": env}, map[string]any{"error": err.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
 		return &ActivationResponse{Definition: record, Audit: envelope}, err
 	}
 	record, err = s.store.GetActiveDefinition(ctx, name, env)
 	if err != nil {
 		return nil, err
 	}
-	envelope := s.audit(ctx, "activate", name, version, env, record.Digest, map[string]any{"name": name, "version": version, "environment": env}, map[string]any{"active": true}, start, nil)
+	envelope, err := s.audit(ctx, "activate", name, version, env, record.Digest, map[string]any{"name": name, "version": version, "environment": env}, map[string]any{"active": true}, start, nil)
+	if err != nil {
+		return nil, err
+	}
 	return &ActivationResponse{Definition: record, Audit: envelope}, nil
 }
 
@@ -162,7 +182,10 @@ func (s *Service) Approve(ctx context.Context, name, version string, req Approva
 	if err := s.store.SaveDefinitionVersion(ctx, record); err != nil {
 		return nil, err
 	}
-	envelope := s.audit(ctx, "approve", name, version, env, record.Digest, req, map[string]any{"approved": true}, start, nil)
+	envelope, err := s.audit(ctx, "approve", name, version, env, record.Digest, req, map[string]any{"approved": true}, start, nil)
+	if err != nil {
+		return nil, err
+	}
 	return &LifecycleResponse{Definition: record, Audit: envelope}, nil
 }
 
@@ -204,7 +227,10 @@ func (s *Service) setDisabled(ctx context.Context, name string, req DisableReque
 	if !disabled {
 		operation = "enable"
 	}
-	envelope := s.audit(ctx, operation, name, record.Version, env, record.Digest, req, map[string]any{"disabled": disabled}, start, nil)
+	envelope, err := s.audit(ctx, operation, name, record.Version, env, record.Digest, req, map[string]any{"disabled": disabled}, start, nil)
+	if err != nil {
+		return nil, err
+	}
 	return &LifecycleResponse{Definition: record, Audit: envelope}, nil
 }
 
@@ -214,7 +240,11 @@ func (s *Service) Rollback(ctx context.Context, name, targetVersion, environment
 	if err != nil {
 		return nil, err
 	}
-	resp.Audit = s.audit(ctx, "rollback", name, targetVersion, first(environment, s.cfg.Environment), resp.Definition.Digest, map[string]any{"name": name, "target_version": targetVersion}, map[string]any{"active": true}, start, nil)
+	envelope, err := s.audit(ctx, "rollback", name, targetVersion, first(environment, s.cfg.Environment), resp.Definition.Digest, map[string]any{"name": name, "target_version": targetVersion}, map[string]any{"active": true}, start, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp.Audit = envelope
 	return resp, nil
 }
 
@@ -226,12 +256,18 @@ func (s *Service) Evaluate(ctx context.Context, definition string, req EvaluateR
 	}
 	if metadataBool(record.Metadata, "disabled") {
 		err := fmt.Errorf("definition %q version %q is disabled", definition, record.Version)
-		envelope := s.audit(ctx, "evaluate_disabled", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error(), "disabled": true}, start, nil)
+		envelope, auditErr := s.audit(ctx, "evaluate_disabled", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error(), "disabled": true}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
 		return &EvaluateResponse{Audit: envelope}, err
 	}
 	if metadataBool(record.Metadata, "activation_pending") {
 		err := fmt.Errorf("definition %q version %q is not activated", definition, record.Version)
-		envelope := s.audit(ctx, "evaluate_not_active", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error(), "activation_pending": true}, start, nil)
+		envelope, auditErr := s.audit(ctx, "evaluate_not_active", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error(), "activation_pending": true}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
 		return &EvaluateResponse{Audit: envelope}, err
 	}
 	if req.Decision == "" {
@@ -249,12 +285,18 @@ func (s *Service) Evaluate(ctx context.Context, definition string, req EvaluateR
 		Strict:          s.strictEvaluation(req.Strict),
 	}, &bcl.Options{AllowTime: true, Context: runtimeContext, Session: runtimeSession})
 	if err != nil {
-		envelope := s.audit(ctx, "evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error()}, start, nil)
+		envelope, auditErr := s.audit(ctx, "evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
 		return &EvaluateResponse{Report: report, Audit: envelope}, err
 	}
 	shadow, shadowErr := s.shadowEvaluate(ctx, req, record.Program)
 	if shadowErr != nil {
-		envelope := s.audit(ctx, "evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": shadowErr.Error()}, start, nil)
+		envelope, auditErr := s.audit(ctx, "evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": shadowErr.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
 		return &EvaluateResponse{Report: report, Audit: envelope}, shadowErr
 	}
 	trace := []string(nil)
@@ -266,7 +308,10 @@ func (s *Service) Evaluate(ctx context.Context, definition string, req EvaluateR
 	if shadow != nil {
 		result["shadow"] = shadow
 	}
-	envelope := s.audit(ctx, "evaluate", definition, record.Version, record.Environment, record.Digest, req, result, start, trace)
+	envelope, err := s.audit(ctx, "evaluate", definition, record.Version, record.Environment, record.Digest, req, result, start, trace)
+	if err != nil {
+		return nil, err
+	}
 	return &EvaluateResponse{Report: report, Shadow: shadow, Workflow: workflow, Audit: envelope}, nil
 }
 
@@ -277,9 +322,14 @@ func (s *Service) Test(ctx context.Context, definition, bundle string) (*TestRep
 		return nil, err
 	}
 	report := s.runTests(record.Program, firstDecision(record.Program), bundle, false)
-	envelope := s.audit(ctx, "test", definition, record.Version, record.Environment, record.Digest, map[string]any{"bundle": bundle}, report, start, nil)
+	envelope, err := s.audit(ctx, "test", definition, record.Version, record.Environment, record.Digest, map[string]any{"bundle": bundle}, report, start, nil)
+	if err != nil {
+		return nil, err
+	}
 	report.Audit = &envelope
-	_ = s.store.SaveReport(ctx, storage.ReportRecord{ID: envelope.ID, Kind: "test", Definition: definition, CreatedAt: time.Now(), Payload: map[string]any{"report": report}})
+	if err := s.store.SaveReport(ctx, storage.ReportRecord{ID: envelope.ID, Kind: "test", Definition: definition, CreatedAt: time.Now(), Payload: map[string]any{"report": report}}); err != nil {
+		return nil, err
+	}
 	if !report.Passed {
 		return report, fmt.Errorf("definition %q tests failed", definition)
 	}
@@ -293,7 +343,9 @@ func (s *Service) Gates(ctx context.Context, definition, bundle string) (*bcl.De
 		return nil, err
 	}
 	report, err := bcl.EvaluateDecisionGates(record.Program, bundle, &bcl.Options{AllowTime: true})
-	_ = s.audit(ctx, "gates", definition, record.Version, record.Environment, record.Digest, map[string]any{"bundle": bundle}, report, start, nil)
+	if _, auditErr := s.audit(ctx, "gates", definition, record.Version, record.Environment, record.Digest, map[string]any{"bundle": bundle}, report, start, nil); auditErr != nil {
+		return nil, auditErr
+	}
 	return report, err
 }
 
@@ -323,11 +375,19 @@ func (s *Service) comparePrograms(ctx context.Context, operation, definition str
 		compare, err = bcl.CompareDecisionBatch(base.Program, candidate, decision, req.Cases, &bcl.Options{AllowTime: true})
 	}
 	if err != nil {
-		envelope := s.audit(ctx, operation+"_failed", definition, base.Version, base.Environment, base.Digest, req, map[string]any{"error": err.Error()}, start, nil)
+		envelope, auditErr := s.audit(ctx, operation+"_failed", definition, base.Version, base.Environment, base.Digest, req, map[string]any{"error": err.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
 		return &SimulationResponse{Compare: compare, Audit: envelope}, err
 	}
-	envelope := s.audit(ctx, operation, definition, base.Version, base.Environment, base.Digest, req, compare, start, nil)
-	_ = s.store.SaveReport(ctx, storage.ReportRecord{ID: envelope.ID, Kind: operation, Definition: definition, CreatedAt: time.Now(), Payload: map[string]any{"compare": compare}})
+	envelope, err := s.audit(ctx, operation, definition, base.Version, base.Environment, base.Digest, req, compare, start, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.SaveReport(ctx, storage.ReportRecord{ID: envelope.ID, Kind: operation, Definition: definition, CreatedAt: time.Now(), Payload: map[string]any{"compare": compare}}); err != nil {
+		return nil, err
+	}
 	return &SimulationResponse{Compare: compare, Audit: envelope}, nil
 }
 
@@ -358,10 +418,16 @@ func (s *Service) Reload(ctx context.Context, req ReloadRequest) (*ReloadRespons
 	path := first(req.Path, last.SourcePath)
 	resp, err := s.Publish(ctx, PublishRequest{Name: req.Name, Path: path, Version: last.Version, Environment: last.Environment, RunTests: req.RunTests, Metadata: last.Metadata})
 	if err != nil {
-		envelope := s.audit(ctx, "reload_failed", req.Name, last.Version, last.Environment, last.Digest, req, map[string]any{"error": err.Error()}, start, nil)
+		envelope, auditErr := s.audit(ctx, "reload_failed", req.Name, last.Version, last.Environment, last.Digest, req, map[string]any{"error": err.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
 		return &ReloadResponse{Reloaded: false, KeptLast: true, Publish: resp, Audit: envelope}, nil
 	}
-	envelope := s.audit(ctx, "reload", req.Name, resp.Definition.Version, resp.Definition.Environment, resp.Definition.Digest, req, map[string]any{"reloaded": true}, start, nil)
+	envelope, err := s.audit(ctx, "reload", req.Name, resp.Definition.Version, resp.Definition.Environment, resp.Definition.Digest, req, map[string]any{"reloaded": true}, start, nil)
+	if err != nil {
+		return nil, err
+	}
 	return &ReloadResponse{Reloaded: true, Publish: resp, Audit: envelope}, nil
 }
 
@@ -470,7 +536,10 @@ func (s *Service) StartWorkflow(ctx context.Context, definition, workflowID stri
 		UpdatedAt:   time.Now(),
 	}
 	applyWorkflowStage(&run, workflow, input)
-	envelope := s.audit(ctx, "workflow_start", definition, record.Version, record.Environment, record.Digest, input, run, start, nil)
+	envelope, err := s.audit(ctx, "workflow_start", definition, record.Version, record.Environment, record.Digest, input, run, start, nil)
+	if err != nil {
+		return nil, err
+	}
 	run.Audit = &envelope
 	if err := s.store.SaveWorkflowRun(ctx, workflowRunRecord(run)); err != nil {
 		return nil, err
@@ -498,7 +567,10 @@ func (s *Service) AdvanceWorkflow(ctx context.Context, runID string, input map[s
 	}
 	advanceWorkflowStage(&run, workflow, run.Input)
 	run.UpdatedAt = time.Now()
-	envelope := s.audit(ctx, "workflow_advance", run.Definition, run.Version, run.Environment, definition.Digest, input, run, start, nil)
+	envelope, err := s.audit(ctx, "workflow_advance", run.Definition, run.Version, run.Environment, definition.Digest, input, run, start, nil)
+	if err != nil {
+		return nil, err
+	}
 	run.Audit = &envelope
 	if err := s.store.SaveWorkflowRun(ctx, workflowRunRecord(run)); err != nil {
 		return nil, err
@@ -733,9 +805,14 @@ func sourceFromValidation(req ValidationRequest) (source, baseDir string, err er
 	return string(payload), filepath.Dir(req.Path), nil
 }
 
-func (s *Service) audit(ctx context.Context, operation, definition, version, env, digest string, request, result any, start time.Time, trace []string) audit.Envelope {
+func (s *Service) audit(ctx context.Context, operation, definition, version, env, digest string, request, result any, start time.Time, trace []string) (audit.Envelope, error) {
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
 	completed := time.Now()
-	previous, _ := s.store.LastAuditHash(ctx)
+	previous, err := s.store.LastAuditHash(ctx)
+	if err != nil {
+		return audit.Envelope{}, fmt.Errorf("audit previous hash failed: %w", err)
+	}
 	envelope := audit.Seal(audit.Envelope{
 		ID:               newID(operation),
 		Operation:        operation,
@@ -751,8 +828,10 @@ func (s *Service) audit(ctx context.Context, operation, definition, version, env
 		DurationMS:       completed.Sub(start).Milliseconds(),
 		TraceSummary:     trimTrace(trace),
 	}, previous)
-	_ = s.store.AppendAudit(ctx, envelope)
-	return envelope
+	if err := s.store.AppendAudit(ctx, envelope); err != nil {
+		return audit.Envelope{}, fmt.Errorf("audit append failed: %w", err)
+	}
+	return envelope, nil
 }
 
 func sourceFromPublish(req PublishRequest) (source, baseDir string, err error) {

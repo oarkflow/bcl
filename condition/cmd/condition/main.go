@@ -8,7 +8,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/oarkflow/bcl"
@@ -71,6 +74,8 @@ func runServe(args []string) error {
 	storeKind := fs.String("store", "file", "store kind: file, sqlite, memory")
 	storePath := fs.String("store-path", ".condition", "file root or sqlite path")
 	authzPath := fs.String("authz", "", "authz DSL config path")
+	tlsCert := fs.String("tls-cert", "", "TLS certificate path")
+	tlsKey := fs.String("tls-key", "", "TLS private key path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -82,6 +87,8 @@ func runServe(args []string) error {
 	applyString(&cfg.Store.Kind, *storeKind, "file")
 	applyString(&cfg.Store.Path, *storePath, ".condition")
 	applyString(&cfg.AuthzPath, *authzPath, "")
+	applyString(&cfg.TLS.CertFile, *tlsCert, "")
+	applyString(&cfg.TLS.KeyFile, *tlsKey, "")
 	svc, closer, err := newServiceFromConfig(cfg)
 	if err != nil {
 		return err
@@ -98,8 +105,38 @@ func runServe(args []string) error {
 			opts = append(opts, server.WithRateLimit(cfg.RateLimit.Limit, d))
 		}
 	}
+	opts = append(opts, server.WithTrustedProxies(cfg.TrustedProxies))
 	fmt.Printf("condition listening on %s\n", cfg.Address)
-	return http.ListenAndServe(cfg.Address, server.New(svc, opts...).Handler())
+	srv := &http.Server{
+		Addr:              cfg.Address,
+		Handler:           server.New(svc, opts...).Handler(),
+		ReadHeaderTimeout: durationOrDefault(cfg.HTTP.ReadHeaderTimeout, 5*time.Second),
+		ReadTimeout:       durationOrDefault(cfg.HTTP.ReadTimeout, 15*time.Second),
+		WriteTimeout:      durationOrDefault(cfg.HTTP.WriteTimeout, 30*time.Second),
+		IdleTimeout:       durationOrDefault(cfg.HTTP.IdleTimeout, 60*time.Second),
+		MaxHeaderBytes:    cfg.HTTP.MaxHeaderBytes,
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		if cfg.TLS.CertFile != "" || cfg.TLS.KeyFile != "" {
+			errCh <- srv.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+			return
+		}
+		errCh <- srv.ListenAndServe()
+	}()
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	select {
+	case err := <-errCh:
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return err
+	case <-stop:
+		ctx, cancel := context.WithTimeout(context.Background(), durationOrDefault(cfg.HTTP.ShutdownTimeout, 10*time.Second))
+		defer cancel()
+		return srv.Shutdown(ctx)
+	}
 }
 
 func runPublish(args []string) error {
@@ -510,25 +547,38 @@ func newServiceFromConfig(cfg RuntimeConfig) (*condition.Service, func(), error)
 }
 
 type RuntimeConfig struct {
-	Address   string `json:"address" yaml:"address"`
-	AuthzPath string `json:"authz_path" yaml:"authz_path"`
-	Store     struct {
-		Kind string `json:"kind" yaml:"kind"`
-		Path string `json:"path" yaml:"path"`
-	} `json:"store" yaml:"store"`
+	Address        string   `json:"address" yaml:"address" bcl:"address"`
+	AuthzPath      string   `json:"authz_path" yaml:"authz_path" bcl:"authz_path"`
+	TrustedProxies []string `json:"trusted_proxies" yaml:"trusted_proxies" bcl:"trusted_proxies"`
+	Store          struct {
+		Kind string `json:"kind" yaml:"kind" bcl:"kind"`
+		Path string `json:"path" yaml:"path" bcl:"path"`
+	} `json:"store" yaml:"store" bcl:"store"`
+	TLS struct {
+		CertFile string `json:"cert_file" yaml:"cert_file" bcl:"cert_file"`
+		KeyFile  string `json:"key_file" yaml:"key_file" bcl:"key_file"`
+	} `json:"tls" yaml:"tls" bcl:"tls"`
+	HTTP struct {
+		ReadHeaderTimeout string `json:"read_header_timeout" yaml:"read_header_timeout" bcl:"read_header_timeout"`
+		ReadTimeout       string `json:"read_timeout" yaml:"read_timeout" bcl:"read_timeout"`
+		WriteTimeout      string `json:"write_timeout" yaml:"write_timeout" bcl:"write_timeout"`
+		IdleTimeout       string `json:"idle_timeout" yaml:"idle_timeout" bcl:"idle_timeout"`
+		ShutdownTimeout   string `json:"shutdown_timeout" yaml:"shutdown_timeout" bcl:"shutdown_timeout"`
+		MaxHeaderBytes    int    `json:"max_header_bytes" yaml:"max_header_bytes" bcl:"max_header_bytes"`
+	} `json:"http" yaml:"http" bcl:"http"`
 	Service struct {
-		Environment               string `json:"environment" yaml:"environment"`
-		RequestTimeout            string `json:"request_timeout" yaml:"request_timeout"`
-		MaxRequestBytes           int64  `json:"max_request_bytes" yaml:"max_request_bytes"`
-		StrictValidation          bool   `json:"strict_validation" yaml:"strict_validation"`
-		StrictEvaluation          bool   `json:"strict_evaluation" yaml:"strict_evaluation"`
-		RequireTests              bool   `json:"require_tests" yaml:"require_tests"`
-		RequireActivationApproval bool   `json:"require_activation_approval" yaml:"require_activation_approval"`
-	} `json:"service" yaml:"service"`
+		Environment               string `json:"environment" yaml:"environment" bcl:"environment"`
+		RequestTimeout            string `json:"request_timeout" yaml:"request_timeout" bcl:"request_timeout"`
+		MaxRequestBytes           int64  `json:"max_request_bytes" yaml:"max_request_bytes" bcl:"max_request_bytes"`
+		StrictValidation          bool   `json:"strict_validation" yaml:"strict_validation" bcl:"strict_validation"`
+		StrictEvaluation          bool   `json:"strict_evaluation" yaml:"strict_evaluation" bcl:"strict_evaluation"`
+		RequireTests              bool   `json:"require_tests" yaml:"require_tests" bcl:"require_tests"`
+		RequireActivationApproval bool   `json:"require_activation_approval" yaml:"require_activation_approval" bcl:"require_activation_approval"`
+	} `json:"service" yaml:"service" bcl:"service"`
 	RateLimit struct {
-		Limit  int    `json:"limit" yaml:"limit"`
-		Window string `json:"window" yaml:"window"`
-	} `json:"rate_limit" yaml:"rate_limit"`
+		Limit  int    `json:"limit" yaml:"limit" bcl:"limit"`
+		Window string `json:"window" yaml:"window" bcl:"window"`
+	} `json:"rate_limit" yaml:"rate_limit" bcl:"rate_limit"`
 }
 
 func loadConfig(path string) (RuntimeConfig, error) {
@@ -536,6 +586,12 @@ func loadConfig(path string) (RuntimeConfig, error) {
 	cfg.Store.Kind = "file"
 	cfg.Store.Path = ".condition"
 	cfg.Service.Environment = "development"
+	cfg.HTTP.ReadHeaderTimeout = "5s"
+	cfg.HTTP.ReadTimeout = "15s"
+	cfg.HTTP.WriteTimeout = "30s"
+	cfg.HTTP.IdleTimeout = "60s"
+	cfg.HTTP.ShutdownTimeout = "10s"
+	cfg.HTTP.MaxHeaderBytes = 1 << 20
 	if path == "" {
 		return cfg, nil
 	}
@@ -545,6 +601,9 @@ func loadConfig(path string) (RuntimeConfig, error) {
 	}
 	if strings.HasSuffix(path, ".json") {
 		return cfg, json.Unmarshal(payload, &cfg)
+	}
+	if strings.HasSuffix(path, ".bcl") {
+		return cfg, bcl.UnmarshalWithOptions(payload, &cfg, &bcl.Options{AllowEnv: true, BaseDir: filepath.Dir(path)})
 	}
 	return cfg, yaml.Unmarshal(payload, &cfg)
 }
@@ -572,6 +631,17 @@ func applyString(dst *string, value, zero string) {
 	}
 }
 
+func durationOrDefault(value string, fallback time.Duration) time.Duration {
+	if value == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return fallback
+	}
+	return d
+}
+
 func readJSON(path string, out any) error {
 	payload, err := os.ReadFile(path)
 	if err != nil {
@@ -590,7 +660,7 @@ func printJSON(v any) {
 
 func usage() {
 	fmt.Println(`condition commands:
-  serve [--config condition.yaml]
+  serve [--config condition.yaml] [--tls-cert cert.pem --tls-key key.pem]
   validate <decision.bcl>
   publish <decision.bcl>
   versions <definition>

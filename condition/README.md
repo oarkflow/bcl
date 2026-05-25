@@ -32,7 +32,7 @@ curl -H 'X-Roles: condition-auditor' http://localhost:8080/v1/metrics
 
 The default CLI store is file-backed at `.condition`; SQLite is available with `--store sqlite --store-path condition.db`.
 
-The HTTP server honors the service `Config` request timeout and max body size. Optional in-memory rate limiting can be enabled from Go with `server.WithRateLimit(limit, window)` or in `condition.yaml`.
+The HTTP server honors the service `Config` request timeout and max body size. Optional in-memory rate limiting can be enabled from Go with `server.WithRateLimit(limit, window)` or in `condition.yaml`. The CLI server also sets HTTP read/header/write/idle timeouts, supports graceful shutdown, and can serve TLS with `--tls-cert` and `--tls-key`.
 
 ## Production Surface
 
@@ -52,7 +52,53 @@ go run ./cmd/condition reports --kind simulation
 go run ./cmd/condition audit verify
 ```
 
-Every command accepts `--config`; explicit command flags override config values. A config file can set the address, environment, store kind/path, request timeout, body limit, rate limit, and `.authz` policy path.
+Every command accepts `--config`; explicit command flags override config values. BCL is the native config format for Condition, and JSON/YAML remain supported for compatibility. A config file can set the address, environment, store kind/path, request timeout, body limit, rate limit, HTTP server timeouts, TLS files, trusted proxy CIDRs, and `.authz` policy path.
+
+Production config example:
+
+```bcl
+address ":8443"
+authz_path "./condition.authz"
+trusted_proxies ["10.0.0.0/24"]
+
+tls {
+  cert_file "/etc/condition/tls.crt"
+  key_file "/etc/condition/tls.key"
+}
+
+http {
+  read_header_timeout "5s"
+  read_timeout "15s"
+  write_timeout "30s"
+  idle_timeout "60s"
+  shutdown_timeout "10s"
+  max_header_bytes 1048576
+}
+
+store {
+  kind "sqlite"
+  path "/var/lib/condition/condition.db"
+}
+
+service {
+  environment "production"
+  request_timeout "5s"
+  max_request_bytes 1048576
+  strict_validation true
+  strict_evaluation true
+  require_tests true
+  require_activation_approval true
+}
+
+rate_limit {
+  limit 120
+  window "1m"
+}
+```
+
+Audit writes are fail-closed: if the audit sink cannot read the previous hash or append the new sealed record, publish/evaluate/lifecycle operations return an error instead of continuing silently. SQLite stores enable foreign keys, busy timeout, WAL mode for file databases, and bounded connection pools. `X-Forwarded-For` and `X-Real-IP` are ignored unless the immediate peer is listed in `trusted_proxies`.
+
+A complete runnable BCL server config is in `examples/production-server`.
 
 ## HTTP API
 

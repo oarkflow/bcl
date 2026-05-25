@@ -208,6 +208,33 @@ func TestServerRejectsOversizedBody(t *testing.T) {
 	}
 }
 
+func TestServerOnlyTrustsForwardedIPFromConfiguredProxy(t *testing.T) {
+	svc := condition.NewService(storage.NewMemoryStore(), condition.Config{})
+	srv := New(svc)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.RemoteAddr = "10.0.0.10:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	if got := srv.remoteIP(req); got != "10.0.0.10" {
+		t.Fatalf("remote ip without trusted proxy = %q", got)
+	}
+
+	srv = New(svc, WithTrustedProxies([]string{"10.0.0.0/24"}))
+	if got := srv.remoteIP(req); got != "203.0.113.10" {
+		t.Fatalf("remote ip with trusted proxy = %q", got)
+	}
+}
+
+func TestWithTrustedProxiesAcceptsSingleIP(t *testing.T) {
+	svc := condition.NewService(storage.NewMemoryStore(), condition.Config{})
+	srv := New(svc, WithTrustedProxies([]string{"10.0.0.10"}))
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.RemoteAddr = "10.0.0.10:1234"
+	req.Header.Set("X-Real-IP", "203.0.113.11")
+	if got := srv.remoteIP(req); got != "203.0.113.11" {
+		t.Fatalf("remote ip = %q", got)
+	}
+}
+
 func TestServerRolePermissions(t *testing.T) {
 	svc := condition.NewService(storage.NewMemoryStore(), condition.Config{})
 	handler := New(svc).Handler()

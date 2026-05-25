@@ -44,6 +44,8 @@ go run ./examples/product-recommendation
 go run ./examples/autonomous-remediation
 ```
 
+Production server configuration examples live in `production-server`. They are not Go use-case runners; they show BCL-native runtime config for SQLite, strict validation/evaluation, fail-closed audit behavior, HTTP timeouts, trusted proxies, TLS, rate limits, and route-scoped authz.
+
 ## Use Case Coverage
 
 * `access-control`: RBAC/ABAC, session risk, conditional MFA, and break-glass access.

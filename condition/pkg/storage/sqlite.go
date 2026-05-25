@@ -30,7 +30,14 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(30 * time.Minute)
 	s := &SQLiteStore{db: db}
+	if err := s.configure(context.Background(), path); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -43,6 +50,28 @@ func (s *SQLiteStore) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+func (s *SQLiteStore) configure(ctx context.Context, path string) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return err
+	}
+	pragmas := []string{
+		`PRAGMA foreign_keys = ON`,
+		`PRAGMA busy_timeout = 5000`,
+	}
+	if path != ":memory:" {
+		pragmas = append(pragmas,
+			`PRAGMA journal_mode = WAL`,
+			`PRAGMA synchronous = NORMAL`,
+		)
+	}
+	for _, pragma := range pragmas {
+		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SQLiteStore) SaveDefinition(ctx context.Context, record DefinitionRecord) error {

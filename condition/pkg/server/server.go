@@ -21,13 +21,14 @@ import (
 )
 
 type Server struct {
-	service *condition.Service
-	authz   *authz.Engine
-	maxBody int64
-	timeout time.Duration
-	metrics *Metrics
-	limiter *rateLimiter
-	logf    func(format string, args ...any)
+	service        *condition.Service
+	authz          *authz.Engine
+	maxBody        int64
+	timeout        time.Duration
+	metrics        *Metrics
+	limiter        *rateLimiter
+	trustedProxies []*net.IPNet
+	logf           func(format string, args ...any)
 }
 
 type Option func(*Server)
@@ -54,6 +55,29 @@ func WithRateLimit(limit int, window time.Duration) Option {
 
 func WithLogger(logf func(format string, args ...any)) Option {
 	return func(s *Server) { s.logf = logf }
+}
+
+func WithTrustedProxies(cidrs []string) Option {
+	return func(s *Server) {
+		s.trustedProxies = nil
+		for _, value := range cidrs {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			if ip := net.ParseIP(value); ip != nil {
+				bits := 32
+				if ip.To4() == nil {
+					bits = 128
+				}
+				s.trustedProxies = append(s.trustedProxies, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+				continue
+			}
+			if _, network, err := net.ParseCIDR(value); err == nil {
+				s.trustedProxies = append(s.trustedProxies, network)
+			}
+		}
+	}
 }
 
 func New(service *condition.Service, opts ...Option) *Server {
@@ -481,7 +505,7 @@ func (s *Server) withSubject(next http.Handler) http.Handler {
 		}
 		ctx = condition.WithRequestValue(ctx, "method", r.Method)
 		ctx = condition.WithRequestValue(ctx, "path", r.URL.Path)
-		ctx = condition.WithRequestValue(ctx, "remote_ip", remoteIP(r))
+		ctx = condition.WithRequestValue(ctx, "remote_ip", s.remoteIP(r))
 		ctx = condition.WithRequestValue(ctx, "headers", requestHeaders(r.Header))
 		if pattern, params := matchRoutePattern(s.routes(), r.Method, r.URL.Path); pattern != "" {
 			ctx = condition.WithRequestValue(ctx, "route_template", pattern)
@@ -498,18 +522,40 @@ func (s *Server) withSubject(next http.Handler) http.Handler {
 	})
 }
 
-func remoteIP(r *http.Request) string {
-	if forwarded := firstHeader(r, "X-Forwarded-For", "X-Real-IP"); forwarded != "" {
-		if i := strings.IndexByte(forwarded, ','); i >= 0 {
-			return strings.TrimSpace(forwarded[:i])
+func (s *Server) remoteIP(r *http.Request) string {
+	if s.trustsRemoteAddr(r.RemoteAddr) {
+		if forwarded := firstHeader(r, "X-Forwarded-For", "X-Real-IP"); forwarded != "" {
+			if i := strings.IndexByte(forwarded, ','); i >= 0 {
+				return strings.TrimSpace(forwarded[:i])
+			}
+			return strings.TrimSpace(forwarded)
 		}
-		return strings.TrimSpace(forwarded)
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+func (s *Server) trustsRemoteAddr(remoteAddr string) bool {
+	if len(s.trustedProxies) == 0 {
+		return false
+	}
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, network := range s.trustedProxies {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseHeaderBool(value string) bool {
