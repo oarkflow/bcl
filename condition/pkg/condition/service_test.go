@@ -58,6 +58,131 @@ func TestServicePublishEvaluateTestAndAudit(t *testing.T) {
 	}
 }
 
+func TestServiceEvaluateUsesRuntimeContextAndSession(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(storage.NewMemoryStore(), Config{})
+	source := `module "runtime" {
+  decision_table "access" {
+    default deny
+    hit_policy first
+    row "allow-runtime-context" {
+      when { all { context.required("tenant.id") == "tenant-from-context" session.attrs.mfa == true } }
+      then { decision allow reason "runtime context accepted" }
+      reason "runtime context accepted"
+      reason_code "RUNTIME_CONTEXT"
+    }
+  }
+}`
+	if _, err := svc.Publish(ctx, PublishRequest{Name: "runtime", Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	evalCtx := WithContextValue(ctx, "tenant.id", "tenant-from-context")
+	evalCtx = WithSessionValue(evalCtx, "attrs.mfa", true)
+	resp, err := svc.Evaluate(evalCtx, "runtime", EvaluateRequest{Decision: "access"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Report.Decision.Effect != "allow" || resp.Report.Decision.ReasonCode != "RUNTIME_CONTEXT" {
+		t.Fatalf("decision = %#v", resp.Report.Decision)
+	}
+}
+
+func TestServiceEvaluateRuntimeContextOverridesInputContext(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(storage.NewMemoryStore(), Config{})
+	source := `module "runtime" {
+  decision_table "access" {
+    default deny
+    hit_policy first
+    row "allow-context-wins" {
+      when { all { context.tenant.id == "ctx-tenant" session.attrs.mfa == true } }
+      then { decision allow reason "context wins" }
+      reason "context wins"
+      reason_code "CONTEXT_WINS"
+    }
+  }
+}`
+	if _, err := svc.Publish(ctx, PublishRequest{Name: "runtime", Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	evalCtx := WithContextValue(ctx, "tenant.id", "ctx-tenant")
+	evalCtx = WithSessionValue(evalCtx, "attrs.mfa", true)
+	resp, err := svc.Evaluate(evalCtx, "runtime", EvaluateRequest{
+		Decision: "access",
+		Input: map[string]any{
+			"context": map[string]any{"tenant": map[string]any{"id": "input-tenant"}},
+			"session": map[string]any{"attrs": map[string]any{"mfa": false}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Report.Decision.ReasonCode != "CONTEXT_WINS" {
+		t.Fatalf("decision = %#v", resp.Report.Decision)
+	}
+}
+
+func TestServiceEvaluateSupportsRequestHeaderFunction(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(storage.NewMemoryStore(), Config{})
+	source := `module "runtime" {
+  decision_table "access" {
+    default deny
+    hit_policy first
+    row "allow-header" {
+      when { context.request.header("X-Plan") == "enterprise" }
+      then { decision allow reason "header accepted" }
+      reason "header accepted"
+      reason_code "HEADER_ACCEPTED"
+    }
+  }
+}`
+	if _, err := svc.Publish(ctx, PublishRequest{Name: "runtime", Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	evalCtx := WithRequestValue(ctx, "headers", map[string]any{"x-plan": "enterprise"})
+	resp, err := svc.Evaluate(evalCtx, "runtime", EvaluateRequest{Decision: "access"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Report.Decision.ReasonCode != "HEADER_ACCEPTED" {
+		t.Fatalf("decision = %#v", resp.Report.Decision)
+	}
+}
+
+func TestServiceEvaluateInputContextStillWorks(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(storage.NewMemoryStore(), Config{})
+	source := `module "runtime" {
+  decision_table "access" {
+    default deny
+    hit_policy first
+    row "allow-input-context" {
+      when { all { context.tenant.id == "input-tenant" session.attrs.mfa == true } }
+      then { decision allow reason "input context accepted" }
+      reason "input context accepted"
+      reason_code "INPUT_CONTEXT"
+    }
+  }
+}`
+	if _, err := svc.Publish(ctx, PublishRequest{Name: "runtime", Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := svc.Evaluate(ctx, "runtime", EvaluateRequest{
+		Decision: "access",
+		Input: map[string]any{
+			"context": map[string]any{"tenant": map[string]any{"id": "input-tenant"}},
+			"session": map[string]any{"attrs": map[string]any{"mfa": true}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Report.Decision.ReasonCode != "INPUT_CONTEXT" {
+		t.Fatalf("decision = %#v", resp.Report.Decision)
+	}
+}
+
 func TestServiceVersionActivationAndRollback(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(storage.NewMemoryStore(), Config{})

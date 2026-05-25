@@ -14,8 +14,8 @@ replace github.com/oarkflow/bcl => ..
 
 ```sh
 go test ./...
-go run ./examples/condition_decision_platform
-go run ./cmd/condition serve --config ./examples/condition_decision_platform/condition.yaml
+go run ./examples/payment-risk
+go run ./examples/access-control
 ```
 
 HTTP endpoints are protected with `github.com/oarkflow/authz`. For local testing, send `X-Roles: condition-admin`.
@@ -41,14 +41,13 @@ Condition now stores versioned definitions by `name + version + environment`, ke
 Core CLI commands:
 
 ```sh
-go run ./cmd/condition validate --name fraud-aml ./examples/condition_decision_platform/use_cases/fraud-aml/decision.bcl
-go run ./cmd/condition publish --name fraud-aml --version 1 ./examples/condition_decision_platform/use_cases/fraud-aml/decision.bcl
-go run ./cmd/condition versions fraud-aml
-go run ./cmd/condition activate fraud-aml 1
-go run ./cmd/condition evaluate fraud-aml --decision fraud_aml --input ./examples/condition_decision_platform/use_cases/fraud-aml/inputs/review.json --compact
-go run ./cmd/condition gates fraud-aml --bundle risk_release
-go run ./cmd/condition rollback fraud-aml 1
-go run ./cmd/condition audits --definition fraud-aml --operation evaluate --limit 50
+go run ./cmd/condition validate --name payment-risk ./examples/payment-risk/decision.bcl
+go run ./cmd/condition publish --name payment-risk --version 1 ./examples/payment-risk/decision.bcl
+go run ./cmd/condition versions payment-risk
+go run ./cmd/condition activate payment-risk 1
+go run ./cmd/condition evaluate payment-risk --decision payment_risk --input ./examples/payment-risk/inputs/authorize.json --compact
+go run ./cmd/condition rollback payment-risk 1
+go run ./cmd/condition audits --definition payment-risk --operation evaluate --limit 50
 go run ./cmd/condition reports --kind simulation
 go run ./cmd/condition audit verify
 ```
@@ -64,31 +63,29 @@ curl -H 'X-Roles: condition-admin' http://localhost:8080/healthz
 curl -H 'X-Roles: condition-admin' http://localhost:8080/readyz
 
 curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' \
-  -d '{"name":"fraud-aml","version":"1","path":"./examples/condition_decision_platform/use_cases/fraud-aml/decision.bcl","run_tests":true}' \
+  -d '{"name":"payment-risk","version":"1","path":"./examples/payment-risk/decision.bcl","run_tests":true}' \
   http://localhost:8080/v1/definitions/validate
 
 curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' \
-  -d '{"name":"fraud-aml","version":"1","path":"./examples/condition_decision_platform/use_cases/fraud-aml/decision.bcl"}' \
+  -d '{"name":"payment-risk","version":"1","path":"./examples/payment-risk/decision.bcl"}' \
   http://localhost:8080/v1/definitions
 
 curl -H 'X-Roles: condition-admin' http://localhost:8080/v1/definitions
-curl -H 'X-Roles: condition-admin' http://localhost:8080/v1/definitions/fraud-aml
-curl -H 'X-Roles: condition-admin' http://localhost:8080/v1/definitions/fraud-aml/versions
-curl -H 'X-Roles: condition-admin' -X POST http://localhost:8080/v1/definitions/fraud-aml/versions/1/activate
+curl -H 'X-Roles: condition-admin' http://localhost:8080/v1/definitions/payment-risk
+curl -H 'X-Roles: condition-admin' http://localhost:8080/v1/definitions/payment-risk/versions
+curl -H 'X-Roles: condition-admin' -X POST http://localhost:8080/v1/definitions/payment-risk/versions/1/activate
 curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' -d '{"version":"1"}' \
-  http://localhost:8080/v1/definitions/fraud-aml/rollback
+  http://localhost:8080/v1/definitions/payment-risk/rollback
 
 curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' \
-  -d '{"decision":"fraud_aml","input":{"customer":{"id":"c1","blacklisted":true},"transaction":{"amount":500,"channel":"card"}}}' \
-  http://localhost:8080/v1/definitions/fraud-aml/evaluate
+  -d '{"decision":"payment_risk","input":{"card":{"stolen":false},"payment":{"risk_score":12,"cross_border":false},"customer":{"trusted":true}}}' \
+  http://localhost:8080/v1/definitions/payment-risk/evaluate
 
-curl -H 'X-Roles: condition-admin' -X POST http://localhost:8080/v1/definitions/fraud-aml/tests
-curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' -d '{"bundle":"risk_release"}' \
-  http://localhost:8080/v1/definitions/fraud-aml/gates
+curl -H 'X-Roles: condition-admin' -X POST http://localhost:8080/v1/definitions/payment-risk/tests
 curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' -d '{"candidate_path":"./candidate.bcl","cases":[]}' \
-  http://localhost:8080/v1/definitions/fraud-aml/simulate
+  http://localhost:8080/v1/definitions/payment-risk/simulate
 curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' -d '{"candidate_path":"./candidate.bcl","cases":[]}' \
-  http://localhost:8080/v1/definitions/fraud-aml/compare
+  http://localhost:8080/v1/definitions/payment-risk/compare
 
 curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' -d '{"input":{"transaction":{"amount":100000}}}' \
   http://localhost:8080/v1/definitions/case-review-workflow/workflows/manual_review/start
@@ -97,7 +94,7 @@ curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' -d '{"inp
 curl -H 'X-Roles: condition-admin' http://localhost:8080/v1/workflows/{run_id}
 curl -H 'X-Roles: condition-admin' http://localhost:8080/v1/workflows
 
-curl -H 'X-Roles: condition-admin' 'http://localhost:8080/v1/audits?definition=fraud-aml&operation=evaluate&limit=50'
+curl -H 'X-Roles: condition-admin' 'http://localhost:8080/v1/audits?definition=payment-risk&operation=evaluate&limit=50'
 curl -H 'X-Roles: condition-admin' http://localhost:8080/v1/audits/{audit_id}
 curl -H 'X-Roles: condition-admin' -X POST http://localhost:8080/v1/audits/verify
 curl -H 'X-Roles: condition-admin' 'http://localhost:8080/v1/reports?kind=simulation'

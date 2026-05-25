@@ -1,4 +1,0 @@
-schema fraud_aml {
-  required customer object
-  required transaction object
-}

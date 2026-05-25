@@ -341,6 +341,9 @@ func (p *parser) dottedAssignmentAhead() bool {
 	if t.kind == tokNewline || t.kind == tokRBrace || t.kind == tokEOF {
 		return false
 	}
+	if t.kind == tokLParen {
+		return false
+	}
 	if t.kind == tokOperator || isExprOperator(t.text) {
 		return false
 	}

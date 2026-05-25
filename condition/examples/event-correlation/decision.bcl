@@ -1,0 +1,66 @@
+bcl { version "1.0" strict true }
+
+module "event-correlation-example" {
+  source "./module.bcl"
+  version "1"
+  environment "example"
+  metadata { owner "digital-commerce-risk" domain "complex-event-processing" }
+
+  reason_code_catalog "event_correlation" {
+    code "TAKEOVER_PURCHASE" { description "Correlated sequence suggests account takeover purchase" }
+    code "PARTIAL_SEQUENCE" { description "Sequence is suspicious but incomplete" }
+    code "BENIGN_SEQUENCE" { description "No risky event sequence was correlated" }
+  }
+
+  decision_schema "event_correlation" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  decision_table "event_correlation" {
+    default require_review
+    hit_policy first
+
+    row "block-correlated-takeover-purchase" {
+      priority 100
+      when { sequence.takeover_purchase == true }
+      then { outcome { decision deny reason "login reset address change and gift card purchase correlated" attributes { action "cancel-order" queue "fraud-ops" } metadata { severity "critical" } } obligation lock_account { duration "12h" } }
+      reason "login reset address change and gift card purchase correlated"
+      reason_code "TAKEOVER_PURCHASE"
+      tags ["cep", "fraud"]
+    }
+
+    row "review-partial-risk-sequence" {
+      priority 70
+      when { sequence.partial_takeover == true }
+      then { outcome { decision require_review reason "partial takeover sequence requires review" attributes { action "hold-order" queue "risk-review" } metadata { severity "high" } } advice verify_customer { channel "sms" } }
+      reason "partial takeover sequence requires review"
+      reason_code "PARTIAL_SEQUENCE"
+      tags ["review"]
+    }
+
+    row "allow-benign-sequence" {
+      priority 20
+      when { sequence.benign == true }
+      then { outcome { decision allow reason "no risky event sequence" attributes { action "fulfill-order" queue "none" } metadata { severity "low" } } }
+      reason "no risky event sequence"
+      reason_code "BENIGN_SEQUENCE"
+      tags ["fulfillment"]
+    }
+  }
+
+  test "benign purchase" {
+    decision "event_correlation"
+    input {
+      sequence.new_device_login false
+      sequence.password_reset false
+      sequence.address_change false
+      sequence.takeover_purchase false
+      sequence.partial_takeover false
+      sequence.benign true
+      order.gift_card_percent 0
+    }
+    expect { effect "allow" reason_code "BENIGN_SEQUENCE" }
+  }
+}

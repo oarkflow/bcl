@@ -1,4 +1,0 @@
-{
-  "subject": { "tenant_disabled": false, "plan": "enterprise" },
-  "feature": { "enabled": true, "beta": false }
-}

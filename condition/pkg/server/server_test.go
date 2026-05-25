@@ -58,6 +58,132 @@ func TestServerPublishEvaluateAndAudit(t *testing.T) {
 	}
 }
 
+func TestServerEvaluatePopulatesRuntimeContextFromHeaders(t *testing.T) {
+	svc := condition.NewService(storage.NewMemoryStore(), condition.Config{})
+	handler := New(svc).Handler()
+	source := `module "runtime" {
+  decision_table "access" {
+    default deny
+    hit_policy first
+    row "allow-header-context" {
+      when { all { context.tenant.id == "tenant-1" context.subject.id == "user-1" context.request.id == "req-1" session.id == "sess-1" session.attrs.mfa == true } }
+      then { decision allow reason "header context accepted" }
+      reason "header context accepted"
+      reason_code "HEADER_CONTEXT"
+    }
+  }
+}`
+	if _, err := svc.Publish(context.Background(), condition.PublishRequest{Name: "runtime", Source: source}); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]any{"decision": "access"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/definitions/runtime/evaluate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Roles", "condition-admin")
+	req.Header.Set("X-Subject-ID", "user-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
+	req.Header.Set("X-Request-ID", "req-1")
+	req.Header.Set("X-Session-ID", "sess-1")
+	req.Header.Set("X-Session-MFA", "true")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("evaluate status %d: %s", rec.Code, rec.Body.String())
+	}
+	if reasonCodeFromEvaluateResponse(t, rec.Body.Bytes()) != "HEADER_CONTEXT" {
+		t.Fatalf("response = %s", rec.Body.String())
+	}
+}
+
+func TestServerEvaluateHeaderContextOverridesBodyContext(t *testing.T) {
+	svc := condition.NewService(storage.NewMemoryStore(), condition.Config{})
+	handler := New(svc).Handler()
+	source := `module "runtime" {
+  decision_table "access" {
+    default deny
+    hit_policy first
+    row "allow-header-context" {
+      when { all { context.tenant.id == "header-tenant" session.attrs.mfa == true } }
+      then { decision allow reason "header context accepted" }
+      reason "header context accepted"
+      reason_code "HEADER_CONTEXT"
+    }
+  }
+}`
+	if _, err := svc.Publish(context.Background(), condition.PublishRequest{Name: "runtime", Source: source}); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"decision": "access",
+		"input": map[string]any{
+			"context": map[string]any{"tenant": map[string]any{"id": "body-tenant"}},
+			"session": map[string]any{"attrs": map[string]any{"mfa": false}},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/definitions/runtime/evaluate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Roles", "condition-admin")
+	req.Header.Set("X-Tenant-ID", "header-tenant")
+	req.Header.Set("X-Session-MFA", "true")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("evaluate status %d: %s", rec.Code, rec.Body.String())
+	}
+	if reasonCodeFromEvaluateResponse(t, rec.Body.Bytes()) != "HEADER_CONTEXT" {
+		t.Fatalf("response = %s", rec.Body.String())
+	}
+}
+
+func TestServerEvaluateExposesSanitizedHeadersToRequestHeaderFunction(t *testing.T) {
+	svc := condition.NewService(storage.NewMemoryStore(), condition.Config{})
+	handler := New(svc).Handler()
+	source := `module "runtime" {
+  decision_table "access" {
+    default deny
+    hit_policy first
+    row "allow-header-function" {
+      when { all { context.request.header("X-Plan") == "enterprise" context.request.header("Authorization", "redacted") == "redacted" } }
+      then { decision allow reason "header function accepted" }
+      reason "header function accepted"
+      reason_code "HEADER_FUNCTION"
+    }
+  }
+}`
+	if _, err := svc.Publish(context.Background(), condition.PublishRequest{Name: "runtime", Source: source}); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]any{"decision": "access"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/definitions/runtime/evaluate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Roles", "condition-admin")
+	req.Header.Set("X-Plan", "enterprise")
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("evaluate status %d: %s", rec.Code, rec.Body.String())
+	}
+	if reasonCodeFromEvaluateResponse(t, rec.Body.Bytes()) != "HEADER_FUNCTION" {
+		t.Fatalf("response = %s", rec.Body.String())
+	}
+}
+
+func reasonCodeFromEvaluateResponse(t *testing.T, payload []byte) string {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatal(err)
+	}
+	report, _ := body["report"].(map[string]any)
+	decision, _ := report["decision"].(map[string]any)
+	reason, _ := decision["reason_code"].(string)
+	return reason
+}
+
 func TestServerRequiresAuthz(t *testing.T) {
 	svc := condition.NewService(storage.NewMemoryStore(), condition.Config{})
 	handler := New(svc).Handler()

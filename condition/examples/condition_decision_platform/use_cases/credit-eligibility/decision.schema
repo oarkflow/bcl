@@ -1,4 +1,0 @@
-schema credit_eligibility {
-  required applicant object
-  required loan object
-}

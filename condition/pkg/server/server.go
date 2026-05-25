@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -471,8 +472,75 @@ func (s *Server) withSubject(next http.Handler) http.Handler {
 		if subject == "" {
 			subject = "anonymous"
 		}
-		next.ServeHTTP(w, r.WithContext(condition.ContextWithSubject(r.Context(), subject)))
+		ctx := condition.ContextWithSubject(r.Context(), subject)
+		if tenantID := r.Header.Get("X-Tenant-ID"); tenantID != "" {
+			ctx = condition.WithContextValue(ctx, "tenant.id", tenantID)
+		}
+		if requestID := firstHeader(r, "X-Request-ID", "X-Correlation-ID"); requestID != "" {
+			ctx = condition.WithRequestValue(ctx, "id", requestID)
+		}
+		ctx = condition.WithRequestValue(ctx, "method", r.Method)
+		ctx = condition.WithRequestValue(ctx, "path", r.URL.Path)
+		ctx = condition.WithRequestValue(ctx, "remote_ip", remoteIP(r))
+		ctx = condition.WithRequestValue(ctx, "headers", requestHeaders(r.Header))
+		if pattern, params := matchRoutePattern(s.routes(), r.Method, r.URL.Path); pattern != "" {
+			ctx = condition.WithRequestValue(ctx, "route_template", pattern)
+			ctx = condition.WithRequestValue(ctx, "route_pattern", fiberRoutePattern(pattern))
+			ctx = condition.WithRequestValue(ctx, "params", params)
+		}
+		if sessionID := r.Header.Get("X-Session-ID"); sessionID != "" {
+			ctx = condition.WithSessionValue(ctx, "id", sessionID)
+		}
+		if mfa := r.Header.Get("X-Session-MFA"); mfa != "" {
+			ctx = condition.WithSessionValue(ctx, "attrs.mfa", parseHeaderBool(mfa))
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func remoteIP(r *http.Request) string {
+	if forwarded := firstHeader(r, "X-Forwarded-For", "X-Real-IP"); forwarded != "" {
+		if i := strings.IndexByte(forwarded, ','); i >= 0 {
+			return strings.TrimSpace(forwarded[:i])
+		}
+		return strings.TrimSpace(forwarded)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func parseHeaderBool(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "t", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func requestHeaders(headers http.Header) map[string]any {
+	out := map[string]any{}
+	for key, values := range headers {
+		if sensitiveHeader(key) || len(values) == 0 {
+			continue
+		}
+		value := strings.Join(values, ",")
+		out[key] = value
+		out[strings.ToLower(key)] = value
+	}
+	return out
+}
+
+func sensitiveHeader(key string) bool {
+	switch strings.ToLower(key) {
+	case "authorization", "cookie", "set-cookie", "proxy-authorization":
+		return true
+	default:
+		return false
+	}
 }
 
 type statusRecorder struct {

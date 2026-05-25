@@ -1,0 +1,85 @@
+bcl { version "1.0" strict true }
+
+module "marketplace-escrow-example" {
+  source "./module.bcl"
+  version "1"
+  environment "example"
+  metadata { owner "marketplace-risk" domain "marketplace" }
+
+  reason_code_catalog "escrow_release" {
+    code "ESCROW_HOLD" { description "Funds must remain held due to dispute or fraud risk" }
+    code "DISPUTE_REVIEW" { description "Escrow release needs operations review" }
+    code "RELEASE_FUNDS" { description "Escrow funds can be released" }
+  }
+
+  decision_schema "escrow_release" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  decision_table "escrow_release" {
+    default require_review
+    hit_policy first
+
+    row "deny-active-dispute-or-fraud" {
+      priority 100
+      when {
+        any {
+          order.dispute_open == true
+          seller.fraud_flag == true
+          buyer.chargeback_open == true
+        }
+      }
+      then { outcome { decision deny reason "escrow must remain on hold" attributes { route "hold-funds" queue "risk" } metadata { severity "high" } } obligation freeze_payout { reason "dispute_or_fraud" } }
+      reason "escrow must remain on hold"
+      reason_code "ESCROW_HOLD"
+      tags ["escrow", "risk"]
+    }
+
+    row "review-late-delivery-or-low-trust" {
+      priority 70
+      when {
+        any {
+          fulfillment.days_late > 3
+          seller.trust_score < 60
+          order.amount_usd > 2000
+        }
+      }
+      then { outcome { decision require_review reason "escrow release needs review" attributes { route "ops-review" queue "marketplace-ops" } metadata { severity "medium" } } advice request_delivery_evidence { type "tracking" } }
+      reason "escrow release needs review"
+      reason_code "DISPUTE_REVIEW"
+      tags ["manual-review"]
+    }
+
+    row "allow-delivered-trusted-order" {
+      priority 30
+      when {
+        all {
+          fulfillment.delivered == true
+          order.dispute_open == false
+          seller.trust_score >= 80
+          buyer.chargeback_open == false
+        }
+      }
+      then { outcome { decision allow reason "escrow can be released" attributes { route "release-payout" queue "none" } metadata { severity "low" } } }
+      reason "escrow can be released"
+      reason_code "RELEASE_FUNDS"
+      tags ["payout"]
+    }
+  }
+
+  test "release trusted delivered order" {
+    decision "escrow_release"
+    input {
+      fulfillment.delivered true
+      fulfillment.days_late 0
+      order.dispute_open false
+      order.amount_usd 300
+      seller.trust_score 91
+      seller.fraud_flag false
+      buyer.chargeback_open false
+    }
+    expect { effect "allow" reason_code "RELEASE_FUNDS" }
+  }
+}

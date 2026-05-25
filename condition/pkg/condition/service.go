@@ -237,20 +237,22 @@ func (s *Service) Evaluate(ctx context.Context, definition string, req EvaluateR
 	if req.Decision == "" {
 		req.Decision = firstDecision(record.Program)
 	}
+	input, runtimeContext, runtimeSession := runtimeInputFromContext(ctx, req.Input)
+	req.Input = input
 	report, err := bcl.EvaluateDecisionPlatform(record.Program, bcl.DecisionPlatformRequest{
 		Decision:        req.Decision,
-		Input:           req.Input,
+		Input:           input,
 		Bundle:          req.Bundle,
 		IncludeGates:    req.IncludeGates,
 		Counterfactuals: req.Counterfactuals,
 		IncludeFeatures: req.IncludeFeatures,
 		Strict:          s.strictEvaluation(req.Strict),
-	}, &bcl.Options{AllowTime: true})
+	}, &bcl.Options{AllowTime: true, Context: runtimeContext, Session: runtimeSession})
 	if err != nil {
 		envelope := s.audit(ctx, "evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error()}, start, nil)
 		return &EvaluateResponse{Report: report, Audit: envelope}, err
 	}
-	shadow, shadowErr := s.shadowEvaluate(req, record.Program)
+	shadow, shadowErr := s.shadowEvaluate(ctx, req, record.Program)
 	if shadowErr != nil {
 		envelope := s.audit(ctx, "evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": shadowErr.Error()}, start, nil)
 		return &EvaluateResponse{Report: report, Audit: envelope}, shadowErr
@@ -329,7 +331,7 @@ func (s *Service) comparePrograms(ctx context.Context, operation, definition str
 	return &SimulationResponse{Compare: compare, Audit: envelope}, nil
 }
 
-func (s *Service) shadowEvaluate(req EvaluateRequest, base *bcl.DecisionProgram) (*bcl.DecisionCompareReport, error) {
+func (s *Service) shadowEvaluate(ctx context.Context, req EvaluateRequest, base *bcl.DecisionProgram) (*bcl.DecisionCompareReport, error) {
 	if req.ShadowCandidateSource == "" && req.ShadowCandidatePath == "" {
 		return nil, nil
 	}
@@ -344,7 +346,7 @@ func (s *Service) shadowEvaluate(req EvaluateRequest, base *bcl.DecisionProgram)
 	return bcl.CompareDecisionBatch(base, candidate, req.Decision, []bcl.DecisionBatchCase{{
 		ID:    "shadow",
 		Input: req.Input,
-	}}, &bcl.Options{AllowTime: true})
+	}}, &bcl.Options{AllowTime: true, Context: ContextFactsFromContext(ctx), Session: SessionFromContext(ctx)})
 }
 
 func (s *Service) Reload(ctx context.Context, req ReloadRequest) (*ReloadResponse, error) {
@@ -393,6 +395,24 @@ func (s *Service) Ready(ctx context.Context) error {
 		return err
 	}
 	return s.VerifyAudits(ctx)
+}
+
+func runtimeInputFromContext(ctx context.Context, input map[string]any) (map[string]any, map[string]any, map[string]any) {
+	merged := cloneMap(input)
+	if merged == nil {
+		merged = map[string]any{}
+	}
+	requestContext, _ := merged["context"].(map[string]any)
+	requestSession, _ := merged["session"].(map[string]any)
+	runtimeContext := mergeMaps(requestContext, ContextFactsFromContext(ctx))
+	runtimeSession := mergeMaps(requestSession, SessionFromContext(ctx))
+	if len(runtimeContext) > 0 {
+		merged["context"] = runtimeContext
+	}
+	if len(runtimeSession) > 0 {
+		merged["session"] = runtimeSession
+	}
+	return merged, runtimeContext, runtimeSession
 }
 
 func (s *Service) ProductionReadiness(ctx context.Context) ProductionReadinessReport {

@@ -1,3 +1,0 @@
-schema compliance_approval {
-  required request object
-}

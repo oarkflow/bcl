@@ -1,0 +1,12 @@
+{
+  "card": {
+    "stolen": false
+  },
+  "payment": {
+    "risk_score": 12,
+    "cross_border": false
+  },
+  "customer": {
+    "trusted": true
+  }
+}

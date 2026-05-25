@@ -1,0 +1,69 @@
+bcl { version "1.0" strict true }
+
+module "product-recommendation-example" {
+  source "./module.bcl"
+  version "1"
+  environment "example"
+  metadata { owner "growth-platform" domain "recommendation-policy" }
+
+  reason_code_catalog "product_recommendation" {
+    code "INELIGIBLE_PRODUCT" { description "Recommended product is not eligible for this customer" }
+    code "MARGIN_REVIEW" { description "Recommendation should be reviewed due to low margin or compliance risk" }
+    code "RECOMMEND_PRODUCT" { description "Recommendation can be shown to the customer" }
+  }
+
+  decision_schema "product_recommendation" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  decision_table "product_recommendation" {
+    default require_review
+    hit_policy first
+
+    row "deny-ineligible-recommendation" {
+      priority 100
+      when { product.eligible == false }
+      then { outcome { decision deny reason "customer is not eligible for recommended product" attributes { action "suppress-card" queue "none" } metadata { severity "medium" } } }
+      reason "customer is not eligible for recommended product"
+      reason_code "INELIGIBLE_PRODUCT"
+      tags ["eligibility"]
+    }
+
+    row "review-low-margin-or-sensitive" {
+      priority 70
+      when { recommendation.review_required == true }
+      then { outcome { decision require_review reason "recommendation needs commercial or compliance review" attributes { action "review-placement" queue "growth-ops" } metadata { severity "medium" } } advice choose_next_best_offer { strategy "margin_safe" } }
+      reason "recommendation needs commercial or compliance review"
+      reason_code "MARGIN_REVIEW"
+      tags ["ranking", "review"]
+    }
+
+    row "allow-next-best-offer" {
+      priority 20
+      when { recommendation.show_offer == true }
+      then { outcome { decision allow reason "show next best product recommendation" attributes { action "render-offer" queue "none" } metadata { severity "low" } } }
+      reason "show next best product recommendation"
+      reason_code "RECOMMEND_PRODUCT"
+      tags ["recommendation"]
+    }
+  }
+
+  test "show recommendation" {
+    decision "product_recommendation"
+    input {
+      customer.age 34
+      product.minimum_age 18
+      product.requires_license false
+      product.eligible true
+      product.category "electronics"
+      product.inventory_units 20
+      recommendation.score 82
+      recommendation.margin_percent 18
+      recommendation.review_required false
+      recommendation.show_offer true
+    }
+    expect { effect "allow" reason_code "RECOMMEND_PRODUCT" }
+  }
+}

@@ -1,0 +1,89 @@
+bcl { version "1.0" strict true }
+
+module "support-routing-example" {
+  source "./module.bcl"
+  version "1"
+  environment "example"
+  metadata { owner "customer-ops" domain "support" }
+
+  reason_code_catalog "support_routing" {
+    code "SECURITY_ESCALATION" { description "Ticket needs security incident handling" }
+    code "SLA_BREACH_RISK" { description "Ticket is close to breaching contracted SLA" }
+    code "QUEUE_OVERLOAD" { description "Best matching queue is overloaded and needs overflow handling" }
+    code "ENTERPRISE_SLA" { description "Enterprise customer needs priority handling" }
+    code "SELF_SERVICE" { description "Ticket can be handled through self-service" }
+  }
+
+  decision_schema "support_routing" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  decision_table "support_routing" {
+    default require_review
+    hit_policy first
+
+    row "escalate-security-incident" {
+      priority 100
+      when { any { ticket.category == "security" ticket.contains_pii == true } }
+      then { outcome { decision require_review reason "security incident escalation required" attributes { route "security-incident" queue "secops" } metadata { severity "critical" } } obligation page_on_call { team "security" } }
+      reason "security incident escalation required"
+      reason_code "SECURITY_ESCALATION"
+      tags ["security", "escalation"]
+    }
+
+    row "escalate-before-sla-breach" {
+      priority 90
+      when { ticket.sla_breach_risk == true }
+      then { outcome { decision require_review reason "enterprise SLA breach risk" attributes { route "sla-escalation" queue "enterprise" } metadata { severity "critical" } } obligation notify_csm { channel "slack" } }
+      reason "enterprise SLA breach risk"
+      reason_code "SLA_BREACH_RISK"
+      tags ["sla", "escalation"]
+    }
+
+    row "overflow-overloaded-queue" {
+      priority 80
+      when { queue.overflow_required == true }
+      then { outcome { decision require_review reason "matched queue is overloaded" attributes { route "overflow-triage" queue "swarm" } metadata { severity "high" } } advice borrow_agents { skill "incident" } }
+      reason "matched queue is overloaded"
+      reason_code "QUEUE_OVERLOAD"
+      tags ["capacity"]
+    }
+
+    row "route-enterprise-sla" {
+      priority 70
+      when { ticket.enterprise_priority == true }
+      then { outcome { decision require_review reason "enterprise SLA priority route" attributes { route "priority-support" queue "enterprise" } metadata { severity "high" } } advice assign_senior_agent { skill "account-context" } }
+      reason "enterprise SLA priority route"
+      reason_code "ENTERPRISE_SLA"
+      tags ["sla"]
+    }
+
+    row "allow-self-service" {
+      priority 30
+      when { ticket.self_service_eligible == true }
+      then { outcome { decision allow reason "self-service article can resolve ticket" attributes { route "knowledge-base" queue "none" } metadata { severity "low" } } }
+      reason "self-service article can resolve ticket"
+      reason_code "SELF_SERVICE"
+      tags ["automation"]
+    }
+  }
+
+  test "how-to self service" {
+    decision "support_routing"
+    input {
+      customer.plan "starter"
+      ticket.severity 4
+      ticket.category "how_to"
+      ticket.contains_pii false
+      ticket.age_minutes 5
+      ticket.sla_breach_risk false
+      ticket.enterprise_priority false
+      ticket.self_service_eligible true
+      queue.load_percent 30
+      queue.overflow_required false
+    }
+    expect { effect "allow" reason_code "SELF_SERVICE" }
+  }
+}

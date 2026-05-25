@@ -1,0 +1,64 @@
+bcl { version "1.0" strict true }
+
+module "autonomous-remediation-example" {
+  source "./module.bcl"
+  version "1"
+  environment "example"
+  metadata { owner "platform-sre" domain "autonomous-ops" }
+
+  reason_code_catalog "autonomous_remediation" {
+    code "DESTRUCTIVE_BLOCK" { description "Automation request is too destructive to run automatically" }
+    code "PRODUCTION_REVIEW" { description "Production remediation needs human approval" }
+    code "AUTO_REMEDIATE" { description "Low-risk remediation can run automatically" }
+  }
+
+  decision_schema "autonomous_remediation" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  decision_table "autonomous_remediation" {
+    default require_review
+    hit_policy first
+
+    row "block-destructive-remediation" {
+      priority 100
+      when { any { remediation.destructive == true asset.tier == "regulated" } }
+      then { outcome { decision deny reason "destructive automation is blocked" attributes { action "stop-runbook" queue "sre-lead" } metadata { severity "critical" } } obligation create_incident { priority "p1" } }
+      reason "destructive automation is blocked"
+      reason_code "DESTRUCTIVE_BLOCK"
+      tags ["automation", "guardrail"]
+    }
+
+    row "review-production-remediation" {
+      priority 70
+      when { all { asset.environment == "production" signal.confidence_percent < 90 } }
+      then { outcome { decision require_review reason "production remediation confidence is below threshold" attributes { action "approval-required" queue "on-call" } metadata { severity "high" } } advice gather_diagnostics { bundle "logs,metrics,traces" } }
+      reason "production remediation confidence is below threshold"
+      reason_code "PRODUCTION_REVIEW"
+      tags ["human-in-loop"]
+    }
+
+    row "allow-auto-remediation" {
+      priority 20
+      when { all { signal.confidence_percent >= 90 remediation.destructive == false remediation.blast_radius == "single-service" } }
+      then { outcome { decision allow reason "run low-risk automated remediation" attributes { action "execute-runbook" queue "none" } metadata { severity "medium" } } obligation emit_audit_event { stream "sre-automation" } }
+      reason "run low-risk automated remediation"
+      reason_code "AUTO_REMEDIATE"
+      tags ["runbook"]
+    }
+  }
+
+  test "auto remediation" {
+    decision "autonomous_remediation"
+    input {
+      asset.environment "staging"
+      asset.tier "standard"
+      signal.confidence_percent 96
+      remediation.destructive false
+      remediation.blast_radius "single-service"
+    }
+    expect { effect "allow" reason_code "AUTO_REMEDIATE" }
+  }
+}

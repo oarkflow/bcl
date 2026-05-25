@@ -1,0 +1,83 @@
+bcl { version "1.0" strict true }
+
+module "manufacturing-iot-example" {
+  source "./module.bcl"
+  version "1"
+  environment "example"
+  metadata { owner "factory-automation" domain "manufacturing" }
+
+  reason_code_catalog "machine_safety" {
+    code "SAFETY_SHUTDOWN" { description "Machine must be stopped for safety" }
+    code "MAINTENANCE_REVIEW" { description "Machine needs maintenance review" }
+    code "CONTINUE_RUN" { description "Machine may continue production" }
+  }
+
+  decision_schema "machine_safety" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  decision_table "machine_safety" {
+    default require_review
+    hit_policy first
+
+    row "deny-critical-sensor-state" {
+      priority 100
+      when {
+        any {
+          sensor.temperature_c >= 95
+          sensor.vibration_mm_s >= 18
+          sensor.guard_open == true
+        }
+      }
+      then { outcome { decision deny reason "critical sensor threshold exceeded" attributes { route "stop-line" queue "safety" } metadata { severity "critical" } } obligation stop_machine { mode "controlled" } }
+      reason "critical sensor threshold exceeded"
+      reason_code "SAFETY_SHUTDOWN"
+      tags ["iot", "safety"]
+    }
+
+    row "review-maintenance-risk" {
+      priority 70
+      when {
+        any {
+          machine.hours_since_service > 500
+          quality.defect_rate_percent > 4
+          sensor.vibration_mm_s >= 12
+        }
+      }
+      then { outcome { decision require_review reason "maintenance inspection required" attributes { route "maintenance-ticket" queue "maintenance" } metadata { severity "medium" } } advice schedule_inspection { priority "high" } }
+      reason "maintenance inspection required"
+      reason_code "MAINTENANCE_REVIEW"
+      tags ["maintenance"]
+    }
+
+    row "allow-normal-production" {
+      priority 30
+      when {
+        all {
+          sensor.temperature_c < 80
+          sensor.vibration_mm_s < 10
+          sensor.guard_open == false
+          quality.defect_rate_percent <= 2
+        }
+      }
+      then { outcome { decision allow reason "machine is within operating envelope" attributes { route "continue" queue "none" } metadata { severity "low" } } }
+      reason "machine is within operating envelope"
+      reason_code "CONTINUE_RUN"
+      tags ["production"]
+    }
+  }
+
+  test "normal production" {
+    decision "machine_safety"
+    input {
+      sensor.temperature_c 72
+      sensor.vibration_mm_s 4
+      sensor.guard_open false
+      machine.hours_since_service 120
+      quality.defect_rate_percent 1
+    }
+    expect { effect "allow" reason_code "CONTINUE_RUN" }
+  }
+}

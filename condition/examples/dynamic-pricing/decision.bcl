@@ -1,0 +1,63 @@
+bcl { version "1.0" strict true }
+
+module "dynamic-pricing-example" {
+  source "./module.bcl"
+  version "1"
+  environment "example"
+  metadata { owner "revenue-platform" domain "pricing" }
+
+  reason_code_catalog "dynamic_pricing" {
+    code "FLOOR_PRICE" { description "Discount would violate margin floor" }
+    code "SURGE_REVIEW" { description "Demand surge needs manager review" }
+    code "LOYALTY_DISCOUNT" { description "Customer qualifies for loyalty discount" }
+  }
+
+  decision_schema "dynamic_pricing" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  decision_table "dynamic_pricing" {
+    default require_review
+    hit_policy first
+
+    row "deny-below-margin-floor" {
+      priority 100
+      when { offer.margin_percent < 12 }
+      then { outcome { decision deny reason "discount violates margin floor" attributes { route "reject-discount" price_action "keep-list-price" } metadata { severity "high" } } obligation notify_revenue_ops { channel "pricing" } }
+      reason "discount violates margin floor"
+      reason_code "FLOOR_PRICE"
+      tags ["margin", "deny"]
+    }
+
+    row "review-demand-surge" {
+      priority 70
+      when { all { market.demand_index >= 85 inventory.days_of_supply < 3 } }
+      then { outcome { decision require_review reason "surge pricing review required" attributes { route "pricing-review" price_action "hold-offer" } metadata { severity "medium" } } advice recalculate_surge { model "demand-v2" } }
+      reason "surge pricing review required"
+      reason_code "SURGE_REVIEW"
+      tags ["surge", "manual-review"]
+    }
+
+    row "allow-loyalty-discount" {
+      priority 30
+      when { all { customer.loyalty_tier == "platinum" offer.margin_percent >= 20 inventory.days_of_supply >= 5 } }
+      then { outcome { decision allow reason "loyalty discount approved" attributes { route "apply-discount" price_action "discount-10-percent" } metadata { severity "low" } } }
+      reason "loyalty discount approved"
+      reason_code "LOYALTY_DISCOUNT"
+      tags ["discount"]
+    }
+  }
+
+  test "platinum discount" {
+    decision "dynamic_pricing"
+    input {
+      customer.loyalty_tier "platinum"
+      offer.margin_percent 24
+      inventory.days_of_supply 12
+      market.demand_index 40
+    }
+    expect { effect "allow" reason_code "LOYALTY_DISCOUNT" }
+  }
+}

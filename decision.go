@@ -1876,6 +1876,9 @@ func decisionEvalOptions(opts *Options, program *DecisionProgram, input map[stri
 		for k, v := range opts.EvalFunctions {
 			funcs[k] = v
 		}
+		addRuntimeScopeFunctions(funcs, "context", opts.Context)
+		addRuntimeScopeFunctions(funcs, "session", opts.Session)
+		addRequestHeaderFunction(funcs, opts.Context)
 	}
 	funcs["decision"] = func(args []any, _ *EvalOptions) (any, error) {
 		if len(args) != 1 {
@@ -1899,6 +1902,127 @@ func decisionEvalOptions(opts *Options, program *DecisionProgram, input map[stri
 	}
 	cp.EvalFunctions = funcs
 	return cp
+}
+
+func addRequestHeaderFunction(funcs map[string]EvalFunction, contextScope map[string]any) {
+	funcs["context.request.header"] = func(args []any, _ *EvalOptions) (any, error) {
+		if len(args) == 0 {
+			return nil, fmt.Errorf("context.request.header requires a header name")
+		}
+		name := scalarString(args[0])
+		if name == "" {
+			name = fmt.Sprint(args[0])
+		}
+		headers, _ := lookup(contextScope, "request.headers").(map[string]any)
+		if value, ok := lookupHeader(headers, name); ok {
+			return value, nil
+		}
+		if len(args) > 1 {
+			return args[1], nil
+		}
+		return nil, nil
+	}
+}
+
+func lookupHeader(headers map[string]any, name string) (any, bool) {
+	if headers == nil {
+		return nil, false
+	}
+	for _, key := range []string{name, strings.ToLower(name), httpCanonicalHeaderKey(name)} {
+		if value, ok := headers[key]; ok {
+			return value, true
+		}
+	}
+	for key, value := range headers {
+		if strings.EqualFold(key, name) {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func httpCanonicalHeaderKey(name string) string {
+	parts := strings.Split(strings.ToLower(name), "-")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, "-")
+}
+
+func addRuntimeScopeFunctions(funcs map[string]EvalFunction, scopeName string, scope map[string]any) {
+	for _, name := range []string{scopeName, scopeName + ".required", scopeName + ".int", scopeName + ".bool", scopeName + ".float", scopeName + ".duration", scopeName + ".bytes", scopeName + ".list"} {
+		fnName := name
+		funcs[fnName] = func(args []any, _ *EvalOptions) (any, error) {
+			return runtimeScopeCall(scopeName, scope, fnName, args)
+		}
+	}
+}
+
+func runtimeScopeCall(scopeName string, scope map[string]any, fnName string, args []any) (any, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("%s call requires a key", scopeName)
+	}
+	key := scalarString(args[0])
+	if key == "" {
+		key = fmt.Sprint(args[0])
+	}
+	val := lookup(scope, key)
+	if val == nil {
+		if fnName == scopeName+".required" {
+			return nil, fmt.Errorf("required %s %q is not set", scopeName, key)
+		}
+		if len(args) > 1 {
+			return args[1], nil
+		}
+		return nil, nil
+	}
+	switch fnName {
+	case scopeName + ".int":
+		if i, ok := numericInt(val); ok {
+			return i, nil
+		}
+		var i int64
+		fmt.Sscan(fmt.Sprint(val), &i)
+		return i, nil
+	case scopeName + ".bool":
+		if b, ok := val.(bool); ok {
+			return b, nil
+		}
+		s := strings.ToLower(fmt.Sprint(val))
+		return s == "true" || s == "1" || s == "yes", nil
+	case scopeName + ".float":
+		if f, ok := numericFloat(val); ok {
+			return f, nil
+		}
+		var f float64
+		fmt.Sscan(fmt.Sprint(val), &f)
+		return f, nil
+	case scopeName + ".list":
+		switch xs := val.(type) {
+		case []any:
+			return xs, nil
+		case []string:
+			out := make([]any, 0, len(xs))
+			for _, item := range xs {
+				out = append(out, item)
+			}
+			return out, nil
+		}
+		sep := ","
+		if len(args) > 1 {
+			sep = scalarString(args[1])
+		}
+		return strings.Split(fmt.Sprint(val), sep), nil
+	case scopeName + ".duration":
+		return map[string]any{"$duration": fmt.Sprint(val)}, nil
+	case scopeName + ".bytes":
+		return map[string]any{"$bytes": fmt.Sprint(val)}, nil
+	default:
+		return val, nil
+	}
 }
 
 func cloneBoolMap(in map[string]bool) map[string]bool {

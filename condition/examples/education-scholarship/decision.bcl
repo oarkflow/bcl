@@ -1,0 +1,83 @@
+bcl { version "1.0" strict true }
+
+module "education-scholarship-example" {
+  source "./module.bcl"
+  version "1"
+  environment "example"
+  metadata { owner "student-services" domain "education" }
+
+  reason_code_catalog "scholarship_award" {
+    code "INELIGIBLE" { description "Student does not meet base eligibility" }
+    code "COMMITTEE_REVIEW" { description "Application needs committee review" }
+    code "AUTO_AWARD" { description "Student qualifies for automatic award" }
+  }
+
+  decision_schema "scholarship_award" {
+    effects [allow, deny, require_review]
+    default require_review
+    strategy first_match
+  }
+
+  decision_table "scholarship_award" {
+    default require_review
+    hit_policy first
+
+    row "deny-ineligible-student" {
+      priority 100
+      when {
+        any {
+          student.enrolled == false
+          student.gpa < 2.5
+          application.complete == false
+        }
+      }
+      then { outcome { decision deny reason "student is not eligible" attributes { route "reject" queue "financial-aid" } metadata { severity "medium" } } obligation notify_applicant { channel "portal" } }
+      reason "student is not eligible"
+      reason_code "INELIGIBLE"
+      tags ["eligibility"]
+    }
+
+    row "review-borderline-or-special-program" {
+      priority 70
+      when {
+        any {
+          student.gpa < 3.4
+          application.special_program == true
+          household.income_usd > 90000
+        }
+      }
+      then { outcome { decision require_review reason "committee review required" attributes { route "committee-review" queue "scholarship-board" } metadata { severity "medium" } } advice request_statement { type "personal" } }
+      reason "committee review required"
+      reason_code "COMMITTEE_REVIEW"
+      tags ["manual-review"]
+    }
+
+    row "allow-merit-need-award" {
+      priority 30
+      when {
+        all {
+          student.enrolled == true
+          student.gpa >= 3.6
+          household.income_usd <= 75000
+          application.complete == true
+        }
+      }
+      then { outcome { decision allow reason "student qualifies for award" attributes { route "award" queue "none" } metadata { severity "low" } } }
+      reason "student qualifies for award"
+      reason_code "AUTO_AWARD"
+      tags ["scholarship"]
+    }
+  }
+
+  test "merit need award" {
+    decision "scholarship_award"
+    input {
+      student.enrolled true
+      student.gpa 3.8
+      household.income_usd 52000
+      application.complete true
+      application.special_program false
+    }
+    expect { effect "allow" reason_code "AUTO_AWARD" }
+  }
+}

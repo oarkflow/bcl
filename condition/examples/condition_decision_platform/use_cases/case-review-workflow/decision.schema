@@ -1,3 +1,0 @@
-schema case_review_workflow {
-  required case object
-}
