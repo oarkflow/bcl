@@ -42,6 +42,9 @@ type LanguageSymbol struct {
 	ReferencedTargets []string         `json:"referenced_targets,omitempty"`
 	Deprecated        string           `json:"deprecated,omitempty"`
 	Sensitive         bool             `json:"sensitive,omitempty"`
+	Command           *CommandSchema   `json:"command,omitempty"`
+	Description       string           `json:"description,omitempty"`
+	Examples          []string         `json:"examples,omitempty"`
 	Children          []LanguageSymbol `json:"children,omitempty"`
 }
 
@@ -374,7 +377,7 @@ func analyzeNodes(nodes []Node, container string, a *Analysis) []LanguageSymbol 
 				analyzeValue(x.Default, a)
 			}
 		case *SchemaDecl:
-			s := LanguageSymbol{Name: x.Name, Detail: "schema", Kind: SymbolSchema, Span: x.Span, SelectionSpan: x.Span, Container: container}
+			s := LanguageSymbol{Name: x.Name, Detail: "schema", Kind: SymbolSchema, Span: x.Span, SelectionSpan: x.Span, Container: container, Command: x.Command, Description: x.Description, Examples: schemaExamples(x.Examples)}
 			for _, f := range x.Fields {
 				s.Children = append(s.Children, schemaFieldSymbol(f, x.Name))
 			}
@@ -516,6 +519,13 @@ func analysisCompletions(a *Analysis) []Completion {
 	}
 	for name, s := range a.Schemas {
 		add(name, "schema", s.Detail)
+		if s.Command != nil {
+			doc := s.Description
+			if doc == "" {
+				doc = "Declarative command block"
+			}
+			add(name, "command", doc)
+		}
 		for _, child := range s.Children {
 			add(child.Name, "field", child.Detail)
 		}
@@ -524,6 +534,16 @@ func analysisCompletions(a *Analysis) []Completion {
 		add(name, "type", s.Detail)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Label < out[j].Label })
+	return out
+}
+
+func schemaExamples(values []Value) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if s := schemaValueString(value); s != "" {
+			out = append(out, s)
+		}
+	}
 	return out
 }
 
@@ -1104,6 +1124,17 @@ func richGenericBlockHover(a *Analysis, s LanguageSymbol, src []byte) string {
 	var b strings.Builder
 	writeHoverHeader(&b, string(s.Detail), s, src)
 	fmt.Fprintf(&b, "**What it does**\n\n`%s` is a `%s` block. BCL parses it as structured configuration, validates its fields and references, and normalizes it into the compiled JSON-compatible AST.\n\n", s.Name, emptyDefault(s.Detail, "block"))
+	if schema, ok := a.Schemas[s.Detail]; ok && schema.Command != nil {
+		b.WriteString("**Command contract**\n\n")
+		b.WriteString(commandSchemaMarkdown(schema.Command))
+		if schema.Description != "" {
+			fmt.Fprintf(&b, "\n%s\n", schema.Description)
+		}
+		if len(schema.Examples) > 0 {
+			fmt.Fprintf(&b, "\nExamples: `%s`\n", strings.Join(schema.Examples, "`, `"))
+		}
+		b.WriteString("\n")
+	}
 	if len(assigns) > 0 {
 		b.WriteString("**Realtime fields**\n\n")
 		b.WriteString("| Field | Current value | Value kind |\n|---|---|---|\n")
@@ -1129,6 +1160,32 @@ func richGenericBlockHover(a *Analysis, s LanguageSymbol, src []byte) string {
 	b.WriteString("\n**Output / result**\n\n- Emits a normalized block entry with its type, ID, fields, and nested body.\n\n")
 	writeHoverCommands(&b)
 	return b.String()
+}
+
+func commandSchemaMarkdown(command *CommandSchema) string {
+	if command == nil {
+		return ""
+	}
+	var lines []string
+	if command.Kind != "" {
+		lines = append(lines, "- Kind: `"+command.Kind+"`")
+	}
+	if command.Phase != "" {
+		lines = append(lines, "- Phase: `"+command.Phase+"`")
+	}
+	if command.Repeatable {
+		lines = append(lines, "- Repeatable child command")
+	}
+	if len(command.AllowedChildren) > 0 {
+		lines = append(lines, "- Child commands: `"+strings.Join(command.AllowedChildren, "`, `")+"`")
+	}
+	if len(command.RequiredChildren) > 0 {
+		lines = append(lines, "- Required child commands: `"+strings.Join(command.RequiredChildren, "`, `")+"`")
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "- Declarative command block")
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func richAssignmentHover(a *Analysis, s LanguageSymbol, src []byte) string {

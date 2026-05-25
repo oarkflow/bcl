@@ -1,23 +1,52 @@
 schema Migration {
+  command
+  kind "migration"
+  phase "plan"
+  children ["Up", "Down"]
+  required_children ["Up", "Down"]
+  examples ["Migration \"create_users\" { Up { CreateTable \"users\" {} } Down { DropTable \"users\" {} } }"]
   optional Version string
   optional Description string
   optional Connection string
 }
 
 schema Up {
+  command
+  kind "migration"
+  phase "apply"
+  children ["CreateTable", "DropTable"]
+  repeatable true
 }
 
 schema Down {
+  command
+  kind "migration"
+  phase "rollback"
+  children ["CreateTable", "DropTable"]
+  repeatable true
 }
 
 schema CreateTable {
+  command
+  kind "database"
+  phase "apply"
+  children ["Column"]
+  repeatable true
 }
 
 schema DropTable {
+  command
+  kind "database"
+  phase "rollback"
+  repeatable true
   optional Cascade bool
 }
 
 schema Column {
+  command
+  kind "database"
+  phase "plan"
+  repeatable true
   optional type string
   optional primary_key bool
   optional auto_increment bool
@@ -29,6 +58,11 @@ schema Column {
 }
 
 schema network {
+  command
+  kind "network"
+  phase "plan"
+  children ["device", "connection", "automation"]
+  required_children ["device"]
 }
 
 schema device {
@@ -51,6 +85,10 @@ schema automation {
 }
 
 schema sources {
+  command
+  kind "data"
+  phase "plan"
+  repeatable true
   optional type string
   optional key string
   optional host string
@@ -63,12 +101,20 @@ schema sources {
 }
 
 schema destinations {
+  command
+  kind "data"
+  phase "plan"
+  repeatable true
   optional type string
   optional key string
   optional file string
 }
 
 schema tables {
+  command
+  kind "data"
+  phase "apply"
+  repeatable true
   optional old_name string
   optional migrate bool
   optional clone_source bool

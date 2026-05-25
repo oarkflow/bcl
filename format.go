@@ -81,6 +81,7 @@ func writeNode(b *bytes.Buffer, n Node, indent int) {
 		fmt.Fprintf(b, "%stype %s = %s\n", pad, x.Name, x.Type)
 	case *SchemaDecl:
 		fmt.Fprintf(b, "%sschema %s {\n", pad, x.Name)
+		writeSchemaDeclClauses(b, x, indent+1)
 		for _, f := range x.Fields {
 			writeSchemaField(b, f, indent+1)
 		}
@@ -117,6 +118,48 @@ func writeNode(b *bytes.Buffer, n Node, indent int) {
 		writeNodes(b, x.Body, indent+1)
 		fmt.Fprintf(b, "%s}\n", pad)
 	}
+}
+
+func writeSchemaDeclClauses(b *bytes.Buffer, s *SchemaDecl, indent int) {
+	pad := strings.Repeat("  ", indent)
+	if s.Command != nil {
+		fmt.Fprintf(b, "%scommand\n", pad)
+		if s.Command.Kind != "" {
+			fmt.Fprintf(b, "%skind %s\n", pad, quoteBCLString(s.Command.Kind))
+		}
+		if s.Command.Phase != "" {
+			fmt.Fprintf(b, "%sphase %s\n", pad, quoteBCLString(s.Command.Phase))
+		}
+		if len(s.Command.AllowedChildren) > 0 {
+			fmt.Fprintf(b, "%schildren ", pad)
+			writeValue(b, stringListValue(s.Command.AllowedChildren), indent)
+			b.WriteByte('\n')
+		}
+		if len(s.Command.RequiredChildren) > 0 {
+			fmt.Fprintf(b, "%srequired_children ", pad)
+			writeValue(b, stringListValue(s.Command.RequiredChildren), indent)
+			b.WriteByte('\n')
+		}
+		if s.Command.Repeatable {
+			fmt.Fprintf(b, "%srepeatable true\n", pad)
+		}
+	}
+	if s.Description != "" {
+		fmt.Fprintf(b, "%sdescription %s\n", pad, quoteBCLString(s.Description))
+	}
+	if len(s.Examples) > 0 {
+		fmt.Fprintf(b, "%sexamples ", pad)
+		writeValue(b, &List{Items: s.Examples}, indent)
+		b.WriteByte('\n')
+	}
+}
+
+func stringListValue(values []string) *List {
+	items := make([]Value, 0, len(values))
+	for _, value := range values {
+		items = append(items, &Literal{Type: "string", Data: value})
+	}
+	return &List{Items: items}
 }
 
 func hasComments(src []byte) bool {

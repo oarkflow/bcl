@@ -484,6 +484,83 @@ func TestRichGenericBlockHoverListsFieldsChildrenAndReferences(t *testing.T) {
 	}
 }
 
+func TestCommandSchemaCompletionAndHover(t *testing.T) {
+	src := []byte(`
+bcl {
+  version "1.0"
+}
+
+schema Migration {
+  command
+  kind migration
+  phase plan
+  children [Up]
+  required_children [Up]
+  description "Database migration command family."
+}
+
+schema Up {
+  command
+}
+
+Migration "create_users" {
+  Up {}
+}
+`)
+	a, diags := AnalyzeFile("command-hover.bcl", src, nil)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %#v", diags)
+	}
+	var sawCompletion bool
+	for _, c := range a.Completions {
+		if c.Label == "Migration" && c.Kind == "command" {
+			sawCompletion = true
+			break
+		}
+	}
+	if !sawCompletion {
+		t.Fatalf("missing command completion: %#v", a.Completions)
+	}
+	var sym LanguageSymbol
+	for _, candidate := range flattenSymbols(a.Symbols) {
+		if candidate.Name == "Migration.create_users" {
+			sym = candidate
+			break
+		}
+	}
+	if sym.Name == "" {
+		t.Fatal("expected Migration symbol")
+	}
+	hover := RichHoverMarkdown(a, sym, src)
+	for _, want := range []string{"Command contract", "Kind: `migration`", "Child commands: `Up`", "Database migration command family"} {
+		if !strings.Contains(hover, want) {
+			t.Fatalf("command hover missing %q:\n%s", want, hover)
+		}
+	}
+}
+
+func TestCommandSchemaDocsIncludeContract(t *testing.T) {
+	doc, err := Parse([]byte(`
+schema Migration {
+  command
+  kind migration
+  phase plan
+  children [Up]
+  required_children [Up]
+  examples ["Migration \"x\" {}"]
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs := string(GenerateDocs(doc))
+	for _, want := range []string{"Command schema", "kind `migration`", "Child commands: `Up`", "Required child commands: `Up`"} {
+		if !strings.Contains(docs, want) {
+			t.Fatalf("docs missing %q:\n%s", want, docs)
+		}
+	}
+}
+
 func TestAssignmentHoverListsGenericReferencedItems(t *testing.T) {
 	src := genericReferenceHoverFixture()
 	a, diags := AnalyzeFile("generic.bcl", src, nil)

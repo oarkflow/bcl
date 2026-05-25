@@ -108,9 +108,12 @@ func (*TypeDecl) node()           {}
 func (t *TypeDecl) GetSpan() Span { return t.Span }
 
 type SchemaDecl struct {
-	Name   string        `json:"name"`
-	Fields []SchemaField `json:"fields"`
-	Span   Span          `json:"span,omitempty"`
+	Name        string         `json:"name"`
+	Fields      []SchemaField  `json:"fields"`
+	Command     *CommandSchema `json:"command,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Examples    []Value        `json:"examples,omitempty"`
+	Span        Span           `json:"span,omitempty"`
 }
 
 func (*SchemaDecl) node()           {}
@@ -133,6 +136,14 @@ type SchemaField struct {
 	Format      string        `json:"format,omitempty"`
 	Examples    []Value       `json:"examples,omitempty"`
 	Span        Span          `json:"span,omitempty"`
+}
+
+type CommandSchema struct {
+	Kind             string   `json:"kind,omitempty"`
+	Phase            string   `json:"phase,omitempty"`
+	AllowedChildren  []string `json:"children,omitempty"`
+	RequiredChildren []string `json:"required_children,omitempty"`
+	Repeatable       bool     `json:"repeatable,omitempty"`
 }
 
 type Value interface {

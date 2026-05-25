@@ -32,6 +32,7 @@ type Options struct {
 	LockfilePath         string
 	BaseDir              string
 	Redact               bool
+	CommandRegistry      *CommandRegistry
 }
 
 func Compile(doc *Document, opts *Options) (*Normalized, error) {
@@ -74,6 +75,7 @@ func Compile(doc *Document, opts *Options) (*Normalized, error) {
 	c.indexBlocks(items)
 	c.loadEnvFiles(doc.Span, envFileDecls(items))
 	c.collect(items)
+	c.applyCommandRegistry()
 	c.emit(items, c.out.Body)
 	if opts.Profile == "" {
 		if p, ok := c.out.Body["active_profile"].(string); ok {
@@ -87,6 +89,30 @@ func Compile(doc *Document, opts *Options) (*Normalized, error) {
 		return c.out, c.errs
 	}
 	return c.out, nil
+}
+
+func (c *compiler) applyCommandRegistry() {
+	if c.opts == nil || c.opts.CommandRegistry == nil {
+		return
+	}
+	for name, spec := range c.opts.CommandRegistry.Specs() {
+		raw, _ := c.out.Schemas[name].(map[string]any)
+		if raw == nil {
+			raw = map[string]any{"fields": []map[string]any{}}
+		}
+		raw["command"] = commandSpecToMap(spec)
+		if spec.Description != "" {
+			raw["description"] = spec.Description
+		}
+		if len(spec.Examples) > 0 {
+			raw["examples"] = append([]string(nil), spec.Examples...)
+		}
+		c.out.Schemas[name] = raw
+	}
+}
+
+func commandSpecToMap(spec CommandSpec) map[string]any {
+	return commandSchemaToMap(commandSchemaFromSpec(spec))
 }
 
 type compiler struct {
@@ -1101,7 +1127,41 @@ func (c *compiler) applyOverrides() {
 }
 
 func schemaToMap(s *SchemaDecl, c *compiler) any {
-	return map[string]any{"fields": schemaFieldsToMaps(s.Fields, c)}
+	out := map[string]any{"fields": schemaFieldsToMaps(s.Fields, c)}
+	if s.Description != "" {
+		out["description"] = s.Description
+	}
+	if len(s.Examples) > 0 {
+		vals := make([]any, 0, len(s.Examples))
+		for _, v := range s.Examples {
+			vals = append(vals, c.value(v))
+		}
+		out["examples"] = vals
+	}
+	if s.Command != nil {
+		out["command"] = commandSchemaToMap(s.Command)
+	}
+	return out
+}
+
+func commandSchemaToMap(s *CommandSchema) map[string]any {
+	out := map[string]any{}
+	if s.Kind != "" {
+		out["kind"] = s.Kind
+	}
+	if s.Phase != "" {
+		out["phase"] = s.Phase
+	}
+	if len(s.AllowedChildren) > 0 {
+		out["children"] = append([]string(nil), s.AllowedChildren...)
+	}
+	if len(s.RequiredChildren) > 0 {
+		out["required_children"] = append([]string(nil), s.RequiredChildren...)
+	}
+	if s.Repeatable {
+		out["repeatable"] = true
+	}
+	return out
 }
 
 func schemaFieldsToMaps(schemaFields []SchemaField, c *compiler) []map[string]any {

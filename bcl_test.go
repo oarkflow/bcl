@@ -618,3 +618,119 @@ Migration "b" {
 		}
 	}
 }
+
+func TestCommandSchemaMetadataCompilesAndValidatesChildren(t *testing.T) {
+	doc, err := Parse([]byte(`
+schema Migration {
+  command
+  kind migration
+  phase plan
+  children [Up, Down]
+  required_children [Up, Down]
+}
+
+schema Up {
+  command
+  repeatable true
+}
+
+schema Down {
+  command
+  repeatable true
+}
+
+Migration "ok" {
+  Up {}
+  Down {}
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	diags := Validate(doc, &Options{Strict: true})
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %#v", diags)
+	}
+	n, err := Compile(doc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := n.Schemas["Migration"].(map[string]any)
+	command := schema["command"].(map[string]any)
+	if command["kind"] != "migration" || command["phase"] != "plan" {
+		t.Fatalf("missing command metadata: %#v", command)
+	}
+	children := command["children"].([]string)
+	if len(children) != 2 || children[0] != "Up" || children[1] != "Down" {
+		t.Fatalf("bad children metadata: %#v", command)
+	}
+}
+
+func TestCommandSchemaValidationRejectsMissingAndUnknownChildren(t *testing.T) {
+	doc, err := Parse([]byte(`
+schema Migration {
+  command
+  children [Up]
+  required_children [Up]
+}
+
+schema Up {
+  command
+}
+
+schema Down {
+  command
+}
+
+Migration "bad" {
+  Down {}
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	diags := Validate(doc, &Options{Strict: true})
+	var missing, unknown bool
+	for _, d := range diags {
+		if strings.Contains(d.Message, "requires child command Up") {
+			missing = true
+		}
+		if strings.Contains(d.Message, "does not allow child command Down") {
+			unknown = true
+		}
+	}
+	if !missing || !unknown {
+		t.Fatalf("expected missing and unknown child diagnostics: %#v", diags)
+	}
+}
+
+func TestCommandRegistryValidationAndMetadata(t *testing.T) {
+	doc, err := Parse([]byte(`
+External "job" {
+  enabled false
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := NewCommandRegistry(CommandSpec{
+		Type:  "External",
+		Kind:  "host",
+		Phase: "apply",
+		Validate: func(ctx CommandValidationContext) []Diagnostic {
+			return []Diagnostic{{Severity: "warning", Message: ctx.Block.Type + " validated by registry", Span: ctx.Block.Span}}
+		},
+	})
+	diags := Validate(doc, &Options{CommandRegistry: registry})
+	if len(diags) != 1 || !strings.Contains(diags[0].Message, "validated by registry") {
+		t.Fatalf("expected registry diagnostic: %#v", diags)
+	}
+	n, err := Compile(doc, &Options{CommandRegistry: registry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := n.Schemas["External"].(map[string]any)["command"].(map[string]any)
+	if command["kind"] != "host" || command["phase"] != "apply" {
+		t.Fatalf("missing registry command metadata: %#v", command)
+	}
+}

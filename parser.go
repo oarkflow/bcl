@@ -457,7 +457,91 @@ func (p *parser) parseSchema() Node {
 			}
 			return s
 		}
+		if p.peek().kind == tokIdent && p.peek().text != "required" && p.peek().text != "optional" {
+			p.parseSchemaDeclClause(s)
+			continue
+		}
 		s.Fields = append(s.Fields, p.parseSchemaField())
+	}
+}
+
+func (p *parser) parseSchemaDeclClause(s *SchemaDecl) {
+	key := p.next()
+	switch key.text {
+	case "command":
+		if s.Command == nil {
+			s.Command = &CommandSchema{}
+		}
+	case "kind":
+		if s.Command == nil {
+			s.Command = &CommandSchema{}
+		}
+		s.Command.Kind = p.schemaStringClause()
+	case "phase":
+		if s.Command == nil {
+			s.Command = &CommandSchema{}
+		}
+		s.Command.Phase = p.schemaStringClause()
+	case "children":
+		if s.Command == nil {
+			s.Command = &CommandSchema{}
+		}
+		s.Command.AllowedChildren = schemaStringList(p.parseValue())
+	case "required_children":
+		if s.Command == nil {
+			s.Command = &CommandSchema{}
+		}
+		s.Command.RequiredChildren = schemaStringList(p.parseValue())
+	case "repeatable":
+		if s.Command == nil {
+			s.Command = &CommandSchema{}
+		}
+		if p.peek().kind == tokNewline || p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+			s.Command.Repeatable = true
+			return
+		}
+		if lit, ok := p.parseValue().(*Literal); ok {
+			if b, ok := lit.Data.(bool); ok {
+				s.Command.Repeatable = b
+			}
+		}
+	case "description", "doc":
+		s.Description = p.schemaStringClause()
+	case "examples":
+		if l, ok := p.parseValue().(*List); ok {
+			s.Examples = l.Items
+		}
+	default:
+		p.skipLineTail()
+	}
+}
+
+func schemaStringList(v Value) []string {
+	switch x := v.(type) {
+	case *List:
+		out := make([]string, 0, len(x.Items))
+		for _, item := range x.Items {
+			if s := schemaValueString(item); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		if s := schemaValueString(v); s != "" {
+			return []string{s}
+		}
+	}
+	return nil
+}
+
+func schemaValueString(v Value) string {
+	switch x := v.(type) {
+	case *Literal:
+		return literalScalar(x)
+	case *Reference:
+		return x.Path
+	default:
+		return ""
 	}
 }
 

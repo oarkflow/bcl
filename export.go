@@ -67,12 +67,44 @@ func GenerateDocs(doc *Document) []byte {
 		switch x := n.(type) {
 		case *SchemaDecl:
 			fmt.Fprintf(&b, "## Schema `%s`\n\n", x.Name)
+			if x.Description != "" {
+				fmt.Fprintf(&b, "%s\n\n", x.Description)
+			}
+			if x.Command != nil {
+				b.WriteString("Command schema")
+				var parts []string
+				if x.Command.Kind != "" {
+					parts = append(parts, "kind `"+x.Command.Kind+"`")
+				}
+				if x.Command.Phase != "" {
+					parts = append(parts, "phase `"+x.Command.Phase+"`")
+				}
+				if x.Command.Repeatable {
+					parts = append(parts, "repeatable")
+				}
+				if len(parts) > 0 {
+					b.WriteString(": " + strings.Join(parts, ", "))
+				}
+				b.WriteString(".\n\n")
+				if len(x.Command.AllowedChildren) > 0 {
+					fmt.Fprintf(&b, "- Child commands: `%s`\n", strings.Join(x.Command.AllowedChildren, "`, `"))
+				}
+				if len(x.Command.RequiredChildren) > 0 {
+					fmt.Fprintf(&b, "- Required child commands: `%s`\n", strings.Join(x.Command.RequiredChildren, "`, `"))
+				}
+				if len(x.Command.AllowedChildren) > 0 || len(x.Command.RequiredChildren) > 0 {
+					b.WriteByte('\n')
+				}
+			}
 			for _, f := range x.Fields {
 				req := "optional"
 				if f.Required {
 					req = "required"
 				}
 				fmt.Fprintf(&b, "- `%s` `%s` %s\n", f.Name, f.Type, req)
+			}
+			for _, ex := range x.Examples {
+				fmt.Fprintf(&b, "- Example: `%v`\n", ex.ToInterface(false))
 			}
 			b.WriteByte('\n')
 		case *TypeDecl:

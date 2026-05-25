@@ -85,6 +85,8 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 	}
 	walk(doc.Items, 0, "")
 	validateSchemas(doc.Items, schemas, aliases, &diags)
+	validateCommandSchemas(doc.Items, schemas, &diags)
+	validateCommandRegistry(doc.Items, schemas, opts, &diags)
 	validateReferences(blocks, refs, &diags)
 	validateCycles(blocks, refs, &diags)
 	validateWorkflowGraphs(doc.Items, &diags)
@@ -97,6 +99,87 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 		validateUnknownSchemaFields(doc.Items, schemas, &diags)
 	}
 	return diags
+}
+
+func validateCommandSchemas(nodes []Node, schemas map[string]*SchemaDecl, diags *[]Diagnostic) {
+	for _, n := range nodes {
+		b, ok := n.(*Block)
+		if !ok {
+			continue
+		}
+		if schema := schemas[b.Type]; schema != nil && schema.Command != nil {
+			validateCommandBlockShape(b, schema.Command, schemas, diags)
+		}
+		validateCommandSchemas(b.Body, schemas, diags)
+	}
+}
+
+func validateCommandRegistry(nodes []Node, schemas map[string]*SchemaDecl, opts *Options, diags *[]Diagnostic) {
+	if opts == nil || opts.CommandRegistry == nil {
+		return
+	}
+	var walk func([]Node)
+	walk = func(nodes []Node) {
+		for _, n := range nodes {
+			b, ok := n.(*Block)
+			if !ok {
+				continue
+			}
+			if spec, ok := opts.CommandRegistry.Spec(b.Type); ok {
+				if schema := schemas[b.Type]; schema == nil || schema.Command == nil {
+					validateCommandBlockShape(b, commandSchemaFromSpec(spec), schemas, diags)
+				}
+				ctx := CommandValidationContext{Block: b, Spec: spec, Schemas: schemas}
+				if spec.Validate != nil {
+					*diags = append(*diags, spec.Validate(ctx)...)
+				}
+				for _, validate := range opts.CommandRegistry.validators {
+					*diags = append(*diags, validate(ctx)...)
+				}
+			}
+			walk(b.Body)
+		}
+	}
+	walk(nodes)
+}
+
+func commandSchemaFromSpec(spec CommandSpec) *CommandSchema {
+	return &CommandSchema{
+		Kind:             spec.Kind,
+		Phase:            spec.Phase,
+		AllowedChildren:  append([]string(nil), spec.AllowedChildren...),
+		RequiredChildren: append([]string(nil), spec.RequiredChildren...),
+		Repeatable:       spec.Repeatable,
+	}
+}
+
+func validateCommandBlockShape(b *Block, spec *CommandSchema, schemas map[string]*SchemaDecl, diags *[]Diagnostic) {
+	if spec == nil {
+		return
+	}
+	allowed := map[string]bool{}
+	for _, name := range spec.AllowedChildren {
+		allowed[name] = true
+	}
+	present := map[string]int{}
+	for _, item := range b.Body {
+		child, ok := item.(*Block)
+		if !ok {
+			continue
+		}
+		present[child.Type]++
+		if len(allowed) > 0 && !allowed[child.Type] {
+			*diags = append(*diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("%s %q does not allow child command %s", b.Type, b.ID, child.Type), Span: child.Span})
+		}
+		if childSchema := schemas[child.Type]; childSchema != nil && childSchema.Command != nil && !childSchema.Command.Repeatable && present[child.Type] > 1 {
+			*diags = append(*diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("child command %s is not repeatable under %s %q", child.Type, b.Type, b.ID), Span: child.Span})
+		}
+	}
+	for _, name := range spec.RequiredChildren {
+		if present[name] == 0 {
+			*diags = append(*diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("%s %q requires child command %s", b.Type, b.ID, name), Span: b.Span})
+		}
+	}
 }
 
 func collectSchemaNames(nodes []Node) map[string]bool {
