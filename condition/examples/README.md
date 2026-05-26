@@ -18,6 +18,7 @@ go run ./examples/dynamic-pricing
 go run ./examples/procurement-approval
 go run ./examples/support-routing
 go run ./examples/api-traffic-control
+go run ./examples/http-auth-guard
 go run ./examples/manufacturing-iot
 go run ./examples/hr-leave-approval
 go run ./examples/education-scholarship
@@ -58,6 +59,7 @@ Production server configuration examples live in `production-server`. They are n
 * `procurement-approval`: vendor risk, budget policy, purchase order automation, and approval chains.
 * `support-routing`: SLA handling, security escalation, enterprise support, and self-service routing.
 * `api-traffic-control`: bot blocking, tenant quotas, throttling, and gateway routing.
+* `http-auth-guard`: global HTTP middleware, authentication guardrails, and RBAC/ABAC/ACL endpoint authorization.
 * `manufacturing-iot`: sensor thresholds, machine shutdown, maintenance review, and production continuity.
 * `hr-leave-approval`: leave balances, staffing coverage, blackout periods, and manager review.
 * `education-scholarship`: student eligibility, committee review, and merit/need scholarship awards.
@@ -84,3 +86,9 @@ Production server configuration examples live in `production-server`. They are n
 * `autonomous-remediation`: SRE runbook guardrails, blast-radius checks, confidence thresholds, and human-in-the-loop approval.
 
 The examples duplicate their small amount of Condition service bootstrapping on purpose so each one can be copied into a real application without also copying a demo runner. The domain logic is deliberately different across examples: KYC builds evidence packages, support computes queue/SLA routing, payments enrich authorizations, logistics scores carrier lanes, data governance rewrites query access, temporal risk computes rolling windows, graph risk links related entities, recommendations rank offers before applying policy, and autonomous remediation turns observability signals into guarded runbooks.
+
+`http-auth-guard` can also run as a curlable server:
+
+```sh
+go run ./examples/http-auth-guard --serve --addr :8080
+```
