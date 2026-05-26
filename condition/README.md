@@ -47,12 +47,13 @@ go run ./cmd/condition versions payment-risk
 go run ./cmd/condition activate payment-risk 1
 go run ./cmd/condition evaluate payment-risk --decision payment_risk --input ./examples/payment-risk/inputs/authorize.json --compact
 go run ./cmd/condition rollback payment-risk 1
+go run ./cmd/condition canary payment-risk --candidate ./candidate.bcl --dataset payment_risk_batch --max-changed 0
 go run ./cmd/condition audits --definition payment-risk --operation evaluate --limit 50
 go run ./cmd/condition reports --kind simulation
 go run ./cmd/condition audit verify
 ```
 
-Every command accepts `--config`; explicit command flags override config values. BCL is the native config format for Condition, and JSON/YAML remain supported for compatibility. A config file can set the address, environment, store kind/path, request timeout, body limit, rate limit, HTTP server timeouts, TLS files, trusted proxy CIDRs, and `.authz` policy path.
+Every command accepts `--config`; explicit command flags override config values. BCL is the native config format for Condition, and JSON/YAML remain supported for compatibility. A config file can set the address, environment, default tenant, store kind/path, request timeout, body limit, runtime policy, rate limit, HTTP server timeouts, TLS files, trusted proxy CIDRs, and `.authz` policy path. CLI commands also accept `--tenant`, defaulting to `default`.
 
 Production config example:
 
@@ -82,12 +83,22 @@ store {
 
 service {
   environment "production"
+  default_tenant "default"
   request_timeout "5s"
   max_request_bytes 1048576
   strict_validation true
   strict_evaluation true
   require_tests true
   require_activation_approval true
+
+  runtime {
+    fixed_time "2026-05-26T00:00:00Z"
+    allow_env false
+    allowed_dataset_adapters ["file"]
+    allowed_http_hosts []
+    allowed_http_methods ["GET"]
+    external_timeout "2s"
+  }
 }
 
 rate_limit {
@@ -96,7 +107,7 @@ rate_limit {
 }
 ```
 
-Audit writes are fail-closed: if the audit sink cannot read the previous hash or append the new sealed record, publish/evaluate/lifecycle operations return an error instead of continuing silently. SQLite stores enable foreign keys, busy timeout, WAL mode for file databases, and bounded connection pools. `X-Forwarded-For` and `X-Real-IP` are ignored unless the immediate peer is listed in `trusted_proxies`.
+Audit writes are fail-closed: if the audit sink cannot read the previous hash or append the new sealed record, publish/evaluate/lifecycle operations return an error instead of continuing silently. Definitions, active versions, audits, reports, and workflows are tenant-partitioned; HTTP requests use `X-Tenant-ID`. Runtime policy is deny-by-default for external datasets, and file/HTTP access must be explicitly allowed. SQLite stores enable foreign keys, busy timeout, WAL mode for file databases, and bounded connection pools. `X-Forwarded-For` and `X-Real-IP` are ignored unless the immediate peer is listed in `trusted_proxies`.
 
 A complete runnable BCL server config is in `examples/production-server`.
 
@@ -132,6 +143,8 @@ curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' -d '{"can
   http://localhost:8080/v1/definitions/payment-risk/simulate
 curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' -d '{"candidate_path":"./candidate.bcl","cases":[]}' \
   http://localhost:8080/v1/definitions/payment-risk/compare
+curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' -d '{"candidate_path":"./candidate.bcl","dataset":"payment_risk_batch","max_changed_cases":0,"require_no_errors":true,"promote":true,"promote_version":"2"}' \
+  http://localhost:8080/v1/definitions/payment-risk/canary
 
 curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' -d '{"input":{"transaction":{"amount":100000}}}' \
   http://localhost:8080/v1/definitions/case-review-workflow/workflows/manual_review/start

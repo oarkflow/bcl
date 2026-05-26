@@ -25,12 +25,12 @@ func NewFileStore(root string) (*FileStore, error) {
 		root = ".condition"
 	}
 	s := &FileStore{root: root}
-	for _, dir := range []string{s.definitionsDir(), s.reportsDir()} {
+	for _, dir := range []string{s.definitionsDir("default"), s.reportsDir("default")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(s.auditPath()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.auditPath("default")), 0o755); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -49,7 +49,7 @@ func (s *FileStore) GetDefinition(ctx context.Context, name string) (DefinitionR
 
 func (s *FileStore) getLegacyDefinition(name string) (DefinitionRecord, error) {
 	var record DefinitionRecord
-	if err := readJSONFile(s.definitionPath(name), &record); err != nil {
+	if err := readJSONFile(filepath.Join(s.legacyDefinitionsDir(), safeName(name)+".json"), &record); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return DefinitionRecord{}, fmt.Errorf("unknown definition %q", name)
 		}
@@ -59,19 +59,33 @@ func (s *FileStore) getLegacyDefinition(name string) (DefinitionRecord, error) {
 }
 
 func (s *FileStore) ListDefinitions(ctx context.Context) ([]DefinitionRecord, error) {
-	entries, err := os.ReadDir(s.definitionsDir())
+	tenant := TenantFromContext(ctx)
+	entries, err := os.ReadDir(s.definitionsDir(tenant))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			if tenant == "default" {
+				entries, err = os.ReadDir(s.legacyDefinitionsDir())
+				if err != nil {
+					if errors.Is(err, os.ErrNotExist) {
+						return nil, nil
+					}
+					return nil, err
+				}
+			} else {
+				return nil, nil
+			}
 		}
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
 	}
 	var out []DefinitionRecord
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			if filepath.Ext(entry.Name()) == ".json" {
 				var record DefinitionRecord
-				if err := readJSONFile(filepath.Join(s.definitionsDir(), entry.Name()), &record); err == nil {
+				if err := readJSONFile(filepath.Join(s.definitionsDir(tenant), entry.Name()), &record); err == nil {
+					record.TenantID = firstTenant(record.TenantID)
 					out = append(out, record)
 				}
 			}
@@ -86,18 +100,26 @@ func (s *FileStore) ListDefinitions(ctx context.Context) ([]DefinitionRecord, er
 	return out, nil
 }
 
-func (s *FileStore) SaveDefinitionVersion(_ context.Context, record DefinitionRecord) error {
+func (s *FileStore) SaveDefinitionVersion(ctx context.Context, record DefinitionRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if record.Environment == "" {
 		record.Environment = "development"
 	}
-	return writeJSONFile(s.definitionVersionPath(record.Name, record.Version, record.Environment), record)
+	record.TenantID = firstTenant(firstNonEmpty(record.TenantID, TenantFromContext(ctx)))
+	return writeJSONFile(s.definitionVersionPath(record.TenantID, record.Name, record.Version, record.Environment), record)
 }
 
-func (s *FileStore) GetDefinitionVersion(_ context.Context, name, version, environment string) (DefinitionRecord, error) {
+func (s *FileStore) GetDefinitionVersion(ctx context.Context, name, version, environment string) (DefinitionRecord, error) {
 	var record DefinitionRecord
-	if err := readJSONFile(s.definitionVersionPath(name, version, environment), &record); err != nil {
+	tenant := TenantFromContext(ctx)
+	if err := readJSONFile(s.definitionVersionPath(tenant, name, version, environment), &record); err != nil {
+		if tenant == "default" {
+			if legacyErr := readJSONFile(s.legacyDefinitionVersionPath(name, version, environment), &record); legacyErr == nil {
+				record.TenantID = "default"
+				return record, nil
+			}
+		}
 		if errors.Is(err, os.ErrNotExist) {
 			return DefinitionRecord{}, fmt.Errorf("unknown definition %q version %q", name, version)
 		}
@@ -106,13 +128,17 @@ func (s *FileStore) GetDefinitionVersion(_ context.Context, name, version, envir
 	return record, nil
 }
 
-func (s *FileStore) ListDefinitionVersions(_ context.Context, name, environment string) ([]DefinitionRecord, error) {
-	dir := filepath.Join(s.definitionsDir(), safeName(name))
+func (s *FileStore) ListDefinitionVersions(ctx context.Context, name, environment string) ([]DefinitionRecord, error) {
+	tenant := TenantFromContext(ctx)
+	dir := filepath.Join(s.definitionsDir(tenant), safeName(name))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			if legacy, legacyErr := s.getLegacyDefinition(name); legacyErr == nil {
-				return []DefinitionRecord{legacy}, nil
+			if tenant == "default" {
+				if legacy, legacyErr := s.getLegacyDefinition(name); legacyErr == nil {
+					legacy.TenantID = "default"
+					return []DefinitionRecord{legacy}, nil
+				}
 			}
 			return nil, nil
 		}
@@ -127,6 +153,7 @@ func (s *FileStore) ListDefinitionVersions(_ context.Context, name, environment 
 		if err := readJSONFile(filepath.Join(dir, entry.Name()), &record); err != nil {
 			return nil, err
 		}
+		record.TenantID = firstTenant(record.TenantID)
 		if environment == "" || record.Environment == firstEnv(environment) {
 			out = append(out, record)
 		}
@@ -141,34 +168,44 @@ func (s *FileStore) ActivateDefinition(ctx context.Context, name, version, envir
 		return err
 	}
 	active := ActiveDefinition{Name: name, Version: version, Environment: firstEnv(environment), ActivatedAt: nowUTC()}
+	active.TenantID = TenantFromContext(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := writeJSONFile(s.activePath(name, environment), active); err != nil {
+	if err := writeJSONFile(s.activePath(active.TenantID, name, environment), active); err != nil {
 		return err
 	}
-	return writeJSONFile(s.definitionPath(name), record)
+	return writeJSONFile(s.definitionPath(active.TenantID, name), record)
 }
 
 func (s *FileStore) GetActiveDefinition(ctx context.Context, name, environment string) (DefinitionRecord, error) {
 	var active ActiveDefinition
-	if err := readJSONFile(s.activePath(name, environment), &active); err == nil {
+	tenant := TenantFromContext(ctx)
+	if err := readJSONFile(s.activePath(tenant, name, environment), &active); err == nil {
+		ctx = ContextWithTenant(ctx, active.TenantID)
 		return s.GetDefinitionVersion(ctx, name, active.Version, active.Environment)
 	}
-	return s.getLegacyDefinition(name)
+	if tenant == "default" {
+		record, err := s.getLegacyDefinition(name)
+		record.TenantID = "default"
+		return record, err
+	}
+	return DefinitionRecord{}, fmt.Errorf("unknown definition %q", name)
 }
 
-func (s *FileStore) SaveReport(_ context.Context, report ReportRecord) error {
+func (s *FileStore) SaveReport(ctx context.Context, report ReportRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return writeJSONFile(filepath.Join(s.reportsDir(), safeName(report.Kind+"-"+report.ID)+".json"), report)
+	report.TenantID = firstTenant(firstNonEmpty(report.TenantID, TenantFromContext(ctx)))
+	return writeJSONFile(filepath.Join(s.reportsDir(report.TenantID), safeName(report.Kind+"-"+report.ID)+".json"), report)
 }
 
 func (s *FileStore) ListReports(_ context.Context, kind string) ([]ReportRecord, error) {
 	return s.ListReportsQuery(context.Background(), ListOptions{Kind: kind})
 }
 
-func (s *FileStore) ListReportsQuery(_ context.Context, opts ListOptions) ([]ReportRecord, error) {
-	entries, err := os.ReadDir(s.reportsDir())
+func (s *FileStore) ListReportsQuery(ctx context.Context, opts ListOptions) ([]ReportRecord, error) {
+	tenant := firstTenant(firstNonEmpty(opts.TenantID, TenantFromContext(ctx)))
+	entries, err := os.ReadDir(s.reportsDir(tenant))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -181,20 +218,21 @@ func (s *FileStore) ListReportsQuery(_ context.Context, opts ListOptions) ([]Rep
 			continue
 		}
 		var report ReportRecord
-		if err := readJSONFile(filepath.Join(s.reportsDir(), entry.Name()), &report); err != nil {
+		if err := readJSONFile(filepath.Join(s.reportsDir(tenant), entry.Name()), &report); err != nil {
 			return nil, err
 		}
-		if (opts.Kind == "" || report.Kind == opts.Kind) && (opts.Definition == "" || report.Definition == opts.Definition) && inRange(report.CreatedAt, opts) {
+		if firstTenant(report.TenantID) == tenant && (opts.Kind == "" || report.Kind == opts.Kind) && (opts.Definition == "" || report.Definition == opts.Definition) && inRange(report.CreatedAt, opts) {
 			out = append(out, report)
 		}
 	}
 	return ApplyListOptions(out, opts, nil), nil
 }
 
-func (s *FileStore) AppendAudit(_ context.Context, envelope audit.Envelope) error {
+func (s *FileStore) AppendAudit(ctx context.Context, envelope audit.Envelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	f, err := os.OpenFile(s.auditPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	envelope.TenantID = firstTenant(firstNonEmpty(envelope.TenantID, TenantFromContext(ctx)))
+	f, err := os.OpenFile(s.auditPath(envelope.TenantID), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -217,12 +255,13 @@ func (s *FileStore) LastAuditHash(ctx context.Context) (string, error) {
 	return records[len(records)-1].Hash, nil
 }
 
-func (s *FileStore) ListAudits(_ context.Context) ([]audit.Envelope, error) {
-	return s.ListAuditsQuery(context.Background(), ListOptions{})
+func (s *FileStore) ListAudits(ctx context.Context) ([]audit.Envelope, error) {
+	return s.ListAuditsQuery(ctx, ListOptions{})
 }
 
-func (s *FileStore) ListAuditsQuery(_ context.Context, opts ListOptions) ([]audit.Envelope, error) {
-	f, err := os.Open(s.auditPath())
+func (s *FileStore) ListAuditsQuery(ctx context.Context, opts ListOptions) ([]audit.Envelope, error) {
+	tenant := firstTenant(firstNonEmpty(opts.TenantID, TenantFromContext(ctx)))
+	f, err := os.Open(s.auditPath(tenant))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -237,7 +276,8 @@ func (s *FileStore) ListAuditsQuery(_ context.Context, opts ListOptions) ([]audi
 		if err := json.Unmarshal(scanner.Bytes(), &envelope); err != nil {
 			return nil, err
 		}
-		if (opts.Operation == "" || envelope.Operation == opts.Operation) &&
+		if firstTenant(envelope.TenantID) == tenant &&
+			(opts.Operation == "" || envelope.Operation == opts.Operation) &&
 			(opts.Definition == "" || envelope.Definition == opts.Definition) &&
 			(opts.Subject == "" || envelope.Subject == opts.Subject) &&
 			inRange(envelope.CompletedAt, opts) {
@@ -260,15 +300,17 @@ func (s *FileStore) GetAudit(ctx context.Context, id string) (audit.Envelope, er
 	return audit.Envelope{}, fmt.Errorf("unknown audit %q", id)
 }
 
-func (s *FileStore) SaveWorkflowRun(_ context.Context, run WorkflowRunRecord) error {
+func (s *FileStore) SaveWorkflowRun(ctx context.Context, run WorkflowRunRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return writeJSONFile(filepath.Join(s.workflowsDir(), safeName(run.ID)+".json"), run)
+	run.TenantID = firstTenant(firstNonEmpty(run.TenantID, TenantFromContext(ctx)))
+	return writeJSONFile(filepath.Join(s.workflowsDir(run.TenantID), safeName(run.ID)+".json"), run)
 }
 
-func (s *FileStore) GetWorkflowRun(_ context.Context, id string) (WorkflowRunRecord, error) {
+func (s *FileStore) GetWorkflowRun(ctx context.Context, id string) (WorkflowRunRecord, error) {
 	var run WorkflowRunRecord
-	if err := readJSONFile(filepath.Join(s.workflowsDir(), safeName(id)+".json"), &run); err != nil {
+	tenant := TenantFromContext(ctx)
+	if err := readJSONFile(filepath.Join(s.workflowsDir(tenant), safeName(id)+".json"), &run); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return WorkflowRunRecord{}, fmt.Errorf("unknown workflow run %q", id)
 		}
@@ -277,8 +319,9 @@ func (s *FileStore) GetWorkflowRun(_ context.Context, id string) (WorkflowRunRec
 	return run, nil
 }
 
-func (s *FileStore) ListWorkflowRuns(_ context.Context, opts ListOptions) ([]WorkflowRunRecord, error) {
-	entries, err := os.ReadDir(s.workflowsDir())
+func (s *FileStore) ListWorkflowRuns(ctx context.Context, opts ListOptions) ([]WorkflowRunRecord, error) {
+	tenant := firstTenant(firstNonEmpty(opts.TenantID, TenantFromContext(ctx)))
+	entries, err := os.ReadDir(s.workflowsDir(tenant))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -291,10 +334,10 @@ func (s *FileStore) ListWorkflowRuns(_ context.Context, opts ListOptions) ([]Wor
 			continue
 		}
 		var run WorkflowRunRecord
-		if err := readJSONFile(filepath.Join(s.workflowsDir(), entry.Name()), &run); err != nil {
+		if err := readJSONFile(filepath.Join(s.workflowsDir(tenant), entry.Name()), &run); err != nil {
 			return nil, err
 		}
-		if (opts.Definition == "" || run.Definition == opts.Definition) && (opts.Environment == "" || run.Environment == opts.Environment) && inRange(run.UpdatedAt, opts) {
+		if firstTenant(run.TenantID) == tenant && (opts.Definition == "" || run.Definition == opts.Definition) && (opts.Environment == "" || run.Environment == opts.Environment) && inRange(run.UpdatedAt, opts) {
 			out = append(out, run)
 		}
 	}
@@ -302,18 +345,30 @@ func (s *FileStore) ListWorkflowRuns(_ context.Context, opts ListOptions) ([]Wor
 	return ApplyListOptions(out, opts, nil), nil
 }
 
-func (s *FileStore) definitionsDir() string { return filepath.Join(s.root, "definitions") }
-func (s *FileStore) reportsDir() string     { return filepath.Join(s.root, "reports") }
-func (s *FileStore) auditPath() string      { return filepath.Join(s.root, "audit", "audit.jsonl") }
-func (s *FileStore) workflowsDir() string   { return filepath.Join(s.root, "workflows") }
-func (s *FileStore) definitionPath(name string) string {
-	return filepath.Join(s.definitionsDir(), safeName(name)+".json")
+func (s *FileStore) legacyDefinitionsDir() string { return filepath.Join(s.root, "definitions") }
+func (s *FileStore) definitionsDir(tenant string) string {
+	return filepath.Join(s.root, "definitions", safeName(firstTenant(tenant)))
 }
-func (s *FileStore) definitionVersionPath(name, version, environment string) string {
-	return filepath.Join(s.definitionsDir(), safeName(name), safeName(firstEnv(environment)+"-"+version)+".json")
+func (s *FileStore) reportsDir(tenant string) string {
+	return filepath.Join(s.root, "reports", safeName(firstTenant(tenant)))
 }
-func (s *FileStore) activePath(name, environment string) string {
-	return filepath.Join(s.definitionsDir(), safeName(name), "active-"+safeName(firstEnv(environment))+".json")
+func (s *FileStore) auditPath(tenant string) string {
+	return filepath.Join(s.root, "audit", safeName(firstTenant(tenant))+".jsonl")
+}
+func (s *FileStore) workflowsDir(tenant string) string {
+	return filepath.Join(s.root, "workflows", safeName(firstTenant(tenant)))
+}
+func (s *FileStore) definitionPath(tenant, name string) string {
+	return filepath.Join(s.definitionsDir(tenant), safeName(name)+".json")
+}
+func (s *FileStore) definitionVersionPath(tenant, name, version, environment string) string {
+	return filepath.Join(s.definitionsDir(tenant), safeName(name), safeName(firstEnv(environment)+"-"+version)+".json")
+}
+func (s *FileStore) legacyDefinitionVersionPath(name, version, environment string) string {
+	return filepath.Join(s.legacyDefinitionsDir(), safeName(name), safeName(firstEnv(environment)+"-"+version)+".json")
+}
+func (s *FileStore) activePath(tenant, name, environment string) string {
+	return filepath.Join(s.definitionsDir(tenant), safeName(name), "active-"+safeName(firstEnv(environment))+".json")
 }
 
 func writeJSONFile(path string, v any) error {

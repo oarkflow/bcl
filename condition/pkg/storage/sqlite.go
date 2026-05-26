@@ -89,14 +89,12 @@ func (s *SQLiteStore) SaveDefinitionVersion(ctx context.Context, record Definiti
 	if record.Environment == "" {
 		record.Environment = "development"
 	}
+	record.TenantID = firstTenant(firstNonEmpty(record.TenantID, TenantFromContext(ctx)))
 	metadata, _ := json.Marshal(record.Metadata)
-	_, err = s.db.ExecContext(ctx, `INSERT INTO condition_definition_versions
-(name, version, environment, source, source_path, digest, program_json, published_at, metadata_json)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(name, version, environment) DO UPDATE SET source=excluded.source,
-source_path=excluded.source_path, digest=excluded.digest, program_json=excluded.program_json,
-published_at=excluded.published_at, metadata_json=excluded.metadata_json`,
-		record.Name, record.Version, record.Environment, record.Source, record.SourcePath, record.Digest, string(payload), record.PublishedAt.Format(time.RFC3339Nano), string(metadata))
+	_, err = s.db.ExecContext(ctx, `INSERT OR REPLACE INTO condition_definition_versions
+(tenant_id, name, version, environment, source, source_path, digest, program_json, published_at, metadata_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.TenantID, record.Name, record.Version, record.Environment, record.Source, record.SourcePath, record.Digest, string(payload), record.PublishedAt.Format(time.RFC3339Nano), string(metadata))
 	return err
 }
 
@@ -105,7 +103,7 @@ func (s *SQLiteStore) GetDefinition(ctx context.Context, name string) (Definitio
 }
 
 func (s *SQLiteStore) GetDefinitionVersion(ctx context.Context, name, version, environment string) (DefinitionRecord, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT name, version, environment, source, source_path, digest, program_json, published_at, metadata_json FROM condition_definition_versions WHERE name = ? AND version = ? AND environment = ?`, name, version, firstEnv(environment))
+	row := s.db.QueryRowContext(ctx, `SELECT tenant_id, name, version, environment, source, source_path, digest, program_json, published_at, metadata_json FROM condition_definition_versions WHERE tenant_id = ? AND name = ? AND version = ? AND environment = ?`, TenantFromContext(ctx), name, version, firstEnv(environment))
 	record, err := scanDefinition(row)
 	if err == sql.ErrNoRows {
 		return DefinitionRecord{}, fmt.Errorf("unknown definition %q version %q", name, version)
@@ -114,10 +112,11 @@ func (s *SQLiteStore) GetDefinitionVersion(ctx context.Context, name, version, e
 }
 
 func (s *SQLiteStore) ListDefinitions(ctx context.Context) ([]DefinitionRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT v.name, v.version, v.environment, v.source, v.source_path, v.digest, v.program_json, v.published_at, v.metadata_json
+	rows, err := s.db.QueryContext(ctx, `SELECT v.tenant_id, v.name, v.version, v.environment, v.source, v.source_path, v.digest, v.program_json, v.published_at, v.metadata_json
 FROM condition_active_definitions a
-JOIN condition_definition_versions v ON v.name = a.name AND v.version = a.version AND v.environment = a.environment
-ORDER BY v.name`)
+JOIN condition_definition_versions v ON v.tenant_id = a.tenant_id AND v.name = a.name AND v.version = a.version AND v.environment = a.environment
+WHERE a.tenant_id = ?
+ORDER BY v.name`, TenantFromContext(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -134,8 +133,8 @@ ORDER BY v.name`)
 }
 
 func (s *SQLiteStore) ListDefinitionVersions(ctx context.Context, name, environment string) ([]DefinitionRecord, error) {
-	query := `SELECT name, version, environment, source, source_path, digest, program_json, published_at, metadata_json FROM condition_definition_versions WHERE name = ?`
-	args := []any{name}
+	query := `SELECT tenant_id, name, version, environment, source, source_path, digest, program_json, published_at, metadata_json FROM condition_definition_versions WHERE tenant_id = ? AND name = ?`
+	args := []any{TenantFromContext(ctx), name}
 	if environment != "" {
 		query += ` AND environment = ?`
 		args = append(args, firstEnv(environment))
@@ -161,18 +160,18 @@ func (s *SQLiteStore) ActivateDefinition(ctx context.Context, name, version, env
 	if _, err := s.GetDefinitionVersion(ctx, name, version, environment); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO condition_active_definitions (name, environment, version, activated_at)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(name, environment) DO UPDATE SET version=excluded.version, activated_at=excluded.activated_at`,
-		name, firstEnv(environment), version, time.Now().Format(time.RFC3339Nano))
+	tenant := TenantFromContext(ctx)
+	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO condition_active_definitions (tenant_id, name, environment, version, activated_at)
+VALUES (?, ?, ?, ?, ?)`,
+		tenant, name, firstEnv(environment), version, time.Now().Format(time.RFC3339Nano))
 	return err
 }
 
 func (s *SQLiteStore) GetActiveDefinition(ctx context.Context, name, environment string) (DefinitionRecord, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT v.name, v.version, v.environment, v.source, v.source_path, v.digest, v.program_json, v.published_at, v.metadata_json
+	row := s.db.QueryRowContext(ctx, `SELECT v.tenant_id, v.name, v.version, v.environment, v.source, v.source_path, v.digest, v.program_json, v.published_at, v.metadata_json
 FROM condition_active_definitions a
-JOIN condition_definition_versions v ON v.name = a.name AND v.version = a.version AND v.environment = a.environment
-WHERE a.name = ? AND a.environment = ?`, name, firstEnv(environment))
+JOIN condition_definition_versions v ON v.tenant_id = a.tenant_id AND v.name = a.name AND v.version = a.version AND v.environment = a.environment
+WHERE a.tenant_id = ? AND a.name = ? AND a.environment = ?`, TenantFromContext(ctx), name, firstEnv(environment))
 	record, err := scanDefinition(row)
 	if err == sql.ErrNoRows {
 		return DefinitionRecord{}, fmt.Errorf("unknown definition %q", name)
@@ -182,8 +181,9 @@ WHERE a.name = ? AND a.environment = ?`, name, firstEnv(environment))
 
 func (s *SQLiteStore) SaveReport(ctx context.Context, report ReportRecord) error {
 	payload, _ := json.Marshal(report.Payload)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO condition_reports (id, kind, definition, created_at, payload_json) VALUES (?, ?, ?, ?, ?)`,
-		report.ID, report.Kind, report.Definition, report.CreatedAt.Format(time.RFC3339Nano), string(payload))
+	report.TenantID = firstTenant(firstNonEmpty(report.TenantID, TenantFromContext(ctx)))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO condition_reports (id, tenant_id, kind, definition, created_at, payload_json) VALUES (?, ?, ?, ?, ?, ?)`,
+		report.ID, report.TenantID, report.Kind, report.Definition, report.CreatedAt.Format(time.RFC3339Nano), string(payload))
 	return err
 }
 
@@ -192,9 +192,12 @@ func (s *SQLiteStore) ListReports(ctx context.Context, kind string) ([]ReportRec
 }
 
 func (s *SQLiteStore) ListReportsQuery(ctx context.Context, opts ListOptions) ([]ReportRecord, error) {
-	query := `SELECT id, kind, definition, created_at, payload_json FROM condition_reports`
+	query := `SELECT id, tenant_id, kind, definition, created_at, payload_json FROM condition_reports`
 	args := []any{}
 	var where []string
+	tenant := firstTenant(firstNonEmpty(opts.TenantID, TenantFromContext(ctx)))
+	where = append(where, `tenant_id = ?`)
+	args = append(args, tenant)
 	if opts.Kind != "" {
 		where = append(where, `kind = ?`)
 		args = append(args, opts.Kind)
@@ -222,7 +225,7 @@ func (s *SQLiteStore) ListReportsQuery(ctx context.Context, opts ListOptions) ([
 	for rows.Next() {
 		var report ReportRecord
 		var payload, createdAt string
-		if err := rows.Scan(&report.ID, &report.Kind, &report.Definition, &createdAt, &payload); err != nil {
+		if err := rows.Scan(&report.ID, &report.TenantID, &report.Kind, &report.Definition, &createdAt, &payload); err != nil {
 			return nil, err
 		}
 		report.CreatedAt = parseTime(createdAt)
@@ -264,14 +267,16 @@ func (s *SQLiteStore) listReportsOld(ctx context.Context, kind string) ([]Report
 
 func (s *SQLiteStore) AppendAudit(ctx context.Context, envelope audit.Envelope) error {
 	payload, _ := json.Marshal(envelope)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO condition_audits (id, hash, previous_hash, completed_at, payload_json) VALUES (?, ?, ?, ?, ?)`,
-		envelope.ID, envelope.Hash, envelope.PreviousHash, envelope.CompletedAt.Format(time.RFC3339Nano), string(payload))
+	envelope.TenantID = firstTenant(firstNonEmpty(envelope.TenantID, TenantFromContext(ctx)))
+	payload, _ = json.Marshal(envelope)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO condition_audits (id, tenant_id, hash, previous_hash, completed_at, payload_json) VALUES (?, ?, ?, ?, ?, ?)`,
+		envelope.ID, envelope.TenantID, envelope.Hash, envelope.PreviousHash, envelope.CompletedAt.Format(time.RFC3339Nano), string(payload))
 	return err
 }
 
 func (s *SQLiteStore) LastAuditHash(ctx context.Context) (string, error) {
 	var hash string
-	err := s.db.QueryRowContext(ctx, `SELECT hash FROM condition_audits ORDER BY completed_at DESC, rowid DESC LIMIT 1`).Scan(&hash)
+	err := s.db.QueryRowContext(ctx, `SELECT hash FROM condition_audits WHERE tenant_id = ? ORDER BY completed_at DESC, rowid DESC LIMIT 1`, TenantFromContext(ctx)).Scan(&hash)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -283,7 +288,7 @@ func (s *SQLiteStore) ListAudits(ctx context.Context) ([]audit.Envelope, error) 
 }
 
 func (s *SQLiteStore) ListAuditsQuery(ctx context.Context, opts ListOptions) ([]audit.Envelope, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT payload_json FROM condition_audits ORDER BY completed_at, rowid`)
+	rows, err := s.db.QueryContext(ctx, `SELECT payload_json FROM condition_audits WHERE tenant_id = ? ORDER BY completed_at, rowid`, firstTenant(firstNonEmpty(opts.TenantID, TenantFromContext(ctx))))
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +318,7 @@ func (s *SQLiteStore) ListAuditsQuery(ctx context.Context, opts ListOptions) ([]
 
 func (s *SQLiteStore) GetAudit(ctx context.Context, id string) (audit.Envelope, error) {
 	var payload string
-	err := s.db.QueryRowContext(ctx, `SELECT payload_json FROM condition_audits WHERE id = ?`, id).Scan(&payload)
+	err := s.db.QueryRowContext(ctx, `SELECT payload_json FROM condition_audits WHERE tenant_id = ? AND id = ?`, TenantFromContext(ctx), id).Scan(&payload)
 	if err == sql.ErrNoRows {
 		return audit.Envelope{}, fmt.Errorf("unknown audit %q", id)
 	}
@@ -326,6 +331,7 @@ func (s *SQLiteStore) GetAudit(ctx context.Context, id string) (audit.Envelope, 
 
 func (s *SQLiteStore) migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS condition_definitions (
+	tenant_id TEXT NOT NULL DEFAULT 'default',
 	name TEXT PRIMARY KEY,
 	version TEXT,
 	environment TEXT,
@@ -338,6 +344,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 );
 CREATE TABLE IF NOT EXISTS condition_reports (
 	id TEXT PRIMARY KEY,
+	tenant_id TEXT NOT NULL DEFAULT 'default',
 	kind TEXT NOT NULL,
 	definition TEXT,
 	created_at TIMESTAMP NOT NULL,
@@ -345,12 +352,14 @@ CREATE TABLE IF NOT EXISTS condition_reports (
 );
 CREATE TABLE IF NOT EXISTS condition_audits (
 	id TEXT PRIMARY KEY,
+	tenant_id TEXT NOT NULL DEFAULT 'default',
 	hash TEXT NOT NULL,
 	previous_hash TEXT,
 	completed_at TIMESTAMP NOT NULL,
 	payload_json TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS condition_definition_versions (
+	tenant_id TEXT NOT NULL DEFAULT 'default',
 	name TEXT NOT NULL,
 	version TEXT NOT NULL,
 	environment TEXT NOT NULL,
@@ -360,17 +369,19 @@ CREATE TABLE IF NOT EXISTS condition_definition_versions (
 	program_json TEXT NOT NULL,
 	published_at TEXT NOT NULL,
 	metadata_json TEXT,
-	PRIMARY KEY(name, version, environment)
+	PRIMARY KEY(tenant_id, name, version, environment)
 );
 CREATE TABLE IF NOT EXISTS condition_active_definitions (
+	tenant_id TEXT NOT NULL DEFAULT 'default',
 	name TEXT NOT NULL,
 	environment TEXT NOT NULL,
 	version TEXT NOT NULL,
 	activated_at TEXT NOT NULL,
-	PRIMARY KEY(name, environment)
+	PRIMARY KEY(tenant_id, name, environment)
 );
 CREATE TABLE IF NOT EXISTS condition_workflow_runs (
 	id TEXT PRIMARY KEY,
+	tenant_id TEXT NOT NULL DEFAULT 'default',
 	definition TEXT,
 	version TEXT,
 	environment TEXT,
@@ -383,6 +394,158 @@ CREATE TABLE IF NOT EXISTS condition_workflow_runs (
 	created_at TEXT,
 	updated_at TEXT
 );`)
+	if err != nil {
+		return err
+	}
+	for _, table := range []string{"condition_definitions", "condition_reports", "condition_audits", "condition_definition_versions", "condition_active_definitions", "condition_workflow_runs"} {
+		if err := s.ensureColumn(ctx, table, "tenant_id", "TEXT NOT NULL DEFAULT 'default'"); err != nil {
+			return err
+		}
+	}
+	if err := s.ensureTenantPrimaryKeys(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ensureTenantPrimaryKeys(ctx context.Context) error {
+	checks := []struct {
+		table string
+		want  []string
+		sql   string
+		copy  string
+	}{
+		{
+			table: "condition_definition_versions",
+			want:  []string{"tenant_id", "name", "version", "environment"},
+			sql: `CREATE TABLE condition_definition_versions_new (
+tenant_id TEXT NOT NULL DEFAULT 'default',
+name TEXT NOT NULL,
+version TEXT NOT NULL,
+environment TEXT NOT NULL,
+source TEXT,
+source_path TEXT,
+digest TEXT NOT NULL,
+program_json TEXT NOT NULL,
+published_at TEXT NOT NULL,
+metadata_json TEXT,
+PRIMARY KEY(tenant_id, name, version, environment)
+)`,
+			copy: `INSERT OR REPLACE INTO condition_definition_versions_new
+(tenant_id, name, version, environment, source, source_path, digest, program_json, published_at, metadata_json)
+SELECT COALESCE(NULLIF(tenant_id, ''), 'default'), name, version, environment, source, source_path, digest, program_json, published_at, metadata_json
+FROM condition_definition_versions`,
+		},
+		{
+			table: "condition_active_definitions",
+			want:  []string{"tenant_id", "name", "environment"},
+			sql: `CREATE TABLE condition_active_definitions_new (
+tenant_id TEXT NOT NULL DEFAULT 'default',
+name TEXT NOT NULL,
+environment TEXT NOT NULL,
+version TEXT NOT NULL,
+activated_at TEXT NOT NULL,
+PRIMARY KEY(tenant_id, name, environment)
+)`,
+			copy: `INSERT OR REPLACE INTO condition_active_definitions_new
+(tenant_id, name, environment, version, activated_at)
+SELECT COALESCE(NULLIF(tenant_id, ''), 'default'), name, environment, version, activated_at
+FROM condition_active_definitions`,
+		},
+	}
+	for _, check := range checks {
+		ok, err := s.primaryKeyMatches(ctx, check.table, check.want)
+		if err != nil {
+			return err
+		}
+		if ok {
+			continue
+		}
+		if err := s.rebuildTable(ctx, check.table, check.sql, check.copy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) primaryKeyMatches(ctx context.Context, table string, want []string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	got := make([]string, len(want))
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if pk > 0 && pk <= len(got) {
+			got[pk-1] = name
+		}
+	}
+	if rows.Err() != nil {
+		return false, rows.Err()
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (s *SQLiteStore) rebuildTable(ctx context.Context, table, createSQL, copySQL string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+table+`_new`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, createSQL); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, copySQL); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE `+table); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE `+table+`_new RENAME TO `+table); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) ensureColumn(ctx context.Context, table, column, decl string) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if rows.Err() != nil {
+		return rows.Err()
+	}
+	_, err = s.db.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, decl))
 	return err
 }
 
@@ -390,17 +553,18 @@ func (s *SQLiteStore) SaveWorkflowRun(ctx context.Context, run WorkflowRunRecord
 	input, _ := json.Marshal(run.Input)
 	assignment, _ := json.Marshal(run.Assignment)
 	events, _ := json.Marshal(run.Events)
+	run.TenantID = firstTenant(firstNonEmpty(run.TenantID, TenantFromContext(ctx)))
 	_, err := s.db.ExecContext(ctx, `INSERT INTO condition_workflow_runs
-(id, definition, version, environment, workflow_id, stage, status, input_json, assignment_json, events_json, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+(id, tenant_id, definition, version, environment, workflow_id, stage, status, input_json, assignment_json, events_json, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET stage=excluded.stage, status=excluded.status, input_json=excluded.input_json,
 assignment_json=excluded.assignment_json, events_json=excluded.events_json, updated_at=excluded.updated_at`,
-		run.ID, run.Definition, run.Version, run.Environment, run.WorkflowID, run.Stage, run.Status, string(input), string(assignment), string(events), run.CreatedAt.Format(time.RFC3339Nano), run.UpdatedAt.Format(time.RFC3339Nano))
+		run.ID, run.TenantID, run.Definition, run.Version, run.Environment, run.WorkflowID, run.Stage, run.Status, string(input), string(assignment), string(events), run.CreatedAt.Format(time.RFC3339Nano), run.UpdatedAt.Format(time.RFC3339Nano))
 	return err
 }
 
 func (s *SQLiteStore) GetWorkflowRun(ctx context.Context, id string) (WorkflowRunRecord, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, definition, version, environment, workflow_id, stage, status, input_json, assignment_json, events_json, created_at, updated_at FROM condition_workflow_runs WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, definition, version, environment, workflow_id, stage, status, input_json, assignment_json, events_json, created_at, updated_at FROM condition_workflow_runs WHERE tenant_id = ? AND id = ?`, TenantFromContext(ctx), id)
 	run, err := scanWorkflowRun(row)
 	if err == sql.ErrNoRows {
 		return WorkflowRunRecord{}, fmt.Errorf("unknown workflow run %q", id)
@@ -409,9 +573,11 @@ func (s *SQLiteStore) GetWorkflowRun(ctx context.Context, id string) (WorkflowRu
 }
 
 func (s *SQLiteStore) ListWorkflowRuns(ctx context.Context, opts ListOptions) ([]WorkflowRunRecord, error) {
-	query := `SELECT id, definition, version, environment, workflow_id, stage, status, input_json, assignment_json, events_json, created_at, updated_at FROM condition_workflow_runs`
+	query := `SELECT id, tenant_id, definition, version, environment, workflow_id, stage, status, input_json, assignment_json, events_json, created_at, updated_at FROM condition_workflow_runs`
 	var where []string
 	var args []any
+	where = append(where, `tenant_id = ?`)
+	args = append(args, firstTenant(firstNonEmpty(opts.TenantID, TenantFromContext(ctx))))
 	if opts.Definition != "" {
 		where = append(where, `definition = ?`)
 		args = append(args, opts.Definition)
@@ -449,7 +615,7 @@ type definitionScanner interface {
 func scanDefinition(scanner definitionScanner) (DefinitionRecord, error) {
 	var record DefinitionRecord
 	var programJSON, metadataJSON, publishedAt string
-	if err := scanner.Scan(&record.Name, &record.Version, &record.Environment, &record.Source, &record.SourcePath, &record.Digest, &programJSON, &publishedAt, &metadataJSON); err != nil {
+	if err := scanner.Scan(&record.TenantID, &record.Name, &record.Version, &record.Environment, &record.Source, &record.SourcePath, &record.Digest, &programJSON, &publishedAt, &metadataJSON); err != nil {
 		return DefinitionRecord{}, err
 	}
 	record.PublishedAt = parseTime(publishedAt)
@@ -468,7 +634,7 @@ func scanDefinition(scanner definitionScanner) (DefinitionRecord, error) {
 func scanWorkflowRun(scanner definitionScanner) (WorkflowRunRecord, error) {
 	var run WorkflowRunRecord
 	var inputJSON, assignmentJSON, eventsJSON, createdAt, updatedAt string
-	if err := scanner.Scan(&run.ID, &run.Definition, &run.Version, &run.Environment, &run.WorkflowID, &run.Stage, &run.Status, &inputJSON, &assignmentJSON, &eventsJSON, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&run.ID, &run.TenantID, &run.Definition, &run.Version, &run.Environment, &run.WorkflowID, &run.Stage, &run.Status, &inputJSON, &assignmentJSON, &eventsJSON, &createdAt, &updatedAt); err != nil {
 		return WorkflowRunRecord{}, err
 	}
 	_ = json.Unmarshal([]byte(inputJSON), &run.Input)

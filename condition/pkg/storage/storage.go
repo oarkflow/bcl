@@ -9,6 +9,7 @@ import (
 )
 
 type DefinitionRecord struct {
+	TenantID    string               `json:"tenant_id,omitempty"`
 	Name        string               `json:"name"`
 	Version     string               `json:"version"`
 	Environment string               `json:"environment,omitempty"`
@@ -21,6 +22,7 @@ type DefinitionRecord struct {
 }
 
 type ActiveDefinition struct {
+	TenantID    string    `json:"tenant_id,omitempty"`
 	Name        string    `json:"name"`
 	Version     string    `json:"version"`
 	Environment string    `json:"environment,omitempty"`
@@ -29,6 +31,7 @@ type ActiveDefinition struct {
 
 type ReportRecord struct {
 	ID         string         `json:"id"`
+	TenantID   string         `json:"tenant_id,omitempty"`
 	Kind       string         `json:"kind"`
 	Definition string         `json:"definition,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
@@ -45,10 +48,12 @@ type ListOptions struct {
 	Definition  string     `json:"definition,omitempty"`
 	Subject     string     `json:"subject,omitempty"`
 	Environment string     `json:"environment,omitempty"`
+	TenantID    string     `json:"tenant_id,omitempty"`
 }
 
 type WorkflowRunRecord struct {
 	ID          string         `json:"id"`
+	TenantID    string         `json:"tenant_id,omitempty"`
 	Definition  string         `json:"definition"`
 	Version     string         `json:"version,omitempty"`
 	Environment string         `json:"environment,omitempty"`

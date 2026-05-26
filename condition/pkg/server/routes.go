@@ -33,6 +33,7 @@ func (s *Server) routes() []routeSpec {
 		{http.MethodPost, "/v1/definitions/{name}/gates", s.gates},
 		{http.MethodPost, "/v1/definitions/{name}/simulate", s.simulate},
 		{http.MethodPost, "/v1/definitions/{name}/compare", s.compare},
+		{http.MethodPost, "/v1/definitions/{name}/canary", s.canary},
 		{http.MethodPost, "/v1/definitions/{name}/workflows/{workflow}/start", s.startWorkflow},
 		{http.MethodPost, "/v1/workflows/{id}/advance", s.advanceWorkflow},
 		{http.MethodGet, "/v1/workflows/{id}", s.getWorkflow},

@@ -1607,7 +1607,7 @@ func evaluateDecisionIntoInternalWithStack(program *DecisionProgram, decision st
 	}
 	strategy := firstNonEmpty(def.Strategy, "deny_overrides")
 	explain := evalOpts.Explain
-	evalTime := decisionEvaluationTime(input)
+	evalTime := decisionEvaluationTime(input, opts)
 	conditionOpts := decisionEvalOptions(opts, program, input, evalOpts, stack, result)
 	directSelect := strategy == "first_match" || strategy == "highest_priority"
 	var selectedDirect DecisionRule
@@ -2051,13 +2051,13 @@ func decisionResultMap(result *DecisionResult) map[string]any {
 	}
 }
 
-func decisionEvaluationTime(input map[string]any) time.Time {
+func decisionEvaluationTime(input map[string]any, opts *Options) time.Time {
 	for _, path := range []string{"time.now", "context.time.now"} {
 		if t, ok := parseDecisionTime(lookup(input, path)); ok {
 			return t
 		}
 	}
-	return time.Now().UTC()
+	return optionsNow(opts)
 }
 
 func decisionRuleActive(rule DecisionRule, now time.Time) (bool, string) {

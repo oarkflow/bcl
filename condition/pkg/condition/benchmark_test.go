@@ -2,8 +2,10 @@ package condition
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/oarkflow/condition/pkg/storage"
@@ -59,6 +61,78 @@ func BenchmarkServiceEvaluateWithShadow(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := svc.Evaluate(ctx, "demo", EvaluateRequest{Decision: "access", Input: input, ShadowCandidateSource: candidate}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkServiceEvaluateStrictConcurrent(b *testing.B) {
+	ctx := context.Background()
+	baseDir := benchmarkModuleDir(b)
+	svc := NewService(storage.NewMemoryStore(), Config{StrictValidation: true, StrictEvaluation: true, RequireTests: true})
+	if _, err := svc.Publish(ctx, PublishRequest{Name: "demo", Version: "1", Source: strictDemoSource(), BaseDir: baseDir, RunTests: true}); err != nil {
+		b.Fatal(err)
+	}
+	input := map[string]any{"request": map[string]any{"ok": true}}
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, err := svc.Evaluate(ctx, "demo", EvaluateRequest{Decision: "access", Input: input}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkServiceExternalDatasetDenied(b *testing.B) {
+	ctx := context.Background()
+	svc := NewService(storage.NewMemoryStore(), Config{})
+	source := `module "external" {
+  decision_table "access" { default deny hit_policy first }
+  dataset "batch" { source { adapter file path "./batch.jsonl" format jsonl } }
+}`
+	if _, err := svc.Publish(ctx, PublishRequest{Name: "external", Source: source}); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = svc.Evaluate(ctx, "external", EvaluateRequest{Decision: "access"})
+	}
+}
+
+func BenchmarkServiceTenantPartitionedEvaluate(b *testing.B) {
+	svc := NewService(storage.NewMemoryStore(), Config{})
+	for _, tenant := range []string{"tenant-a", "tenant-b"} {
+		if _, err := svc.Publish(ContextWithTenant(context.Background(), tenant), PublishRequest{Name: "demo", Source: demoSource}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	ctx := ContextWithTenant(context.Background(), "tenant-b")
+	input := map[string]any{"request": map[string]any{"ok": true}}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := svc.Evaluate(ctx, "demo", EvaluateRequest{Decision: "access", Input: input}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkServiceLargeDecisionTable(b *testing.B) {
+	ctx := context.Background()
+	svc := NewService(storage.NewMemoryStore(), Config{})
+	var rows strings.Builder
+	for i := 0; i < 500; i++ {
+		fmt.Fprintf(&rows, `row "r-%d" { when { request.code == "%d" } then { decision allow reason "hit" } reason "hit" reason_code "HIT_%d" }`, i, i, i)
+		rows.WriteByte('\n')
+	}
+	source := `module "large" { decision_table "access" { default deny hit_policy first ` + rows.String() + ` } }`
+	if _, err := svc.Publish(ctx, PublishRequest{Name: "large", Source: source}); err != nil {
+		b.Fatal(err)
+	}
+	input := map[string]any{"request": map[string]any{"code": "499"}}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := svc.Evaluate(ctx, "large", EvaluateRequest{Decision: "access", Input: input}); err != nil {
 			b.Fatal(err)
 		}
 	}

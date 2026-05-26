@@ -135,14 +135,14 @@ func advanceWorkflowStage(run *WorkflowRun, workflow *WorkflowDefinition, input 
 
 func workflowRunRecord(run WorkflowRun) storage.WorkflowRunRecord {
 	return storage.WorkflowRunRecord{
-		ID: run.ID, Definition: run.Definition, Version: run.Version, Environment: run.Environment, WorkflowID: run.WorkflowID,
+		ID: run.ID, TenantID: run.TenantID, Definition: run.Definition, Version: run.Version, Environment: run.Environment, WorkflowID: run.WorkflowID,
 		Stage: run.Stage, Status: run.Status, Input: run.Input, Assignment: run.Assignment, Events: run.Events, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt,
 	}
 }
 
 func workflowRunFromRecord(record storage.WorkflowRunRecord) WorkflowRun {
 	return WorkflowRun{
-		ID: record.ID, Definition: record.Definition, Version: record.Version, Environment: record.Environment, WorkflowID: record.WorkflowID,
+		ID: record.ID, TenantID: record.TenantID, Definition: record.Definition, Version: record.Version, Environment: record.Environment, WorkflowID: record.WorkflowID,
 		Stage: record.Stage, Status: record.Status, Input: record.Input, Assignment: record.Assignment, Events: record.Events, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt,
 	}
 }

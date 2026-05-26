@@ -55,6 +55,8 @@ func run(args []string) error {
 		return runSimulate(args[1:], false)
 	case "compare":
 		return runSimulate(args[1:], true)
+	case "canary":
+		return runCanary(args[1:])
 	case "audits":
 		return runAudits(args[1:])
 	case "reports":
@@ -145,6 +147,7 @@ func runPublish(args []string) error {
 	name := fs.String("name", "", "definition name")
 	version := fs.String("version", "1", "definition version")
 	env := fs.String("env", "", "environment")
+	tenant := fs.String("tenant", "", "tenant id")
 	runTests := fs.Bool("tests", false, "run tests before publishing")
 	storeKind := fs.String("store", "file", "store kind")
 	storePath := fs.String("store-path", ".condition", "store path")
@@ -165,7 +168,7 @@ func runPublish(args []string) error {
 		return err
 	}
 	defer closer()
-	resp, err := svc.Publish(context.Background(), condition.PublishRequest{Name: *name, Version: *version, Environment: *env, Path: fs.Arg(0), RunTests: *runTests})
+	resp, err := svc.Publish(cliContext(cfg, *tenant), condition.PublishRequest{Name: *name, Version: *version, Environment: *env, Path: fs.Arg(0), RunTests: *runTests})
 	if err != nil {
 		return err
 	}
@@ -179,6 +182,7 @@ func runValidate(args []string) error {
 	name := fs.String("name", "", "definition name")
 	version := fs.String("version", "1", "definition version")
 	env := fs.String("env", "", "environment")
+	tenant := fs.String("tenant", "", "tenant id")
 	runTests := fs.Bool("tests", false, "run tests")
 	bundle := fs.String("bundle", "", "bundle id")
 	storeKind := fs.String("store", "file", "store kind")
@@ -200,7 +204,7 @@ func runValidate(args []string) error {
 		return err
 	}
 	defer closer()
-	resp, err := svc.Validate(context.Background(), condition.ValidationRequest{Name: *name, Version: *version, Environment: *env, Path: fs.Arg(0), RunTests: *runTests, Bundle: *bundle})
+	resp, err := svc.Validate(cliContext(cfg, *tenant), condition.ValidationRequest{Name: *name, Version: *version, Environment: *env, Path: fs.Arg(0), RunTests: *runTests, Bundle: *bundle})
 	printJSON(resp)
 	return err
 }
@@ -210,6 +214,7 @@ func runEvaluate(args []string) error {
 	configPath := fs.String("config", "", "condition config path")
 	inputPath := fs.String("input", "", "input JSON path")
 	decision := fs.String("decision", "", "decision id")
+	tenant := fs.String("tenant", "", "tenant id")
 	compact := fs.Bool("compact", false, "print only decision answer")
 	storeKind := fs.String("store", "file", "store kind")
 	storePath := fs.String("store-path", ".condition", "store path")
@@ -236,7 +241,7 @@ func runEvaluate(args []string) error {
 		return err
 	}
 	defer closer()
-	resp, err := svc.Evaluate(context.Background(), fs.Arg(0), condition.EvaluateRequest{Decision: *decision, Input: input, IncludeFeatures: true, Counterfactuals: true})
+	resp, err := svc.Evaluate(cliContext(cfg, *tenant), fs.Arg(0), condition.EvaluateRequest{Decision: *decision, Input: input, IncludeFeatures: true, Counterfactuals: true})
 	if err != nil {
 		return err
 	}
@@ -252,6 +257,7 @@ func runTest(args []string) error {
 	fs := flag.NewFlagSet("test", flag.ExitOnError)
 	configPath := fs.String("config", "", "condition config path")
 	bundle := fs.String("bundle", "", "bundle id")
+	tenant := fs.String("tenant", "", "tenant id")
 	storeKind := fs.String("store", "file", "store kind")
 	storePath := fs.String("store-path", ".condition", "store path")
 	if err := fs.Parse(args); err != nil {
@@ -271,7 +277,7 @@ func runTest(args []string) error {
 		return err
 	}
 	defer closer()
-	resp, err := svc.Test(context.Background(), fs.Arg(0), *bundle)
+	resp, err := svc.Test(cliContext(cfg, *tenant), fs.Arg(0), *bundle)
 	printJSON(resp)
 	return err
 }
@@ -280,6 +286,7 @@ func runGates(args []string) error {
 	fs := flag.NewFlagSet("gates", flag.ExitOnError)
 	configPath := fs.String("config", "", "condition config path")
 	bundle := fs.String("bundle", "", "bundle id")
+	tenant := fs.String("tenant", "", "tenant id")
 	storeKind := fs.String("store", "file", "store kind")
 	storePath := fs.String("store-path", ".condition", "store path")
 	if err := fs.Parse(args); err != nil {
@@ -299,7 +306,7 @@ func runGates(args []string) error {
 		return err
 	}
 	defer closer()
-	resp, err := svc.Gates(context.Background(), fs.Arg(0), *bundle)
+	resp, err := svc.Gates(cliContext(cfg, *tenant), fs.Arg(0), *bundle)
 	printJSON(resp)
 	return err
 }
@@ -308,6 +315,7 @@ func runVersions(args []string) error {
 	fs := flag.NewFlagSet("versions", flag.ExitOnError)
 	configPath := fs.String("config", "", "condition config path")
 	env := fs.String("env", "", "environment")
+	tenant := fs.String("tenant", "", "tenant id")
 	storeKind := fs.String("store", "file", "store kind")
 	storePath := fs.String("store-path", ".condition", "store path")
 	if err := fs.Parse(args); err != nil {
@@ -327,7 +335,7 @@ func runVersions(args []string) error {
 		return err
 	}
 	defer closer()
-	resp, err := svc.ListVersions(context.Background(), fs.Arg(0), *env)
+	resp, err := svc.ListVersions(cliContext(cfg, *tenant), fs.Arg(0), *env)
 	printJSON(resp)
 	return err
 }
@@ -336,6 +344,7 @@ func runActivate(args []string) error {
 	fs := flag.NewFlagSet("activate", flag.ExitOnError)
 	configPath := fs.String("config", "", "condition config path")
 	env := fs.String("env", "", "environment")
+	tenant := fs.String("tenant", "", "tenant id")
 	storeKind := fs.String("store", "file", "store kind")
 	storePath := fs.String("store-path", ".condition", "store path")
 	if err := fs.Parse(args); err != nil {
@@ -355,7 +364,7 @@ func runActivate(args []string) error {
 		return err
 	}
 	defer closer()
-	resp, err := svc.Activate(context.Background(), fs.Arg(0), fs.Arg(1), *env)
+	resp, err := svc.Activate(cliContext(cfg, *tenant), fs.Arg(0), fs.Arg(1), *env)
 	printJSON(resp)
 	return err
 }
@@ -364,6 +373,7 @@ func runRollback(args []string) error {
 	fs := flag.NewFlagSet("rollback", flag.ExitOnError)
 	configPath := fs.String("config", "", "condition config path")
 	env := fs.String("env", "", "environment")
+	tenant := fs.String("tenant", "", "tenant id")
 	storeKind := fs.String("store", "file", "store kind")
 	storePath := fs.String("store-path", ".condition", "store path")
 	if err := fs.Parse(args); err != nil {
@@ -383,7 +393,7 @@ func runRollback(args []string) error {
 		return err
 	}
 	defer closer()
-	resp, err := svc.Rollback(context.Background(), fs.Arg(0), fs.Arg(1), *env)
+	resp, err := svc.Rollback(cliContext(cfg, *tenant), fs.Arg(0), fs.Arg(1), *env)
 	printJSON(resp)
 	return err
 }
@@ -395,6 +405,7 @@ func runSimulate(args []string, compare bool) error {
 	decision := fs.String("decision", "", "decision id")
 	dataset := fs.String("dataset", "", "dataset id")
 	casesPath := fs.String("cases", "", "cases JSON path")
+	tenant := fs.String("tenant", "", "tenant id")
 	storeKind := fs.String("store", "file", "store kind")
 	storePath := fs.String("store-path", ".condition", "store path")
 	if err := fs.Parse(args); err != nil {
@@ -423,10 +434,60 @@ func runSimulate(args []string, compare bool) error {
 	req := condition.SimulationRequest{CandidatePath: *candidate, Decision: *decision, Dataset: *dataset, Cases: cases}
 	var resp *condition.SimulationResponse
 	if compare {
-		resp, err = svc.Compare(context.Background(), fs.Arg(0), req)
+		resp, err = svc.Compare(cliContext(cfg, *tenant), fs.Arg(0), req)
 	} else {
-		resp, err = svc.Simulate(context.Background(), fs.Arg(0), req)
+		resp, err = svc.Simulate(cliContext(cfg, *tenant), fs.Arg(0), req)
 	}
+	if resp != nil {
+		printJSON(resp)
+	}
+	return err
+}
+
+func runCanary(args []string) error {
+	fs := flag.NewFlagSet("canary", flag.ExitOnError)
+	configPath := fs.String("config", "", "condition config path")
+	candidate := fs.String("candidate", "", "candidate decision.bcl path")
+	decision := fs.String("decision", "", "decision id")
+	dataset := fs.String("dataset", "", "dataset id")
+	casesPath := fs.String("cases", "", "cases JSON path")
+	maxChanged := fs.Int("max-changed", 0, "maximum changed cases")
+	requireNoErrors := fs.Bool("require-no-errors", true, "fail canary on diagnostics")
+	promote := fs.Bool("promote", false, "publish candidate when canary passes")
+	promoteVersion := fs.String("promote-version", "", "candidate version to publish when promotion is enabled")
+	tenant := fs.String("tenant", "", "tenant id")
+	storeKind := fs.String("store", "file", "store kind")
+	storePath := fs.String("store-path", ".condition", "store path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("canary requires a definition name")
+	}
+	var cases []bcl.DecisionBatchCase
+	if *casesPath != "" {
+		if err := readJSON(*casesPath, &cases); err != nil {
+			return err
+		}
+	}
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	applyString(&cfg.Store.Kind, *storeKind, "file")
+	applyString(&cfg.Store.Path, *storePath, ".condition")
+	svc, closer, err := newServiceFromConfig(cfg)
+	if err != nil {
+		return err
+	}
+	defer closer()
+	resp, err := svc.Canary(cliContext(cfg, *tenant), fs.Arg(0), condition.CanaryRequest{
+		SimulationRequest: condition.SimulationRequest{CandidatePath: *candidate, Decision: *decision, Dataset: *dataset, Cases: cases},
+		MaxChangedCases:   *maxChanged,
+		RequireNoErrors:   *requireNoErrors,
+		Promote:           *promote,
+		PromoteVersion:    *promoteVersion,
+	})
 	if resp != nil {
 		printJSON(resp)
 	}
@@ -439,6 +500,7 @@ func runAudits(args []string) error {
 	definition := fs.String("definition", "", "definition filter")
 	operation := fs.String("operation", "", "operation filter")
 	limit := fs.Int("limit", 0, "limit")
+	tenant := fs.String("tenant", "", "tenant id")
 	storeKind := fs.String("store", "file", "store kind")
 	storePath := fs.String("store-path", ".condition", "store path")
 	if err := fs.Parse(args); err != nil {
@@ -455,7 +517,7 @@ func runAudits(args []string) error {
 		return err
 	}
 	defer closer()
-	resp, err := svc.QueryAudits(context.Background(), storage.ListOptions{Definition: *definition, Operation: *operation, Limit: *limit})
+	resp, err := svc.QueryAudits(cliContext(cfg, *tenant), storage.ListOptions{Definition: *definition, Operation: *operation, Limit: *limit})
 	printJSON(resp)
 	return err
 }
@@ -466,6 +528,7 @@ func runReports(args []string) error {
 	kind := fs.String("kind", "", "report kind")
 	definition := fs.String("definition", "", "definition filter")
 	limit := fs.Int("limit", 0, "limit")
+	tenant := fs.String("tenant", "", "tenant id")
 	storeKind := fs.String("store", "file", "store kind")
 	storePath := fs.String("store-path", ".condition", "store path")
 	if err := fs.Parse(args); err != nil {
@@ -482,7 +545,7 @@ func runReports(args []string) error {
 		return err
 	}
 	defer closer()
-	resp, err := svc.QueryReports(context.Background(), storage.ListOptions{Kind: *kind, Definition: *definition, Limit: *limit})
+	resp, err := svc.QueryReports(cliContext(cfg, *tenant), storage.ListOptions{Kind: *kind, Definition: *definition, Limit: *limit})
 	printJSON(resp)
 	return err
 }
@@ -495,6 +558,7 @@ func runAudit(args []string) error {
 	configPath := fs.String("config", "", "condition config path")
 	storeKind := fs.String("store", "file", "store kind")
 	storePath := fs.String("store-path", ".condition", "store path")
+	tenant := fs.String("tenant", "", "tenant id")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -509,7 +573,7 @@ func runAudit(args []string) error {
 		return err
 	}
 	defer closer()
-	if err := svc.VerifyAudits(context.Background()); err != nil {
+	if err := svc.VerifyAudits(cliContext(cfg, *tenant)); err != nil {
 		return err
 	}
 	fmt.Println("audit chain verified")
@@ -568,12 +632,22 @@ type RuntimeConfig struct {
 	} `json:"http" yaml:"http" bcl:"http"`
 	Service struct {
 		Environment               string `json:"environment" yaml:"environment" bcl:"environment"`
+		DefaultTenant             string `json:"default_tenant" yaml:"default_tenant" bcl:"default_tenant"`
 		RequestTimeout            string `json:"request_timeout" yaml:"request_timeout" bcl:"request_timeout"`
 		MaxRequestBytes           int64  `json:"max_request_bytes" yaml:"max_request_bytes" bcl:"max_request_bytes"`
 		StrictValidation          bool   `json:"strict_validation" yaml:"strict_validation" bcl:"strict_validation"`
 		StrictEvaluation          bool   `json:"strict_evaluation" yaml:"strict_evaluation" bcl:"strict_evaluation"`
 		RequireTests              bool   `json:"require_tests" yaml:"require_tests" bcl:"require_tests"`
 		RequireActivationApproval bool   `json:"require_activation_approval" yaml:"require_activation_approval" bcl:"require_activation_approval"`
+		Runtime                   struct {
+			AllowTime              bool     `json:"allow_time" yaml:"allow_time" bcl:"allow_time"`
+			FixedTime              string   `json:"fixed_time" yaml:"fixed_time" bcl:"fixed_time"`
+			AllowEnv               bool     `json:"allow_env" yaml:"allow_env" bcl:"allow_env"`
+			AllowedDatasetAdapters []string `json:"allowed_dataset_adapters" yaml:"allowed_dataset_adapters" bcl:"allowed_dataset_adapters"`
+			AllowedHTTPHosts       []string `json:"allowed_http_hosts" yaml:"allowed_http_hosts" bcl:"allowed_http_hosts"`
+			AllowedHTTPMethods     []string `json:"allowed_http_methods" yaml:"allowed_http_methods" bcl:"allowed_http_methods"`
+			ExternalTimeout        string   `json:"external_timeout" yaml:"external_timeout" bcl:"external_timeout"`
+		} `json:"runtime" yaml:"runtime" bcl:"runtime"`
 	} `json:"service" yaml:"service" bcl:"service"`
 	RateLimit struct {
 		Limit  int    `json:"limit" yaml:"limit" bcl:"limit"`
@@ -586,6 +660,7 @@ func loadConfig(path string) (RuntimeConfig, error) {
 	cfg.Store.Kind = "file"
 	cfg.Store.Path = ".condition"
 	cfg.Service.Environment = "development"
+	cfg.Service.DefaultTenant = "default"
 	cfg.HTTP.ReadHeaderTimeout = "5s"
 	cfg.HTTP.ReadTimeout = "15s"
 	cfg.HTTP.WriteTimeout = "30s"
@@ -611,6 +686,7 @@ func loadConfig(path string) (RuntimeConfig, error) {
 func serviceConfig(cfg RuntimeConfig) condition.Config {
 	out := condition.Config{
 		Environment:               cfg.Service.Environment,
+		DefaultTenant:             cfg.Service.DefaultTenant,
 		MaxRequestBytes:           cfg.Service.MaxRequestBytes,
 		StrictValidation:          cfg.Service.StrictValidation,
 		StrictEvaluation:          cfg.Service.StrictEvaluation,
@@ -622,7 +698,33 @@ func serviceConfig(cfg RuntimeConfig) condition.Config {
 			out.RequestTimeout = d
 		}
 	}
+	out.Runtime = condition.RuntimePolicy{
+		AllowTime:              cfg.Service.Runtime.AllowTime,
+		FixedTime:              cfg.Service.Runtime.FixedTime,
+		AllowEnv:               cfg.Service.Runtime.AllowEnv,
+		AllowedDatasetAdapters: cfg.Service.Runtime.AllowedDatasetAdapters,
+		AllowedHTTPHosts:       cfg.Service.Runtime.AllowedHTTPHosts,
+		AllowedHTTPMethods:     cfg.Service.Runtime.AllowedHTTPMethods,
+	}
+	if cfg.Service.Runtime.ExternalTimeout != "" {
+		if d, err := time.ParseDuration(cfg.Service.Runtime.ExternalTimeout); err == nil {
+			out.Runtime.ExternalTimeout = d
+		}
+	}
 	return out
+}
+
+func cliContext(cfg RuntimeConfig, tenant string) context.Context {
+	return condition.ContextWithTenant(context.Background(), firstNonEmpty(tenant, cfg.Service.DefaultTenant, "default"))
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func applyString(dst *string, value, zero string) {
@@ -671,6 +773,7 @@ func usage() {
   gates <definition> --bundle bundle
   simulate <definition> --candidate candidate.bcl --cases cases.json
   compare <definition> --candidate candidate.bcl --dataset dataset
+  canary <definition> --candidate candidate.bcl --dataset dataset [--max-changed 0] [--promote --promote-version 2]
   audits [--definition name] [--operation evaluate] [--limit 50]
   reports [--kind simulation]
   audit verify`)

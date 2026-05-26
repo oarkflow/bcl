@@ -12,6 +12,7 @@ type Envelope struct {
 	ID               string         `json:"id"`
 	Operation        string         `json:"operation"`
 	Definition       string         `json:"definition,omitempty"`
+	TenantID         string         `json:"tenant_id,omitempty"`
 	Version          string         `json:"version,omitempty"`
 	Environment      string         `json:"environment,omitempty"`
 	Subject          string         `json:"subject,omitempty"`

@@ -1,0 +1,46 @@
+bcl { version "1.0" strict true }
+
+version "1"
+environment "production"
+metadata { owner "platform-security" domain "enterprise-hardening" }
+
+decision_schema "access" {
+  effects [allow, deny]
+  default deny
+  strategy first_match
+}
+
+decision_table "access" {
+  default deny
+  hit_policy first
+
+  row "allow-fixed-window" {
+    when {
+      all {
+        request.user.active == true
+        request.action == "read"
+        now() == "2026-05-26T00:00:00Z"
+      }
+    }
+    then { decision allow reason "tenant access approved inside deterministic window" }
+    reason "tenant access approved inside deterministic window"
+    reason_code "TENANT_FIXED_TIME_ALLOW"
+  }
+}
+
+dataset "canary_cases" {
+  source {
+    adapter file
+    path "./inputs/canary.jsonl"
+    format jsonl
+  }
+}
+
+test "active-reader" {
+  decision "access"
+  input {
+    request.user.active true
+    request.action "read"
+  }
+  expect { effect "allow" reason_code "TENANT_FIXED_TIME_ALLOW" diagnostics "none" }
+}

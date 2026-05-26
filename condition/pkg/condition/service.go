@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,6 +31,9 @@ func NewService(store storage.Store, cfg Config) *Service {
 	if cfg.Environment == "" {
 		cfg.Environment = "development"
 	}
+	if cfg.DefaultTenant == "" {
+		cfg.DefaultTenant = "default"
+	}
 	if cfg.RequestTimeout == 0 {
 		cfg.RequestTimeout = 5 * time.Second
 	}
@@ -48,6 +53,7 @@ func (s *Service) Config() Config {
 }
 
 func (s *Service) Publish(ctx context.Context, req PublishRequest) (*PublishResponse, error) {
+	ctx = s.requestContext(ctx, req.TenantID)
 	resp, err := s.PublishVersion(ctx, req)
 	if err != nil {
 		return resp, err
@@ -62,6 +68,7 @@ func (s *Service) Publish(ctx context.Context, req PublishRequest) (*PublishResp
 }
 
 func (s *Service) PublishVersion(ctx context.Context, req PublishRequest) (*PublishResponse, error) {
+	ctx = s.requestContext(ctx, req.TenantID)
 	start := time.Now()
 	report, program, source, err := s.validatePublish(ctx, ValidationRequest{
 		Name: req.Name, Version: req.Version, Environment: req.Environment, Path: req.Path, Source: req.Source, BaseDir: req.BaseDir, RunTests: req.RunTests, Strict: req.Strict, RequireTests: req.RequireTests, Bundle: req.Bundle,
@@ -79,6 +86,7 @@ func (s *Service) PublishVersion(ctx context.Context, req PublishRequest) (*Publ
 	}
 	name, version, env := report.Name, report.Version, report.Environment
 	record := storage.DefinitionRecord{
+		TenantID:    TenantFromContext(ctx),
 		Name:        name,
 		Version:     version,
 		Environment: env,
@@ -104,14 +112,17 @@ func (s *Service) PublishVersion(ctx context.Context, req PublishRequest) (*Publ
 }
 
 func (s *Service) ListDefinitions(ctx context.Context) ([]storage.DefinitionRecord, error) {
+	ctx = s.requestContext(ctx, "")
 	return s.store.ListDefinitions(ctx)
 }
 
 func (s *Service) GetDefinition(ctx context.Context, name string) (storage.DefinitionRecord, error) {
-	return s.store.GetDefinition(ctx, name)
+	ctx = s.requestContext(ctx, "")
+	return s.store.GetActiveDefinition(ctx, name, s.cfg.Environment)
 }
 
 func (s *Service) Validate(ctx context.Context, req ValidationRequest) (*ValidationReport, error) {
+	ctx = s.requestContext(ctx, req.TenantID)
 	report, _, _, err := s.validatePublish(ctx, req)
 	if err != nil && report == nil {
 		return nil, err
@@ -120,10 +131,12 @@ func (s *Service) Validate(ctx context.Context, req ValidationRequest) (*Validat
 }
 
 func (s *Service) ListVersions(ctx context.Context, name, environment string) ([]storage.DefinitionRecord, error) {
+	ctx = s.requestContext(ctx, "")
 	return s.store.ListDefinitionVersions(ctx, name, first(environment, s.cfg.Environment))
 }
 
 func (s *Service) Activate(ctx context.Context, name, version, environment string) (*ActivationResponse, error) {
+	ctx = s.requestContext(ctx, "")
 	start := time.Now()
 	env := first(environment, s.cfg.Environment)
 	record, err := s.store.GetDefinitionVersion(ctx, name, version, env)
@@ -168,6 +181,7 @@ func (s *Service) Activate(ctx context.Context, name, version, environment strin
 }
 
 func (s *Service) Approve(ctx context.Context, name, version string, req ApprovalRequest) (*LifecycleResponse, error) {
+	ctx = s.requestContext(ctx, req.TenantID)
 	start := time.Now()
 	env := first(req.Environment, s.cfg.Environment)
 	record, err := s.store.GetDefinitionVersion(ctx, name, version, env)
@@ -198,6 +212,7 @@ func (s *Service) Enable(ctx context.Context, name string, req DisableRequest) (
 }
 
 func (s *Service) setDisabled(ctx context.Context, name string, req DisableRequest, disabled bool) (*LifecycleResponse, error) {
+	ctx = s.requestContext(ctx, req.TenantID)
 	start := time.Now()
 	env := first(req.Environment, s.cfg.Environment)
 	var record storage.DefinitionRecord
@@ -235,6 +250,7 @@ func (s *Service) setDisabled(ctx context.Context, name string, req DisableReque
 }
 
 func (s *Service) Rollback(ctx context.Context, name, targetVersion, environment string) (*ActivationResponse, error) {
+	ctx = s.requestContext(ctx, "")
 	start := time.Now()
 	resp, err := s.Activate(ctx, name, targetVersion, environment)
 	if err != nil {
@@ -249,6 +265,7 @@ func (s *Service) Rollback(ctx context.Context, name, targetVersion, environment
 }
 
 func (s *Service) Evaluate(ctx context.Context, definition string, req EvaluateRequest) (*EvaluateResponse, error) {
+	ctx = s.requestContext(ctx, req.TenantID)
 	start := time.Now()
 	record, err := s.store.GetActiveDefinition(ctx, definition, first(req.Environment, s.cfg.Environment))
 	if err != nil {
@@ -275,6 +292,16 @@ func (s *Service) Evaluate(ctx context.Context, definition string, req EvaluateR
 	}
 	input, runtimeContext, runtimeSession := runtimeInputFromContext(ctx, req.Input)
 	req.Input = input
+	opts := s.bclOptions(ctx, s.strictEvaluation(req.Strict))
+	opts.Context = runtimeContext
+	opts.Session = runtimeSession
+	if err := s.validateExternalPolicy(record.Program); err != nil {
+		envelope, auditErr := s.audit(ctx, "evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
+		return &EvaluateResponse{Audit: envelope}, err
+	}
 	report, err := bcl.EvaluateDecisionPlatform(record.Program, bcl.DecisionPlatformRequest{
 		Decision:        req.Decision,
 		Input:           input,
@@ -283,7 +310,7 @@ func (s *Service) Evaluate(ctx context.Context, definition string, req EvaluateR
 		Counterfactuals: req.Counterfactuals,
 		IncludeFeatures: req.IncludeFeatures,
 		Strict:          s.strictEvaluation(req.Strict),
-	}, &bcl.Options{AllowTime: true, Context: runtimeContext, Session: runtimeSession})
+	}, opts)
 	if err != nil {
 		envelope, auditErr := s.audit(ctx, "evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error()}, start, nil)
 		if auditErr != nil {
@@ -316,8 +343,9 @@ func (s *Service) Evaluate(ctx context.Context, definition string, req EvaluateR
 }
 
 func (s *Service) Test(ctx context.Context, definition, bundle string) (*TestReport, error) {
+	ctx = s.requestContext(ctx, "")
 	start := time.Now()
-	record, err := s.store.GetDefinition(ctx, definition)
+	record, err := s.store.GetActiveDefinition(ctx, definition, s.cfg.Environment)
 	if err != nil {
 		return nil, err
 	}
@@ -337,12 +365,13 @@ func (s *Service) Test(ctx context.Context, definition, bundle string) (*TestRep
 }
 
 func (s *Service) Gates(ctx context.Context, definition, bundle string) (*bcl.DecisionGateReport, error) {
+	ctx = s.requestContext(ctx, "")
 	start := time.Now()
-	record, err := s.store.GetDefinition(ctx, definition)
+	record, err := s.store.GetActiveDefinition(ctx, definition, s.cfg.Environment)
 	if err != nil {
 		return nil, err
 	}
-	report, err := bcl.EvaluateDecisionGates(record.Program, bundle, &bcl.Options{AllowTime: true})
+	report, err := bcl.EvaluateDecisionGates(record.Program, bundle, s.bclOptions(ctx, false))
 	if _, auditErr := s.audit(ctx, "gates", definition, record.Version, record.Environment, record.Digest, map[string]any{"bundle": bundle}, report, start, nil); auditErr != nil {
 		return nil, auditErr
 	}
@@ -357,9 +386,53 @@ func (s *Service) Compare(ctx context.Context, definition string, req Simulation
 	return s.comparePrograms(ctx, "compare", definition, req)
 }
 
+func (s *Service) Canary(ctx context.Context, definition string, req CanaryRequest) (*CanaryResponse, error) {
+	resp, err := s.comparePrograms(ctx, "canary", definition, req.SimulationRequest)
+	if resp == nil {
+		return nil, err
+	}
+	changed := 0
+	hasErrors := false
+	if resp.Compare != nil {
+		changed = len(resp.Compare.ChangedCases)
+		hasErrors = hasErrorDiagnostics(resp.Compare.Diagnostics)
+	}
+	passed := changed <= req.MaxChangedCases
+	if req.RequireNoErrors && hasErrors {
+		passed = false
+	}
+	out := &CanaryResponse{Passed: passed, ChangedCases: changed, Compare: resp.Compare, Audit: resp.Audit}
+	if err != nil {
+		return out, err
+	}
+	if !passed {
+		return out, fmt.Errorf("canary failed: %d changed cases", changed)
+	}
+	if req.Promote {
+		promotion, promoteErr := s.Publish(ctx, PublishRequest{
+			TenantID:     req.TenantID,
+			Name:         definition,
+			Version:      first(req.PromoteVersion, newID("canary-version")),
+			Source:       req.CandidateSource,
+			Path:         req.CandidatePath,
+			BaseDir:      req.CandidateBaseDir,
+			RunTests:     true,
+			Strict:       s.cfg.StrictValidation,
+			RequireTests: s.cfg.RequireTests,
+			Metadata:     req.PromoteMetadata,
+		})
+		out.Promotion = promotion
+		if promoteErr != nil {
+			return out, promoteErr
+		}
+	}
+	return out, nil
+}
+
 func (s *Service) comparePrograms(ctx context.Context, operation, definition string, req SimulationRequest) (*SimulationResponse, error) {
+	ctx = s.requestContext(ctx, req.TenantID)
 	start := time.Now()
-	base, err := s.store.GetDefinition(ctx, definition)
+	base, err := s.store.GetActiveDefinition(ctx, definition, s.cfg.Environment)
 	if err != nil {
 		return nil, err
 	}
@@ -370,9 +443,9 @@ func (s *Service) comparePrograms(ctx context.Context, operation, definition str
 	decision := first(req.Decision, firstDecision(base.Program))
 	var compare *bcl.DecisionCompareReport
 	if req.Dataset != "" {
-		compare, err = bcl.CompareDecisionDataset(base.Program, candidate, decision, req.Dataset, &bcl.Options{AllowTime: true})
+		compare, err = bcl.CompareDecisionDataset(base.Program, candidate, decision, req.Dataset, s.bclOptions(ctx, false))
 	} else {
-		compare, err = bcl.CompareDecisionBatch(base.Program, candidate, decision, req.Cases, &bcl.Options{AllowTime: true})
+		compare, err = bcl.CompareDecisionBatch(base.Program, candidate, decision, req.Cases, s.bclOptions(ctx, false))
 	}
 	if err != nil {
 		envelope, auditErr := s.audit(ctx, operation+"_failed", definition, base.Version, base.Environment, base.Digest, req, map[string]any{"error": err.Error()}, start, nil)
@@ -403,15 +476,19 @@ func (s *Service) shadowEvaluate(ctx context.Context, req EvaluateRequest, base 
 	if err != nil {
 		return nil, err
 	}
+	opts := s.bclOptions(ctx, false)
+	opts.Context = ContextFactsFromContext(ctx)
+	opts.Session = SessionFromContext(ctx)
 	return bcl.CompareDecisionBatch(base, candidate, req.Decision, []bcl.DecisionBatchCase{{
 		ID:    "shadow",
 		Input: req.Input,
-	}}, &bcl.Options{AllowTime: true, Context: ContextFactsFromContext(ctx), Session: SessionFromContext(ctx)})
+	}}, opts)
 }
 
 func (s *Service) Reload(ctx context.Context, req ReloadRequest) (*ReloadResponse, error) {
+	ctx = s.requestContext(ctx, req.TenantID)
 	start := time.Now()
-	last, err := s.store.GetDefinition(ctx, req.Name)
+	last, err := s.store.GetActiveDefinition(ctx, req.Name, s.cfg.Environment)
 	if err != nil {
 		return nil, err
 	}
@@ -432,22 +509,27 @@ func (s *Service) Reload(ctx context.Context, req ReloadRequest) (*ReloadRespons
 }
 
 func (s *Service) ListAudits(ctx context.Context) ([]audit.Envelope, error) {
+	ctx = s.requestContext(ctx, "")
 	return s.store.ListAudits(ctx)
 }
 
 func (s *Service) QueryAudits(ctx context.Context, opts storage.ListOptions) ([]audit.Envelope, error) {
+	ctx = s.requestContext(ctx, opts.TenantID)
 	return s.store.ListAuditsQuery(ctx, opts)
 }
 
 func (s *Service) QueryReports(ctx context.Context, opts storage.ListOptions) ([]storage.ReportRecord, error) {
+	ctx = s.requestContext(ctx, opts.TenantID)
 	return s.store.ListReportsQuery(ctx, opts)
 }
 
 func (s *Service) GetAudit(ctx context.Context, id string) (audit.Envelope, error) {
+	ctx = s.requestContext(ctx, "")
 	return s.store.GetAudit(ctx, id)
 }
 
 func (s *Service) VerifyAudits(ctx context.Context) error {
+	ctx = s.requestContext(ctx, "")
 	records, err := s.store.ListAudits(ctx)
 	if err != nil {
 		return err
@@ -456,6 +538,7 @@ func (s *Service) VerifyAudits(ctx context.Context) error {
 }
 
 func (s *Service) Ready(ctx context.Context) error {
+	ctx = s.requestContext(ctx, "")
 	_, err := s.store.ListDefinitions(ctx)
 	if err != nil {
 		return err
@@ -482,6 +565,7 @@ func runtimeInputFromContext(ctx context.Context, input map[string]any) (map[str
 }
 
 func (s *Service) ProductionReadiness(ctx context.Context) ProductionReadinessReport {
+	ctx = s.requestContext(ctx, "")
 	report := ProductionReadinessReport{
 		Ready:       true,
 		Environment: s.cfg.Environment,
@@ -494,6 +578,9 @@ func (s *Service) ProductionReadiness(ctx context.Context) ProductionReadinessRe
 			"activation_approval_required": s.cfg.RequireActivationApproval,
 			"request_timeout_configured":   s.cfg.RequestTimeout > 0,
 			"max_request_bytes_configured": s.cfg.MaxRequestBytes > 0,
+			"tenant_isolation_enabled":     true,
+			"deterministic_runtime":        true,
+			"external_policy_restricted":   len(s.cfg.Runtime.AllowedDatasetAdapters) == 0 || s.cfg.Runtime.ExternalTimeout > 0,
 		},
 	}
 	if _, err := s.store.ListDefinitions(ctx); err == nil {
@@ -513,8 +600,9 @@ func (s *Service) ProductionReadiness(ctx context.Context) ProductionReadinessRe
 }
 
 func (s *Service) StartWorkflow(ctx context.Context, definition, workflowID string, input map[string]any) (*WorkflowRun, error) {
+	ctx = s.requestContext(ctx, "")
 	start := time.Now()
-	record, err := s.store.GetDefinition(ctx, definition)
+	record, err := s.store.GetActiveDefinition(ctx, definition, s.cfg.Environment)
 	if err != nil {
 		return nil, err
 	}
@@ -525,6 +613,7 @@ func (s *Service) StartWorkflow(ctx context.Context, definition, workflowID stri
 	stage := first(workflow.Start, firstWorkflowStage(workflow))
 	run := WorkflowRun{
 		ID:          newID("workflow"),
+		TenantID:    TenantFromContext(ctx),
 		Definition:  definition,
 		Version:     record.Version,
 		Environment: record.Environment,
@@ -548,12 +637,13 @@ func (s *Service) StartWorkflow(ctx context.Context, definition, workflowID stri
 }
 
 func (s *Service) AdvanceWorkflow(ctx context.Context, runID string, input map[string]any) (*WorkflowRun, error) {
+	ctx = s.requestContext(ctx, "")
 	start := time.Now()
 	record, err := s.store.GetWorkflowRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
-	definition, err := s.store.GetDefinition(ctx, record.Definition)
+	definition, err := s.store.GetActiveDefinition(ctx, record.Definition, record.Environment)
 	if err != nil {
 		return nil, err
 	}
@@ -579,6 +669,7 @@ func (s *Service) AdvanceWorkflow(ctx context.Context, runID string, input map[s
 }
 
 func (s *Service) GetWorkflowRun(ctx context.Context, runID string) (*WorkflowRun, error) {
+	ctx = s.requestContext(ctx, "")
 	record, err := s.store.GetWorkflowRun(ctx, runID)
 	if err != nil {
 		return nil, err
@@ -588,6 +679,7 @@ func (s *Service) GetWorkflowRun(ctx context.Context, runID string) (*WorkflowRu
 }
 
 func (s *Service) ListWorkflowRuns(ctx context.Context, opts storage.ListOptions) ([]storage.WorkflowRunRecord, error) {
+	ctx = s.requestContext(ctx, opts.TenantID)
 	return s.store.ListWorkflowRuns(ctx, opts)
 }
 
@@ -602,7 +694,7 @@ func (s *Service) runTests(program *bcl.DecisionProgram, defaultDecision, bundle
 		decision := first(test.Decision, defaultDecision)
 		result, err := bcl.EvaluateDecisionScenario(program, &bcl.DecisionScenario{
 			Name: test.Name, Decision: decision, Input: test.Input, Expect: test.Expect,
-		}, &bcl.Options{AllowTime: true})
+		}, s.bclOptions(context.Background(), false))
 		if err != nil {
 			report.Passed = false
 			report.Diagnostics = append(report.Diagnostics, bcl.Diagnostic{Severity: "error", Message: err.Error()})
@@ -614,7 +706,7 @@ func (s *Service) runTests(program *bcl.DecisionProgram, defaultDecision, bundle
 		report.Scenarios = append(report.Scenarios, *result)
 	}
 	if bundle != "" {
-		gates, err := bcl.EvaluateDecisionGates(program, bundle, &bcl.Options{AllowTime: true})
+		gates, err := bcl.EvaluateDecisionGates(program, bundle, s.bclOptions(context.Background(), false))
 		report.Gates = gates
 		if err != nil {
 			report.Passed = false
@@ -643,12 +735,12 @@ func (s *Service) validatePublish(ctx context.Context, req ValidationRequest) (*
 		return report, nil, "", err
 	}
 	report.Digest = audit.DigestBytes([]byte(source))
-	program, err := compileSource(source, req.Path, baseDir, strict)
+	program, err := compileSource(source, req.Path, baseDir, s.bclOptions(ctx, strict))
 	if err != nil {
 		report.Diagnostics = append(report.Diagnostics, bcl.Diagnostic{Severity: "error", Message: err.Error()})
 		return report, nil, source, err
 	}
-	report.Diagnostics = append(report.Diagnostics, documentDiagnostics(source, req.Path, baseDir, strict)...)
+	report.Diagnostics = append(report.Diagnostics, documentDiagnostics(source, req.Path, baseDir, s.bclOptions(ctx, strict))...)
 	if program != nil {
 		report.Name = first(req.Name, firstModule(program), report.Name)
 		report.Features = bcl.InspectDecisionPlatform(program)
@@ -687,15 +779,114 @@ func (s *Service) requireTests(requested bool) bool {
 	return requested || (s != nil && s.cfg.RequireTests)
 }
 
-func documentDiagnostics(source, path, baseDir string, strict bool) []bcl.Diagnostic {
-	doc, opts, err := parseDocumentForValidation(source, path, baseDir, strict)
+func (s *Service) requestContext(ctx context.Context, tenant string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	current := TenantFromContext(ctx)
+	if current != "default" {
+		return ctx
+	}
+	if tenant == "" && s != nil {
+		tenant = s.cfg.DefaultTenant
+	}
+	return ContextWithTenant(ctx, first(tenant, "default"))
+}
+
+func (s *Service) bclOptions(ctx context.Context, strict bool) *bcl.Options {
+	policy := RuntimePolicy{}
+	if s != nil {
+		policy = s.cfg.Runtime
+	}
+	opts := &bcl.Options{
+		Strict:                 strict,
+		AllowTime:              policy.AllowTime || strings.TrimSpace(policy.FixedTime) != "",
+		AllowEnv:               policy.AllowEnv,
+		ResolveImports:         true,
+		ResolveModules:         true,
+		Context:                ContextFactsFromContext(ctx),
+		Session:                SessionFromContext(ctx),
+		AllowedDatasetAdapters: policy.AllowedDatasetAdapters,
+		AllowedHTTPHosts:       policy.AllowedHTTPHosts,
+		AllowedHTTPMethods:     policy.AllowedHTTPMethods,
+		ExternalTimeout:        policy.ExternalTimeout,
+	}
+	if policy.FixedTime != "" {
+		fixed, err := time.Parse(time.RFC3339Nano, policy.FixedTime)
+		if err == nil {
+			opts.Now = func() time.Time { return fixed.UTC() }
+		}
+	}
+	if policy.ExternalTimeout > 0 {
+		opts.HTTPClient = &http.Client{Timeout: policy.ExternalTimeout}
+	}
+	return opts
+}
+
+func (s *Service) validateExternalPolicy(program *bcl.DecisionProgram) error {
+	if program == nil {
+		return nil
+	}
+	allowedAdapters := stringSet(s.cfg.Runtime.AllowedDatasetAdapters)
+	allowedHosts := stringSet(s.cfg.Runtime.AllowedHTTPHosts)
+	allowedMethods := stringSet(s.cfg.Runtime.AllowedHTTPMethods)
+	for id, dataset := range program.Datasets {
+		adapter := strings.ToLower(strings.TrimSpace(dataset.Source.Adapter))
+		if adapter == "" || adapter == "inline" {
+			continue
+		}
+		if !allowedAdapters[adapter] {
+			return fmt.Errorf("dataset %q uses disallowed adapter %q", id, adapter)
+		}
+		if adapter == "http" || adapter == "https" {
+			rawURL := first(scalarString(dataset.Source.Config["url"]), scalarString(dataset.Source.Config["endpoint"]), scalarString(dataset.Source.Config["base_url"]))
+			parsed, err := url.Parse(rawURL)
+			if err != nil || parsed.Hostname() == "" {
+				return fmt.Errorf("dataset %q has invalid http url", id)
+			}
+			if !allowedHosts[strings.ToLower(parsed.Hostname())] {
+				return fmt.Errorf("dataset %q uses disallowed host %q", id, parsed.Hostname())
+			}
+			method := strings.ToUpper(first(scalarString(dataset.Source.Config["method"]), "GET"))
+			if len(allowedMethods) == 0 || !allowedMethods[method] {
+				return fmt.Errorf("dataset %q uses disallowed method %q", id, method)
+			}
+			if s.cfg.Runtime.ExternalTimeout <= 0 {
+				return fmt.Errorf("dataset %q requires external_timeout", id)
+			}
+		}
+	}
+	return nil
+}
+
+func stringSet(values []string) map[string]bool {
+	out := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out[strings.ToLower(value)] = true
+			out[strings.ToUpper(value)] = true
+		}
+	}
+	return out
+}
+
+func scalarString(v any) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprint(v)
+}
+
+func documentDiagnostics(source, path, baseDir string, opts *bcl.Options) []bcl.Diagnostic {
+	doc, opts, err := parseDocumentForValidation(source, path, baseDir, opts)
 	if err != nil {
 		return []bcl.Diagnostic{{Severity: "error", Message: err.Error()}}
 	}
 	resolved, resolveDiags := bcl.ResolveDocument(doc, opts)
 	diags := append([]bcl.Diagnostic{}, resolveDiags...)
 	diags = append(diags, bcl.Validate(resolved, opts)...)
-	if !strict {
+	if opts == nil || !opts.Strict {
 		return diags
 	}
 	if !hasBCLVersionDeclaration(doc.Items) {
@@ -704,8 +895,12 @@ func documentDiagnostics(source, path, baseDir string, strict bool) []bcl.Diagno
 	return diags
 }
 
-func parseDocumentForValidation(source, path, baseDir string, strict bool) (*bcl.Document, *bcl.Options, error) {
-	opts := &bcl.Options{AllowTime: true, ResolveImports: true, ResolveModules: true, Strict: strict}
+func parseDocumentForValidation(source, path, baseDir string, opts *bcl.Options) (*bcl.Document, *bcl.Options, error) {
+	if opts == nil {
+		opts = &bcl.Options{}
+	}
+	opts.ResolveImports = true
+	opts.ResolveModules = true
 	if path != "" {
 		doc, err := bcl.ParsePath(path)
 		if err != nil {
@@ -783,9 +978,9 @@ func metadataBool(metadata map[string]any, key string) bool {
 func (s *Service) candidateProgram(req SimulationRequest) (*bcl.DecisionProgram, error) {
 	switch {
 	case req.CandidatePath != "":
-		return bcl.CompileDecisionFile(req.CandidatePath, &bcl.Options{AllowTime: true})
+		return bcl.CompileDecisionFile(req.CandidatePath, s.bclOptions(context.Background(), false))
 	case req.CandidateSource != "":
-		return compileSource(req.CandidateSource, "", req.CandidateBaseDir, false)
+		return compileSource(req.CandidateSource, "", req.CandidateBaseDir, s.bclOptions(context.Background(), false))
 	default:
 		return nil, fmt.Errorf("candidate_source or candidate_path is required")
 	}
@@ -817,6 +1012,7 @@ func (s *Service) audit(ctx context.Context, operation, definition, version, env
 		ID:               newID(operation),
 		Operation:        operation,
 		Definition:       definition,
+		TenantID:         TenantFromContext(ctx),
 		Version:          version,
 		Environment:      env,
 		Subject:          SubjectFromContext(ctx),
@@ -827,11 +1023,65 @@ func (s *Service) audit(ctx context.Context, operation, definition, version, env
 		CompletedAt:      completed,
 		DurationMS:       completed.Sub(start).Milliseconds(),
 		TraceSummary:     trimTrace(trace),
+		Metadata:         s.auditMetadata(request, result, completed.Sub(start)),
 	}, previous)
 	if err := s.store.AppendAudit(ctx, envelope); err != nil {
 		return audit.Envelope{}, fmt.Errorf("audit append failed: %w", err)
 	}
 	return envelope, nil
+}
+
+func (s *Service) auditMetadata(request, result any, latency time.Duration) map[string]any {
+	meta := map[string]any{
+		"latency_ms":                 latency.Milliseconds(),
+		"runtime_policy_fingerprint": audit.Fingerprint(s.cfg.Runtime),
+		"input_hash":                 audit.Fingerprint(request),
+	}
+	var report *bcl.DecisionPlatformReport
+	switch v := result.(type) {
+	case map[string]any:
+		report, _ = v["report"].(*bcl.DecisionPlatformReport)
+	case *bcl.DecisionPlatformReport:
+		report = v
+	}
+	if report != nil {
+		meta["diagnostics_count"] = len(report.Diagnostics)
+		if report.Decision != nil {
+			meta["decision_id"] = report.Decision.DecisionID
+			meta["effect"] = report.Decision.Effect
+			meta["reason_code"] = report.Decision.ReasonCode
+			matched, skipped, selected := traceCounts(report.Decision.Explain)
+			meta["matched_rules"] = matched
+			meta["skipped_rules"] = skipped
+			meta["selected_rules"] = selected
+		}
+		if len(report.DatasetSources) > 0 {
+			meta["dataset_source_fingerprints"] = fingerprintDatasetSources(report.DatasetSources)
+		}
+	}
+	return meta
+}
+
+func traceCounts(trace []bcl.DecisionTrace) (matched, skipped, selected int) {
+	for _, item := range trace {
+		switch item.Status {
+		case "matched":
+			matched++
+		case "skipped", "skipped_effective_window":
+			skipped++
+		case "selected":
+			selected++
+		}
+	}
+	return matched, skipped, selected
+}
+
+func fingerprintDatasetSources(sources map[string]bcl.DatasetSource) map[string]string {
+	out := map[string]string{}
+	for id, source := range sources {
+		out[id] = audit.Fingerprint(source)
+	}
+	return out
 }
 
 func sourceFromPublish(req PublishRequest) (source, baseDir string, err error) {
@@ -857,13 +1107,19 @@ func hasErrorDiagnostics(diags []bcl.Diagnostic) bool {
 	return false
 }
 
-func compileSource(source, path, baseDir string, strict bool) (*bcl.DecisionProgram, error) {
+func compileSource(source, path, baseDir string, opts *bcl.Options) (*bcl.DecisionProgram, error) {
+	if opts == nil {
+		opts = &bcl.Options{}
+	}
 	if path != "" {
 		doc, err := bcl.ParsePath(path)
 		if err != nil {
 			return nil, err
 		}
-		program, err := bcl.CompileDecisionDocument(doc, &bcl.Options{AllowTime: true, BaseDir: filepath.Dir(path), ResolveImports: true, ResolveModules: true, Strict: strict})
+		opts.BaseDir = filepath.Dir(path)
+		opts.ResolveImports = true
+		opts.ResolveModules = true
+		program, err := bcl.CompileDecisionDocument(doc, opts)
 		attachWorkflowBlocks(program, doc)
 		return program, err
 	}
@@ -871,7 +1127,10 @@ func compileSource(source, path, baseDir string, strict bool) (*bcl.DecisionProg
 	if err != nil {
 		return nil, err
 	}
-	program, err := bcl.CompileDecisionDocument(doc, &bcl.Options{AllowTime: true, BaseDir: baseDir, ResolveImports: true, ResolveModules: true, Strict: strict})
+	opts.BaseDir = baseDir
+	opts.ResolveImports = true
+	opts.ResolveModules = true
+	program, err := bcl.CompileDecisionDocument(doc, opts)
 	attachWorkflowBlocks(program, doc)
 	return program, err
 }

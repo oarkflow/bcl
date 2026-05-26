@@ -1,0 +1,8 @@
+{
+  "request": {
+    "user": {
+      "active": true
+    },
+    "action": "read"
+  }
+}

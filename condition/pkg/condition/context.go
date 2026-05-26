@@ -1,6 +1,10 @@
 package condition
 
-import "context"
+import (
+	"context"
+
+	"github.com/oarkflow/condition/pkg/storage"
+)
 
 type contextKey string
 
@@ -38,6 +42,14 @@ func ContextWithSubject(ctx context.Context, subject string) context.Context {
 		return ctx
 	}
 	return WithContextValue(ctx, "subject.id", subject)
+}
+
+func ContextWithTenant(ctx context.Context, tenant string) context.Context {
+	return storage.ContextWithTenant(ctx, tenant)
+}
+
+func TenantFromContext(ctx context.Context) string {
+	return storage.TenantFromContext(ctx)
 }
 
 func SubjectFromContext(ctx context.Context) string {

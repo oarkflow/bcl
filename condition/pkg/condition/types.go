@@ -10,15 +10,28 @@ import (
 
 type Config struct {
 	Environment               string        `json:"environment,omitempty"`
+	DefaultTenant             string        `json:"default_tenant,omitempty"`
 	RequestTimeout            time.Duration `json:"request_timeout,omitempty"`
 	MaxRequestBytes           int64         `json:"max_request_bytes,omitempty"`
 	StrictValidation          bool          `json:"strict_validation,omitempty"`
 	StrictEvaluation          bool          `json:"strict_evaluation,omitempty"`
 	RequireActivationApproval bool          `json:"require_activation_approval,omitempty"`
 	RequireTests              bool          `json:"require_tests,omitempty"`
+	Runtime                   RuntimePolicy `json:"runtime,omitempty"`
+}
+
+type RuntimePolicy struct {
+	AllowTime              bool          `json:"allow_time,omitempty"`
+	FixedTime              string        `json:"fixed_time,omitempty"`
+	AllowEnv               bool          `json:"allow_env,omitempty"`
+	AllowedDatasetAdapters []string      `json:"allowed_dataset_adapters,omitempty"`
+	AllowedHTTPHosts       []string      `json:"allowed_http_hosts,omitempty"`
+	AllowedHTTPMethods     []string      `json:"allowed_http_methods,omitempty"`
+	ExternalTimeout        time.Duration `json:"external_timeout,omitempty"`
 }
 
 type PublishRequest struct {
+	TenantID     string         `json:"tenant_id,omitempty"`
 	Name         string         `json:"name,omitempty"`
 	Version      string         `json:"version,omitempty"`
 	Environment  string         `json:"environment,omitempty"`
@@ -40,6 +53,7 @@ type PublishResponse struct {
 }
 
 type EvaluateRequest struct {
+	TenantID               string         `json:"tenant_id,omitempty"`
 	Decision               string         `json:"decision"`
 	Input                  map[string]any `json:"input,omitempty"`
 	Bundle                 string         `json:"bundle,omitempty"`
@@ -69,6 +83,7 @@ type TestReport struct {
 }
 
 type ValidationRequest struct {
+	TenantID     string `json:"tenant_id,omitempty"`
 	Name         string `json:"name,omitempty"`
 	Version      string `json:"version,omitempty"`
 	Environment  string `json:"environment,omitempty"`
@@ -103,6 +118,7 @@ type ActivationResponse struct {
 }
 
 type ApprovalRequest struct {
+	TenantID    string `json:"tenant_id,omitempty"`
 	Environment string `json:"environment,omitempty"`
 	ApprovedBy  string `json:"approved_by,omitempty"`
 	Reason      string `json:"reason,omitempty"`
@@ -121,12 +137,14 @@ type ProductionReadinessReport struct {
 }
 
 type DisableRequest struct {
+	TenantID    string `json:"tenant_id,omitempty"`
 	Version     string `json:"version,omitempty"`
 	Environment string `json:"environment,omitempty"`
 	Reason      string `json:"reason,omitempty"`
 }
 
 type SimulationRequest struct {
+	TenantID         string                  `json:"tenant_id,omitempty"`
 	CandidateSource  string                  `json:"candidate_source,omitempty"`
 	CandidatePath    string                  `json:"candidate_path,omitempty"`
 	CandidateBaseDir string                  `json:"candidate_base_dir,omitempty"`
@@ -140,7 +158,25 @@ type SimulationResponse struct {
 	Audit   audit.Envelope             `json:"audit"`
 }
 
+type CanaryRequest struct {
+	SimulationRequest
+	MaxChangedCases int            `json:"max_changed_cases,omitempty"`
+	RequireNoErrors bool           `json:"require_no_errors,omitempty"`
+	Promote         bool           `json:"promote,omitempty"`
+	PromoteVersion  string         `json:"promote_version,omitempty"`
+	PromoteMetadata map[string]any `json:"promote_metadata,omitempty"`
+}
+
+type CanaryResponse struct {
+	Passed       bool                       `json:"passed"`
+	ChangedCases int                        `json:"changed_cases"`
+	Compare      *bcl.DecisionCompareReport `json:"compare,omitempty"`
+	Promotion    *PublishResponse           `json:"promotion,omitempty"`
+	Audit        audit.Envelope             `json:"audit"`
+}
+
 type ReloadRequest struct {
+	TenantID string `json:"tenant_id,omitempty"`
 	Name     string `json:"name"`
 	Path     string `json:"path,omitempty"`
 	RunTests bool   `json:"run_tests,omitempty"`
@@ -182,6 +218,7 @@ type WorkflowTransition struct {
 
 type WorkflowRun struct {
 	ID          string          `json:"id"`
+	TenantID    string          `json:"tenant_id,omitempty"`
 	Definition  string          `json:"definition"`
 	Version     string          `json:"version,omitempty"`
 	Environment string          `json:"environment,omitempty"`
@@ -197,6 +234,7 @@ type WorkflowRun struct {
 }
 
 type WorkflowRequest struct {
+	TenantID    string         `json:"tenant_id,omitempty"`
 	Input       map[string]any `json:"input,omitempty"`
 	Environment string         `json:"environment,omitempty"`
 }

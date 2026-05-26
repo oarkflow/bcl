@@ -143,7 +143,7 @@ func defaultRoles() []*authz.Role {
 		{ID: "condition-admin", Name: "Condition Admin", Permissions: perms([]string{"GET", "POST", "PUT", "DELETE"}, "route:*")},
 		{ID: "condition-publisher", Name: "Condition Publisher", Permissions: perms([]string{"GET", "POST"}, "route:POST:/v1/definitions", "route:POST:/v1/definitions/validate", "route:GET:/v1/definitions/:name/versions", "route:POST:/v1/definitions/:name/versions/:version/approve", "route:POST:/v1/definitions/:name/versions/:version/activate", "route:POST:/v1/definitions/:name/disable", "route:POST:/v1/definitions/:name/enable", "route:POST:/v1/definitions/:name/rollback", "route:POST:/v1/reload")},
 		{ID: "condition-operator", Name: "Condition Operator", Permissions: perms([]string{"GET", "POST"}, "route:GET:/v1/definitions", "route:GET:/v1/definitions/:name", "route:POST:/v1/definitions/:name/evaluate", "route:POST:/v1/definitions/:name/tests", "route:POST:/v1/definitions/:name/gates", "route:POST:/v1/definitions/:name/workflows/:workflow/start", "route:POST:/v1/workflows/:id/advance", "route:GET:/v1/workflows", "route:GET:/v1/workflows/:id")},
-		{ID: "condition-simulator", Name: "Condition Simulator", Permissions: perms([]string{"POST"}, "route:POST:/v1/definitions/:name/simulate", "route:POST:/v1/definitions/:name/compare")},
+		{ID: "condition-simulator", Name: "Condition Simulator", Permissions: perms([]string{"POST"}, "route:POST:/v1/definitions/:name/simulate", "route:POST:/v1/definitions/:name/compare", "route:POST:/v1/definitions/:name/canary")},
 		{ID: "condition-auditor", Name: "Condition Auditor", Permissions: perms([]string{"GET", "POST"}, "route:GET:/v1/readiness", "route:GET:/v1/audits", "route:GET:/v1/audits/:id", "route:POST:/v1/audits/verify", "route:GET:/v1/reports", "route:GET:/v1/metrics")},
 	}
 }
@@ -359,6 +359,19 @@ func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *Server) canary(w http.ResponseWriter, r *http.Request) {
+	var req condition.CanaryRequest
+	if !decodeJSON(w, r, s.maxBody, &req) {
+		return
+	}
+	resp, err := s.service.Canary(r.Context(), r.PathValue("name"), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "canary_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) startWorkflow(w http.ResponseWriter, r *http.Request) {
 	var req condition.WorkflowRequest
 	if !decodeJSON(w, r, s.maxBody, &req) {
@@ -481,7 +494,7 @@ func (s *Server) observe(next http.Handler) http.Handler {
 		rr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		s.metrics.Begin()
 		defer func() {
-			s.metrics.End(r.Method, r.URL.Path, rr.status, time.Since(start))
+			s.metrics.End(firstNonEmpty(r.Header.Get("X-Tenant-ID"), condition.TenantFromContext(r.Context())), r.Method, r.URL.Path, rr.status, time.Since(start))
 			if s.logf != nil {
 				s.logf("%s %s status=%d duration=%s", r.Method, r.URL.Path, rr.status, time.Since(start))
 			}
@@ -498,6 +511,7 @@ func (s *Server) withSubject(next http.Handler) http.Handler {
 		}
 		ctx := condition.ContextWithSubject(r.Context(), subject)
 		if tenantID := r.Header.Get("X-Tenant-ID"); tenantID != "" {
+			ctx = condition.ContextWithTenant(ctx, tenantID)
 			ctx = condition.WithContextValue(ctx, "tenant.id", tenantID)
 		}
 		if requestID := firstHeader(r, "X-Request-ID", "X-Correlation-ID"); requestID != "" {
@@ -609,6 +623,7 @@ type Metrics struct {
 	mu           sync.RWMutex
 	routeCounts  map[string]int64
 	statusCounts map[int]int64
+	tenantCounts map[string]int64
 }
 
 type MetricsSnapshot struct {
@@ -621,10 +636,11 @@ type MetricsSnapshot struct {
 	AverageLatencyMS float64          `json:"average_latency_ms"`
 	Routes           map[string]int64 `json:"routes,omitempty"`
 	Statuses         map[string]int64 `json:"statuses,omitempty"`
+	Tenants          map[string]int64 `json:"tenants,omitempty"`
 }
 
 func NewMetrics() *Metrics {
-	return &Metrics{started: time.Now(), routeCounts: map[string]int64{}, statusCounts: map[int]int64{}}
+	return &Metrics{started: time.Now(), routeCounts: map[string]int64{}, statusCounts: map[int]int64{}, tenantCounts: map[string]int64{}}
 }
 
 func (m *Metrics) Begin() {
@@ -633,7 +649,7 @@ func (m *Metrics) Begin() {
 	}
 }
 
-func (m *Metrics) End(method, path string, status int, duration time.Duration) {
+func (m *Metrics) End(tenant, method, path string, status int, duration time.Duration) {
 	if m == nil {
 		return
 	}
@@ -646,6 +662,7 @@ func (m *Metrics) End(method, path string, status int, duration time.Duration) {
 	m.mu.Lock()
 	m.routeCounts[method+" "+path]++
 	m.statusCounts[status]++
+	m.tenantCounts[firstNonEmpty(tenant, "default")]++
 	m.mu.Unlock()
 }
 
@@ -674,6 +691,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		AverageLatencyMS: avg,
 		Routes:           map[string]int64{},
 		Statuses:         map[string]int64{},
+		Tenants:          map[string]int64{},
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -682,6 +700,9 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 	}
 	for k, v := range m.statusCounts {
 		snapshot.Statuses[strconv.Itoa(k)] = v
+	}
+	for k, v := range m.tenantCounts {
+		snapshot.Tenants[k] = v
 	}
 	return snapshot
 }
@@ -804,6 +825,15 @@ func firstHeader(r *http.Request, names ...string) string {
 	return ""
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 func listOptionsFromRequest(r *http.Request) storage.ListOptions {
 	q := r.URL.Query()
 	opts := storage.ListOptions{
@@ -812,6 +842,7 @@ func listOptionsFromRequest(r *http.Request) storage.ListOptions {
 		Definition:  q.Get("definition"),
 		Subject:     q.Get("subject"),
 		Environment: q.Get("environment"),
+		TenantID:    firstNonEmpty(q.Get("tenant_id"), r.Header.Get("X-Tenant-ID")),
 	}
 	if limit, err := strconv.Atoi(q.Get("limit")); err == nil {
 		opts.Limit = limit

@@ -58,6 +58,9 @@ func OpenDecisionDataset(ctx context.Context, program *DecisionProgram, datasetI
 	if dataset.Source.Adapter == "" || strings.EqualFold(dataset.Source.Adapter, "inline") {
 		return &sliceDecisionIterator{records: dataset.Records}, nil
 	}
+	if !datasetAdapterAllowed(dataset.Source.Adapter, opts) {
+		return nil, fmt.Errorf("dataset adapter %q is not allowed", dataset.Source.Adapter)
+	}
 	adapter, ok := decisionDatasetAdapterFor(dataset.Source.Adapter, opts)
 	if !ok {
 		return nil, fmt.Errorf("unknown dataset adapter %q", dataset.Source.Adapter)
@@ -149,6 +152,9 @@ func openHTTPDecisionDataset(ctx context.Context, source DatasetSource, opts *Op
 		return nil, fmt.Errorf("http dataset source requires url")
 	}
 	method := strings.ToUpper(firstNonEmpty(scalarString(source.Config["method"]), "GET"))
+	if err := validateHTTPDatasetPolicy(url, method, opts); err != nil {
+		return nil, err
+	}
 	var body io.Reader
 	if payload := source.Config["body"]; payload != nil {
 		b, err := json.Marshal(payload)
@@ -170,6 +176,8 @@ func openHTTPDecisionDataset(ctx context.Context, source DatasetSource, opts *Op
 	client := http.DefaultClient
 	if opts != nil && opts.HTTPClient != nil {
 		client = opts.HTTPClient
+	} else if opts != nil && opts.ExternalTimeout > 0 {
+		client = &http.Client{Timeout: opts.ExternalTimeout}
 	} else if timeout := durationValue(source.Config["timeout"]); timeout > 0 {
 		client = &http.Client{Timeout: timeout}
 	}
@@ -199,6 +207,51 @@ func openHTTPDecisionDataset(ctx context.Context, source DatasetSource, opts *Op
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("unsupported http dataset format %q", format)
 	}
+}
+
+func datasetAdapterAllowed(adapter string, opts *Options) bool {
+	if opts == nil || len(opts.AllowedDatasetAdapters) == 0 {
+		return true
+	}
+	adapter = strings.ToLower(strings.TrimSpace(adapter))
+	for _, allowed := range opts.AllowedDatasetAdapters {
+		if strings.EqualFold(strings.TrimSpace(allowed), adapter) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateHTTPDatasetPolicy(rawURL, method string, opts *Options) error {
+	if opts == nil {
+		return nil
+	}
+	if len(opts.AllowedHTTPMethods) > 0 {
+		allowed := false
+		for _, candidate := range opts.AllowedHTTPMethods {
+			if strings.EqualFold(strings.TrimSpace(candidate), method) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("http dataset method %q is not allowed", method)
+		}
+	}
+	if len(opts.AllowedHTTPHosts) == 0 {
+		return nil
+	}
+	req, err := http.NewRequest(method, rawURL, nil)
+	if err != nil {
+		return err
+	}
+	host := strings.ToLower(req.URL.Hostname())
+	for _, allowed := range opts.AllowedHTTPHosts {
+		if strings.EqualFold(strings.TrimSpace(allowed), host) {
+			return nil
+		}
+	}
+	return fmt.Errorf("http dataset host %q is not allowed", host)
 }
 
 type closeReader interface {

@@ -522,6 +522,7 @@ func evalOptionsFrom(opts *Options, vars map[string]any) *EvalOptions {
 		eopts.AllowEncoding = opts.AllowEncoding
 		eopts.AllowTime = opts.AllowTime
 		eopts.Functions = opts.EvalFunctions
+		eopts.Now = opts.Now
 	}
 	return eopts
 }
@@ -536,6 +537,7 @@ func evalExprBool(expr string, input map[string]any, opts *Options) (bool, error
 		eopts.AllowEncoding = opts.AllowEncoding
 		eopts.AllowTime = opts.AllowTime
 		eopts.Functions = opts.EvalFunctions
+		eopts.Now = opts.Now
 	}
 	v, err := EvalExpr(expr, &eopts)
 	if err != nil {

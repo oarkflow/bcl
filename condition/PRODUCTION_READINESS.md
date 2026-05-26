@@ -55,3 +55,17 @@
 - Added CLI HTTP server read/header/write/idle timeouts, graceful shutdown, optional TLS, and max header sizing.
 - Added trusted proxy CIDR handling so forwarded client IP headers are ignored unless the peer is trusted.
 - Added SQLite operational tuning: ping on startup, foreign keys, busy timeout, WAL mode for file databases, synchronous NORMAL, and bounded connection pools.
+- Added injectable BCL runtime clocks and service runtime policy for fixed time, env access, external adapter allowlists, HTTP host/method allowlists, and external timeouts.
+- Added tenant partitioning for definitions, active versions, audits, reports, workflows, HTTP requests, CLI commands, and store queries. Legacy records map to tenant `default`.
+- Added deny-by-default external dataset policy checks before evaluation.
+- Added richer audit metadata for runtime policy fingerprints, input hashes, decision outcome, rule counts, diagnostics counts, latency, and dataset source fingerprints.
+- Added tenant-aware metrics snapshots.
+- Added strict validation coverage for all `condition/examples/*/decision.bcl`, tenant isolation tests, deterministic runtime tests, external policy tests, race-safe concurrent store tests, and additional scale benchmarks.
+- Added SQLite table rebuild migration for legacy primary keys so existing databases can support duplicate definition name/version/environment across tenants.
+- Added root BCL `Options` policy fields for direct callers that need adapter, HTTP host, HTTP method, and external timeout enforcement.
+- Added a first-class canary service/API/CLI flow backed by compare reports.
+- Added a complete `examples/enterprise-hardening` walkthrough for tenants, deterministic time, external dataset policy, and canary checks.
+
+## Remaining Known Limits
+
+- No known production-hardening gaps remain from this slice. Future work should focus on deployment-specific controls such as enterprise identity provider integration, long-term audit export, and operator runbooks.

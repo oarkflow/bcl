@@ -20,6 +20,7 @@ type EvalOptions struct {
 	AllowTime     bool
 	Variables     map[string]any
 	Functions     map[string]EvalFunction
+	Now           func() time.Time
 }
 
 type EvalFunction func(args []any, opts *EvalOptions) (any, error)
@@ -51,6 +52,20 @@ var evalDefaults = EvalOptions{}
 
 func defaultEvalOptions() *EvalOptions {
 	return &evalDefaults
+}
+
+func evalNow(opts *EvalOptions) time.Time {
+	if opts != nil && opts.Now != nil {
+		return opts.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func optionsNow(opts *Options) time.Time {
+	if opts != nil && opts.Now != nil {
+		return opts.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 var exprTokenCache sync.Map
@@ -664,7 +679,7 @@ func (e *exprParser) prefix() (any, error) {
 			if !e.opts.AllowTime {
 				return nil, fmt.Errorf("time.now requires time capability")
 			}
-			return time.Now().UTC().Format(time.RFC3339), nil
+			return evalNow(e.opts).Format(time.RFC3339), nil
 		}
 		if e.isDottedCall() {
 			path := e.collectRef(t)
@@ -832,7 +847,7 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 			if !opts.AllowTime {
 				return nil, fmt.Errorf("time requires time capability")
 			}
-			return time.Now().UTC().Format("15:04:05"), nil
+			return evalNow(opts).Format("15:04:05"), nil
 		}
 		if len(args) != 1 {
 			return nil, fmt.Errorf("time requires 0 or 1 arguments")
@@ -843,7 +858,7 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 			if !opts.AllowTime {
 				return nil, fmt.Errorf("date requires time capability")
 			}
-			return time.Now().UTC().Format("2006-01-02"), nil
+			return evalNow(opts).Format("2006-01-02"), nil
 		}
 		if len(args) != 1 {
 			return nil, fmt.Errorf("date requires 0 or 1 arguments")
@@ -854,7 +869,7 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 			if !opts.AllowTime {
 				return nil, fmt.Errorf("%s requires time capability", name)
 			}
-			return time.Now().UTC().Format(time.RFC3339), nil
+			return evalNow(opts).Format(time.RFC3339), nil
 		}
 		if len(args) != 1 {
 			return nil, fmt.Errorf("%s requires 0 or 1 arguments", name)
@@ -867,7 +882,7 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 		if !opts.AllowTime {
 			return nil, fmt.Errorf("%s requires time capability", name)
 		}
-		return time.Now().UTC().Format("2006-01-02"), nil
+		return evalNow(opts).Format("2006-01-02"), nil
 	case "current_time":
 		if len(args) != 0 {
 			return nil, fmt.Errorf("current_time requires 0 arguments")
@@ -875,7 +890,7 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 		if !opts.AllowTime {
 			return nil, fmt.Errorf("current_time requires time capability")
 		}
-		return time.Now().UTC().Format("15:04:05"), nil
+		return evalNow(opts).Format("15:04:05"), nil
 	case "unix_timestamp":
 		if len(args) != 0 {
 			return nil, fmt.Errorf("unix_timestamp requires 0 arguments")
@@ -883,7 +898,7 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 		if !opts.AllowTime {
 			return nil, fmt.Errorf("unix_timestamp requires time capability")
 		}
-		return time.Now().UTC().Unix(), nil
+		return evalNow(opts).Unix(), nil
 	case "unix_millis":
 		if len(args) != 0 {
 			return nil, fmt.Errorf("unix_millis requires 0 arguments")
@@ -891,7 +906,7 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 		if !opts.AllowTime {
 			return nil, fmt.Errorf("unix_millis requires time capability")
 		}
-		return time.Now().UTC().UnixMilli(), nil
+		return evalNow(opts).UnixMilli(), nil
 	case "duration":
 		if len(args) != 1 {
 			return nil, fmt.Errorf("duration requires 1 argument")
@@ -904,7 +919,7 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 		if !opts.AllowTime {
 			return nil, fmt.Errorf("now requires time capability")
 		}
-		return time.Now().UTC().Format(time.RFC3339), nil
+		return evalNow(opts).Format(time.RFC3339), nil
 	case "uuid", "uuid_v4", "random_uuid":
 		if len(args) != 0 {
 			return nil, fmt.Errorf("%s requires 0 arguments", name)

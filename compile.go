@@ -40,6 +40,11 @@ type Options struct {
 	DecisionDatasetAdapters map[string]DecisionDatasetAdapter
 	HTTPClient              *http.Client
 	DecisionInputValidator  DecisionInputValidator
+	Now                     func() time.Time
+	AllowedDatasetAdapters  []string
+	AllowedHTTPHosts        []string
+	AllowedHTTPMethods      []string
+	ExternalTimeout         time.Duration
 }
 
 func Compile(doc *Document, opts *Options) (*Normalized, error) {
@@ -638,13 +643,13 @@ func (c *compiler) valueWithRedact(v Value, sensitive bool) any {
 				c.errs = append(c.errs, Diagnostic{Severity: "error", Message: "CURRENT_TIMESTAMP requires time capability", Span: x.Span})
 				return nil
 			}
-			return time.Now().UTC().Format(time.RFC3339)
+			return optionsNow(c.opts).Format(time.RFC3339)
 		case "CURRENT_DATE":
 			if !c.opts.AllowTime {
 				c.errs = append(c.errs, Diagnostic{Severity: "error", Message: "CURRENT_DATE requires time capability", Span: x.Span})
 				return nil
 			}
-			return time.Now().UTC().Format("2006-01-02")
+			return optionsNow(c.opts).Format("2006-01-02")
 		}
 		if cv, ok := c.consts[x.Path]; ok {
 			return c.value(cv)
@@ -672,7 +677,7 @@ func (c *compiler) valueWithRedact(v Value, sensitive bool) any {
 		}
 		return m
 	case *Expr:
-		v, err := EvalExpr(x.Raw, &EvalOptions{Variables: c.evalVars(), AllowEncoding: c.opts.AllowEncoding, AllowHash: c.opts.AllowHash, AllowTime: c.opts.AllowTime, Functions: c.opts.EvalFunctions})
+		v, err := EvalExpr(x.Raw, &EvalOptions{Variables: c.evalVars(), AllowEncoding: c.opts.AllowEncoding, AllowHash: c.opts.AllowHash, AllowTime: c.opts.AllowTime, Functions: c.opts.EvalFunctions, Now: c.opts.Now})
 		if err != nil {
 			c.errs = append(c.errs, Diagnostic{Severity: "error", Message: err.Error(), Span: x.Span})
 			return map[string]any{"$expr": x.Raw}
@@ -761,7 +766,7 @@ func (c *compiler) call(x *Call) any {
 		for _, a := range x.Args {
 			args = append(args, c.value(a))
 		}
-		v, err := EvalExpr(callToExpr(x.Name, args), &EvalOptions{Variables: c.evalVars(), AllowEncoding: c.opts.AllowEncoding, AllowHash: c.opts.AllowHash, AllowTime: c.opts.AllowTime, Functions: c.opts.EvalFunctions})
+		v, err := EvalExpr(callToExpr(x.Name, args), &EvalOptions{Variables: c.evalVars(), AllowEncoding: c.opts.AllowEncoding, AllowHash: c.opts.AllowHash, AllowTime: c.opts.AllowTime, Functions: c.opts.EvalFunctions, Now: c.opts.Now})
 		if err == nil {
 			return v
 		}
@@ -782,7 +787,7 @@ func (c *compiler) generatedCall(x *Call) (any, error) {
 		if !c.opts.AllowTime {
 			return nil, fmt.Errorf("%s requires time capability", x.Name)
 		}
-		return time.Now().UTC().Format(time.RFC3339), nil
+		return optionsNow(c.opts).Format(time.RFC3339), nil
 	case "today", "current_date":
 		if len(x.Args) != 0 {
 			return nil, fmt.Errorf("%s requires 0 arguments", x.Name)
@@ -790,7 +795,7 @@ func (c *compiler) generatedCall(x *Call) (any, error) {
 		if !c.opts.AllowTime {
 			return nil, fmt.Errorf("%s requires time capability", x.Name)
 		}
-		return time.Now().UTC().Format("2006-01-02"), nil
+		return optionsNow(c.opts).Format("2006-01-02"), nil
 	case "current_time":
 		if len(x.Args) != 0 {
 			return nil, fmt.Errorf("current_time requires 0 arguments")
@@ -798,7 +803,7 @@ func (c *compiler) generatedCall(x *Call) (any, error) {
 		if !c.opts.AllowTime {
 			return nil, fmt.Errorf("current_time requires time capability")
 		}
-		return time.Now().UTC().Format("15:04:05"), nil
+		return optionsNow(c.opts).Format("15:04:05"), nil
 	case "unix_timestamp":
 		if len(x.Args) != 0 {
 			return nil, fmt.Errorf("unix_timestamp requires 0 arguments")
@@ -806,7 +811,7 @@ func (c *compiler) generatedCall(x *Call) (any, error) {
 		if !c.opts.AllowTime {
 			return nil, fmt.Errorf("unix_timestamp requires time capability")
 		}
-		return time.Now().UTC().Unix(), nil
+		return optionsNow(c.opts).Unix(), nil
 	case "unix_millis":
 		if len(x.Args) != 0 {
 			return nil, fmt.Errorf("unix_millis requires 0 arguments")
@@ -814,13 +819,13 @@ func (c *compiler) generatedCall(x *Call) (any, error) {
 		if !c.opts.AllowTime {
 			return nil, fmt.Errorf("unix_millis requires time capability")
 		}
-		return time.Now().UTC().UnixMilli(), nil
+		return optionsNow(c.opts).UnixMilli(), nil
 	case "date":
 		if len(x.Args) == 0 {
 			if !c.opts.AllowTime {
 				return nil, fmt.Errorf("date requires time capability")
 			}
-			return map[string]any{"$date": time.Now().UTC().Format("2006-01-02")}, nil
+			return map[string]any{"$date": optionsNow(c.opts).Format("2006-01-02")}, nil
 		}
 		if len(x.Args) == 1 {
 			return map[string]any{"$date": c.value(x.Args[0])}, nil
@@ -831,7 +836,7 @@ func (c *compiler) generatedCall(x *Call) (any, error) {
 			if !c.opts.AllowTime {
 				return nil, fmt.Errorf("time requires time capability")
 			}
-			return map[string]any{"$time": time.Now().UTC().Format("15:04:05")}, nil
+			return map[string]any{"$time": optionsNow(c.opts).Format("15:04:05")}, nil
 		}
 		if len(x.Args) == 1 {
 			return map[string]any{"$time": c.value(x.Args[0])}, nil
@@ -846,7 +851,7 @@ func (c *compiler) generatedCall(x *Call) (any, error) {
 			if !c.opts.AllowTime {
 				return nil, fmt.Errorf("%s requires time capability", x.Name)
 			}
-			return map[string]any{"$" + name: time.Now().UTC().Format(time.RFC3339)}, nil
+			return map[string]any{"$" + name: optionsNow(c.opts).Format(time.RFC3339)}, nil
 		}
 		if len(x.Args) == 1 {
 			return map[string]any{"$" + name: c.value(x.Args[0])}, nil

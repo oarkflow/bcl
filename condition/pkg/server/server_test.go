@@ -73,7 +73,7 @@ func TestServerEvaluatePopulatesRuntimeContextFromHeaders(t *testing.T) {
     }
   }
 }`
-	if _, err := svc.Publish(context.Background(), condition.PublishRequest{Name: "runtime", Source: source}); err != nil {
+	if _, err := svc.Publish(condition.ContextWithTenant(context.Background(), "tenant-1"), condition.PublishRequest{Name: "runtime", Source: source}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -111,7 +111,7 @@ func TestServerEvaluateHeaderContextOverridesBodyContext(t *testing.T) {
     }
   }
 }`
-	if _, err := svc.Publish(context.Background(), condition.PublishRequest{Name: "runtime", Source: source}); err != nil {
+	if _, err := svc.Publish(condition.ContextWithTenant(context.Background(), "header-tenant"), condition.PublishRequest{Name: "runtime", Source: source}); err != nil {
 		t.Fatal(err)
 	}
 

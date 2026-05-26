@@ -557,6 +557,100 @@ module "demo" {
 	}
 }
 
+func TestServiceTenantIsolation(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(storage.NewMemoryStore(), Config{})
+	if _, err := svc.Publish(ContextWithTenant(ctx, "tenant-a"), PublishRequest{Name: "demo", Source: demoSource}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Evaluate(ContextWithTenant(ctx, "tenant-b"), "demo", EvaluateRequest{Decision: "access", Input: map[string]any{"request": map[string]any{"ok": true}}}); err == nil {
+		t.Fatal("expected tenant-b to be isolated from tenant-a definition")
+	}
+	resp, err := svc.Evaluate(ContextWithTenant(ctx, "tenant-a"), "demo", EvaluateRequest{Decision: "access", Input: map[string]any{"request": map[string]any{"ok": true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Report.Decision.ReasonCode != "OK" {
+		t.Fatalf("decision = %#v", resp.Report.Decision)
+	}
+}
+
+func TestServiceFixedRuntimeTime(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(storage.NewMemoryStore(), Config{Runtime: RuntimePolicy{FixedTime: "2026-05-26T12:00:00Z"}})
+	source := `module "time-demo" {
+  decision_table "access" {
+    default deny
+    hit_policy first
+    row "allow-fixed-time" {
+      when { now() == "2026-05-26T12:00:00Z" }
+      then { decision allow reason "fixed" }
+      reason "fixed"
+      reason_code "FIXED_TIME"
+    }
+  }
+}`
+	if _, err := svc.Publish(ctx, PublishRequest{Name: "time-demo", Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		resp, err := svc.Evaluate(ctx, "time-demo", EvaluateRequest{Decision: "access"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Report.Decision.ReasonCode != "FIXED_TIME" {
+			t.Fatalf("decision = %#v", resp.Report.Decision)
+		}
+	}
+}
+
+func TestServiceExternalDatasetDeniedByDefault(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(storage.NewMemoryStore(), Config{})
+	source := `module "external" {
+  decision_table "access" { default deny hit_policy first }
+  dataset "batch" {
+    source { adapter file path "./batch.jsonl" format jsonl }
+  }
+}`
+	if _, err := svc.Publish(ctx, PublishRequest{Name: "external", Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Evaluate(ctx, "external", EvaluateRequest{Decision: "access"}); err == nil || !strings.Contains(err.Error(), "disallowed adapter") {
+		t.Fatalf("expected disallowed adapter error, got %v", err)
+	}
+}
+
+func TestServiceCanaryPromotesPassingCandidate(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(storage.NewMemoryStore(), Config{})
+	if _, err := svc.Publish(ctx, PublishRequest{Name: "demo", Source: demoSource}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := svc.Canary(ctx, "demo", CanaryRequest{
+		SimulationRequest: SimulationRequest{
+			CandidateSource: demoSource,
+			Decision:        "access",
+			Cases:           []bcl.DecisionBatchCase{{ID: "ok", Input: map[string]any{"request": map[string]any{"ok": true}}}},
+		},
+		Promote:        true,
+		PromoteVersion: "2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Passed || resp.Promotion == nil || resp.Promotion.Definition.Version != "2" {
+		t.Fatalf("canary response = %#v", resp)
+	}
+	active, err := svc.GetDefinition(ctx, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.Version != "2" {
+		t.Fatalf("active version = %q", active.Version)
+	}
+}
+
 func TestServiceSimulateCompare(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(storage.NewMemoryStore(), Config{})
