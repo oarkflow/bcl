@@ -62,6 +62,7 @@ func main() {
 		fmt.Printf("\n%s %s\n", c.Asset.ID, c.Name)
 		fmt.Printf("  runbook=%s confidence=%d%% destructive=%v blast=%s\n", c.Runbook.Name, plan.ConfidencePercent, c.Runbook.Destructive, c.Runbook.BlastRadius)
 		fmt.Printf("  decision: effect=%s action=%v reason=%s\n", decision.Effect, decision.Attributes["action"], decision.ReasonCode)
+		executeRemediation(c, plan, decision.Effect)
 	}
 }
 
@@ -82,5 +83,16 @@ func buildPlan(c RemediationCase) RemediationPlan {
 			"signal":      map[string]any{"name": c.Signal.Name, "confidence_percent": confidence},
 			"remediation": map[string]any{"name": c.Runbook.Name, "destructive": c.Runbook.Destructive, "blast_radius": c.Runbook.BlastRadius},
 		},
+	}
+}
+
+func executeRemediation(c RemediationCase, p RemediationPlan, effect string) {
+	switch effect {
+	case "allow":
+		fmt.Printf("  execute runbook %s against %s and emit SRE audit event\n", c.Runbook.Name, c.Asset.ID)
+	case "require_review":
+		fmt.Printf("  page on-call for approval; confidence=%d%% environment=%s\n", p.ConfidencePercent, c.Asset.Environment)
+	default:
+		fmt.Printf("  block runbook %s and create incident for asset %s\n", c.Runbook.Name, c.Asset.ID)
 	}
 }

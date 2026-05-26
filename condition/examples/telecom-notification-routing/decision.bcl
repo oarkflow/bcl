@@ -1,85 +1,82 @@
 bcl { version "1.0" strict true }
 
-module "telecom-notification-routing-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "messaging-platform" domain "telecom" }
+version "1"
+environment "example"
+metadata { owner "messaging-platform" domain "telecom" }
 
-  reason_code_catalog "notification_routing" {
-    code "BLOCK_SEND" { description "Message must not be sent" }
-    code "FALLBACK_ROUTE" { description "Message should use fallback provider" }
-    code "PRIMARY_ROUTE" { description "Message can use primary provider" }
-  }
+reason_code_catalog "notification_routing" {
+  code "BLOCK_SEND" { description "Message must not be sent" }
+  code "FALLBACK_ROUTE" { description "Message should use fallback provider" }
+  code "PRIMARY_ROUTE" { description "Message can use primary provider" }
+}
 
-  decision_schema "notification_routing" {
-    effects [allow, deny, require_review]
-    default require_review
-    strategy first_match
-  }
+decision_schema "notification_routing" {
+  effects [allow, deny, require_review]
+  default require_review
+  strategy first_match
+}
 
-  decision_table "notification_routing" {
-    default require_review
-    hit_policy first
+decision_table "notification_routing" {
+  default require_review
+  hit_policy first
 
-    row "deny-consent-or-compliance" {
-      priority 100
-      when {
-        any {
-          recipient.opted_out == true
-          message.contains_prohibited_content == true
-          destination.country_blocked == true
-        }
+  row "deny-consent-or-compliance" {
+    priority 100
+    when {
+      any {
+        recipient.opted_out == true
+        message.contains_prohibited_content == true
+        destination.country_blocked == true
       }
-      then { outcome { decision deny reason "notification send is blocked" attributes { route "block" provider "none" } metadata { severity "high" } } obligation write_compliance_event { category "messaging" } }
-      reason "notification send is blocked"
-      reason_code "BLOCK_SEND"
-      tags ["compliance", "block"]
     }
-
-    row "review-or-fallback-provider" {
-      priority 70
-      when {
-        any {
-          provider.delivery_score < 0.9
-          provider.cost_per_message > 0.05
-          message.priority == "critical"
-        }
-      }
-      then { outcome { decision require_review reason "use fallback notification route" attributes { route "fallback" provider "secondary" } metadata { severity "medium" } } advice retry_policy { attempts 3 } }
-      reason "use fallback notification route"
-      reason_code "FALLBACK_ROUTE"
-      tags ["routing", "fallback"]
-    }
-
-    row "allow-primary-provider" {
-      priority 30
-      when {
-        all {
-          recipient.opted_out == false
-          destination.country_blocked == false
-          provider.delivery_score >= 0.95
-          provider.cost_per_message <= 0.03
-          message.contains_prohibited_content == false
-        }
-      }
-      then { outcome { decision allow reason "primary provider is healthy" attributes { route "primary" provider "primary-sms" } metadata { severity "low" } } }
-      reason "primary provider is healthy"
-      reason_code "PRIMARY_ROUTE"
-      tags ["primary-route"]
-    }
+    then { outcome { decision deny reason "notification send is blocked" attributes { route "block" provider "none" } metadata { severity "high" } } obligation write_compliance_event { category "messaging" } }
+    reason "notification send is blocked"
+    reason_code "BLOCK_SEND"
+    tags ["compliance", "block"]
   }
 
-  test "primary sms route" {
-    decision "notification_routing"
-    input {
-      recipient.opted_out false
-      destination.country_blocked false
-      provider.delivery_score 0.98
-      provider.cost_per_message 0.02
-      message.contains_prohibited_content false
-      message.priority "normal"
+  row "review-or-fallback-provider" {
+    priority 70
+    when {
+      any {
+        provider.delivery_score < 0.9
+        provider.cost_per_message > 0.05
+        message.priority == "critical"
+      }
     }
-    expect { effect "allow" reason_code "PRIMARY_ROUTE" }
+    then { outcome { decision require_review reason "use fallback notification route" attributes { route "fallback" provider "secondary" } metadata { severity "medium" } } advice retry_policy { attempts 3 } }
+    reason "use fallback notification route"
+    reason_code "FALLBACK_ROUTE"
+    tags ["routing", "fallback"]
   }
+
+  row "allow-primary-provider" {
+    priority 30
+    when {
+      all {
+        recipient.opted_out == false
+        destination.country_blocked == false
+        provider.delivery_score >= 0.95
+        provider.cost_per_message <= 0.03
+        message.contains_prohibited_content == false
+      }
+    }
+    then { outcome { decision allow reason "primary provider is healthy" attributes { route "primary" provider "primary-sms" } metadata { severity "low" } } }
+    reason "primary provider is healthy"
+    reason_code "PRIMARY_ROUTE"
+    tags ["primary-route"]
+  }
+}
+
+test "primary sms route" {
+  decision "notification_routing"
+  input {
+    recipient.opted_out false
+    destination.country_blocked false
+    provider.delivery_score 0.98
+    provider.cost_per_message 0.02
+    message.contains_prohibited_content false
+    message.priority "normal"
+  }
+  expect { effect "allow" reason_code "PRIMARY_ROUTE" }
 }

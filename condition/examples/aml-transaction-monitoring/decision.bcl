@@ -1,86 +1,83 @@
 bcl { version "1.0" strict true }
 
-module "aml-transaction-monitoring-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "financial-crime" domain "aml" }
+version "1"
+environment "example"
+metadata { owner "financial-crime" domain "aml" }
 
-  reason_code_catalog "aml_monitoring" {
-    code "FILE_SAR" { description "Transaction pattern requires suspicious activity review" }
-    code "EDD_REVIEW" { description "Customer or beneficiary requires enhanced due diligence" }
-    code "CLEAR_PAYMENT" { description "Payment can continue" }
-  }
+reason_code_catalog "aml_monitoring" {
+  code "FILE_SAR" { description "Transaction pattern requires suspicious activity review" }
+  code "EDD_REVIEW" { description "Customer or beneficiary requires enhanced due diligence" }
+  code "CLEAR_PAYMENT" { description "Payment can continue" }
+}
 
-  decision_schema "aml_monitoring" {
-    effects [allow, deny, require_review]
-    default require_review
-    strategy first_match
-  }
+decision_schema "aml_monitoring" {
+  effects [allow, deny, require_review]
+  default require_review
+  strategy first_match
+}
 
-  decision_table "aml_monitoring" {
-    default require_review
-    hit_policy first
+decision_table "aml_monitoring" {
+  default require_review
+  hit_policy first
 
-    row "deny-sanctioned-beneficiary" {
-      priority 100
-      when {
-        any {
-          beneficiary.sanction_hit == true
-          network.structuring_score >= 90
-        }
+  row "deny-sanctioned-beneficiary" {
+    priority 100
+    when {
+      any {
+        beneficiary.sanction_hit == true
+        network.structuring_score >= 90
       }
-      then { outcome { decision deny reason "payment must be blocked for AML" attributes { route "block-payment" queue "financial-crime" } metadata { severity "critical" } } obligation file_sar_draft { team "aml" } }
-      reason "payment must be blocked for AML"
-      reason_code "FILE_SAR"
-      tags ["aml", "block"]
     }
-
-    row "review-high-risk-transfer" {
-      priority 70
-      when {
-        any {
-          customer.risk_tier == "high"
-          transaction.cross_border == true
-          network.velocity_count >= 4
-          beneficiary.country_risk >= 75
-        }
-      }
-      then { outcome { decision require_review reason "enhanced due diligence required" attributes { route "edd-review" queue "aml-ops" } metadata { severity "high" } } advice request_source_of_funds { type "statement" } }
-      reason "enhanced due diligence required"
-      reason_code "EDD_REVIEW"
-      tags ["edd", "review"]
-    }
-
-    row "allow-low-risk-transfer" {
-      priority 30
-      when {
-        all {
-          customer.risk_tier == "low"
-          transaction.amount_usd <= 5000
-          network.velocity_count <= 2
-          beneficiary.sanction_hit == false
-          beneficiary.country_risk < 50
-        }
-      }
-      then { outcome { decision allow reason "payment passes AML controls" attributes { route "release-payment" queue "none" } metadata { severity "low" } } }
-      reason "payment passes AML controls"
-      reason_code "CLEAR_PAYMENT"
-      tags ["clear"]
-    }
+    then { outcome { decision deny reason "payment must be blocked for AML" attributes { route "block-payment" queue "financial-crime" } metadata { severity "critical" } } obligation file_sar_draft { team "aml" } }
+    reason "payment must be blocked for AML"
+    reason_code "FILE_SAR"
+    tags ["aml", "block"]
   }
 
-  test "low risk transfer" {
-    decision "aml_monitoring"
-    input {
-      customer.risk_tier "low"
-      transaction.amount_usd 1200
-      transaction.cross_border false
-      network.velocity_count 1
-      network.structuring_score 10
-      beneficiary.sanction_hit false
-      beneficiary.country_risk 20
+  row "review-high-risk-transfer" {
+    priority 70
+    when {
+      any {
+        customer.risk_tier == "high"
+        transaction.cross_border == true
+        network.velocity_count >= 4
+        beneficiary.country_risk >= 75
+      }
     }
-    expect { effect "allow" reason_code "CLEAR_PAYMENT" }
+    then { outcome { decision require_review reason "enhanced due diligence required" attributes { route "edd-review" queue "aml-ops" } metadata { severity "high" } } advice request_source_of_funds { type "statement" } }
+    reason "enhanced due diligence required"
+    reason_code "EDD_REVIEW"
+    tags ["edd", "review"]
   }
+
+  row "allow-low-risk-transfer" {
+    priority 30
+    when {
+      all {
+        customer.risk_tier == "low"
+        transaction.amount_usd <= 5000
+        network.velocity_count <= 2
+        beneficiary.sanction_hit == false
+        beneficiary.country_risk < 50
+      }
+    }
+    then { outcome { decision allow reason "payment passes AML controls" attributes { route "release-payment" queue "none" } metadata { severity "low" } } }
+    reason "payment passes AML controls"
+    reason_code "CLEAR_PAYMENT"
+    tags ["clear"]
+  }
+}
+
+test "low risk transfer" {
+  decision "aml_monitoring"
+  input {
+    customer.risk_tier "low"
+    transaction.amount_usd 1200
+    transaction.cross_border false
+    network.velocity_count 1
+    network.structuring_score 10
+    beneficiary.sanction_hit false
+    beneficiary.country_risk 20
+  }
+  expect { effect "allow" reason_code "CLEAR_PAYMENT" }
 }

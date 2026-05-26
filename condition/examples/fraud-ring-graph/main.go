@@ -54,6 +54,7 @@ func main() {
 		fmt.Printf("\n%s %s\n", c.Seller.ID, c.Name)
 		fmt.Printf("  graph: shared_device=%d shared_payout=%d known_bad=%d chargeback_neighbors=%d\n", features.SharedDeviceAccounts, features.SharedPayoutAccounts, features.KnownBadNeighbors, features.ChargebackNeighbors)
 		fmt.Printf("  decision: effect=%s action=%v reason=%s\n", decision.Effect, decision.Attributes["action"], decision.ReasonCode)
+		processSellerGraph(c, features, decision.Effect)
 	}
 }
 
@@ -100,5 +101,16 @@ func buildGraphFeatures(c GraphCase) GraphFeatures {
 			"seller": map[string]any{"id": c.Seller.ID, "tenure_days": c.Seller.TenureDays, "chargeback_rate_percent": c.Seller.ChargebackRatePercent},
 			"graph":  map[string]any{"shared_device_accounts": sharedDevice, "shared_payout_accounts": sharedPayout, "known_bad_neighbors": knownBad, "chargeback_neighbors": chargeback},
 		},
+	}
+}
+
+func processSellerGraph(c GraphCase, f GraphFeatures, effect string) {
+	switch effect {
+	case "allow":
+		fmt.Printf("  release payout for seller %s\n", c.Seller.ID)
+	case "require_review":
+		fmt.Printf("  open seller-risk investigation, shared_payout=%d chargeback_neighbors=%d\n", f.SharedPayoutAccounts, f.ChargebackNeighbors)
+	default:
+		fmt.Printf("  suspend seller %s and freeze linked payout instrument %s\n", c.Seller.ID, c.Seller.PayoutID)
 	}
 }

@@ -53,7 +53,7 @@ func main() {
 
 	for _, c := range moderationQueue() {
 		scores := runClassifiers(c.Asset)
-		resp, err := svc.Evaluate(ctx, "content-moderation", condition.EvaluateRequest{Decision: "content_moderation", Input: facts(c.Asset, scores)})
+		resp, err := svc.Evaluate(ctx, "content-moderation", condition.EvaluateRequest{Decision: "content_moderation", Input: moderationDecisionFacts(c.Asset, scores)})
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -94,7 +94,7 @@ func runClassifiers(asset MediaAsset) ClassifierScores {
 	return ClassifierScores{NSFWScore: round(nsfw), ToxicityScore: round(toxicity), CopyrightMatch: copyright, Signals: signals}
 }
 
-func facts(asset MediaAsset, scores ClassifierScores) map[string]any {
+func moderationDecisionFacts(asset MediaAsset, scores ClassifierScores) map[string]any {
 	return map[string]any{
 		"classifier": map[string]any{
 			"nsfw_score":      scores.NSFWScore,

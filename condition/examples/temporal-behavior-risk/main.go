@@ -66,6 +66,7 @@ func main() {
 		fmt.Printf("\n%s %s\n", c.Transaction.ID, c.Name)
 		fmt.Printf("  window: failed10m=%d reset30m=%v new_payee=%v velocity1h=%d amount_x=%d\n", features.FailedLogins10m, features.PasswordReset30m, features.NewPayee30m, features.Velocity1h, features.AmountMultiple)
 		fmt.Printf("  decision: effect=%s action=%v reason=%s\n", decision.Effect, decision.Attributes["action"], decision.ReasonCode)
+		enforceBehaviorRisk(c, features, decision.Effect)
 	}
 }
 
@@ -123,4 +124,15 @@ func repeatedEvents(now time.Time, eventType string, count int, secondsApart int
 		events = append(events, BehaviorEvent{At: now.Add(-time.Duration(i*secondsApart) * time.Second), Type: eventType})
 	}
 	return events
+}
+
+func enforceBehaviorRisk(c BehaviorCase, f TemporalFeatures, effect string) {
+	switch effect {
+	case "allow":
+		fmt.Printf("  approve transaction and refresh customer baseline for %s\n", c.Customer.ID)
+	case "require_review":
+		fmt.Printf("  hold transaction, contact customer, velocity=%d amount_x=%d\n", f.Velocity1h, f.AmountMultiple)
+	default:
+		fmt.Printf("  freeze account %s and cancel new-payee transaction %s\n", c.Customer.ID, c.Transaction.ID)
+	}
 }

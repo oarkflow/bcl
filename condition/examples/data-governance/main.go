@@ -103,7 +103,7 @@ func inspectQuery(c DataAccessCase) GovernanceDecisionInput {
 		Facts: map[string]any{
 			"dataset": map[string]any{"id": c.Dataset.ID, "contains_pii": containsPII, "legal_hold": c.Dataset.LegalHold},
 			"user":    map[string]any{"id": c.User.ID, "clearance": c.User.Clearance},
-			"request": map[string]any{"id": c.Request.ID, "purpose": c.User.Purpose, "region_allowed": regionAllowed, "masking_required": maskingRequired},
+			"query":   map[string]any{"id": c.Request.ID, "purpose": c.User.Purpose, "region_allowed": regionAllowed, "masking_required": maskingRequired},
 		},
 	}
 }

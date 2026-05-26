@@ -1,85 +1,82 @@
 bcl { version "1.0" strict true }
 
-module "investment-trade-compliance-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "investment-compliance" domain "capital-markets" }
+version "1"
+environment "example"
+metadata { owner "investment-compliance" domain "capital-markets" }
 
-  reason_code_catalog "trade_compliance" {
-    code "TRADE_BLOCK" { description "Trade violates compliance controls" }
-    code "COMPLIANCE_REVIEW" { description "Trade requires compliance review" }
-    code "TRADE_APPROVED" { description "Trade can be sent to execution" }
-  }
+reason_code_catalog "trade_compliance" {
+  code "TRADE_BLOCK" { description "Trade violates compliance controls" }
+  code "COMPLIANCE_REVIEW" { description "Trade requires compliance review" }
+  code "TRADE_APPROVED" { description "Trade can be sent to execution" }
+}
 
-  decision_schema "trade_compliance" {
-    effects [allow, deny, require_review]
-    default require_review
-    strategy first_match
-  }
+decision_schema "trade_compliance" {
+  effects [allow, deny, require_review]
+  default require_review
+  strategy first_match
+}
 
-  decision_table "trade_compliance" {
-    default require_review
-    hit_policy first
+decision_table "trade_compliance" {
+  default require_review
+  hit_policy first
 
-    row "deny-hard-limit-breach" {
-      priority 100
-      when {
-        any {
-          trade.restricted_security == true
-          portfolio.position_limit_breached == true
-          account.kyc_valid == false
-        }
+  row "deny-hard-limit-breach" {
+    priority 100
+    when {
+      any {
+        trade.restricted_security == true
+        portfolio.position_limit_breached == true
+        account.kyc_valid == false
       }
-      then { outcome { decision deny reason "trade violates hard compliance limit" attributes { route "block-order" queue "compliance" } metadata { severity "critical" } } obligation create_compliance_record { type "blocked_trade" } }
-      reason "trade violates hard compliance limit"
-      reason_code "TRADE_BLOCK"
-      tags ["trade", "block"]
     }
-
-    row "review-suitability-or-concentration" {
-      priority 70
-      when {
-        any {
-          trade.suitability_score < 70
-          portfolio.concentration_after_percent > 25
-          trade.notional_usd > 250000
-        }
-      }
-      then { outcome { decision require_review reason "trade needs compliance review" attributes { route "pre-trade-review" queue "supervision" } metadata { severity "medium" } } advice collect_attestation { type "suitability" } }
-      reason "trade needs compliance review"
-      reason_code "COMPLIANCE_REVIEW"
-      tags ["supervision"]
-    }
-
-    row "allow-compliant-trade" {
-      priority 30
-      when {
-        all {
-          account.kyc_valid == true
-          trade.restricted_security == false
-          portfolio.position_limit_breached == false
-          trade.suitability_score >= 80
-          portfolio.concentration_after_percent <= 20
-        }
-      }
-      then { outcome { decision allow reason "trade passes compliance checks" attributes { route "send-to-broker" queue "none" } metadata { severity "low" } } }
-      reason "trade passes compliance checks"
-      reason_code "TRADE_APPROVED"
-      tags ["approved"]
-    }
+    then { outcome { decision deny reason "trade violates hard compliance limit" attributes { route "block-order" queue "compliance" } metadata { severity "critical" } } obligation create_compliance_record { type "blocked_trade" } }
+    reason "trade violates hard compliance limit"
+    reason_code "TRADE_BLOCK"
+    tags ["trade", "block"]
   }
 
-  test "compliant trade" {
-    decision "trade_compliance"
-    input {
-      account.kyc_valid true
-      trade.restricted_security false
-      trade.suitability_score 92
-      trade.notional_usd 50000
-      portfolio.position_limit_breached false
-      portfolio.concentration_after_percent 12
+  row "review-suitability-or-concentration" {
+    priority 70
+    when {
+      any {
+        trade.suitability_score < 70
+        portfolio.concentration_after_percent > 25
+        trade.notional_usd > 250000
+      }
     }
-    expect { effect "allow" reason_code "TRADE_APPROVED" }
+    then { outcome { decision require_review reason "trade needs compliance review" attributes { route "pre-trade-review" queue "supervision" } metadata { severity "medium" } } advice collect_attestation { type "suitability" } }
+    reason "trade needs compliance review"
+    reason_code "COMPLIANCE_REVIEW"
+    tags ["supervision"]
   }
+
+  row "allow-compliant-trade" {
+    priority 30
+    when {
+      all {
+        account.kyc_valid == true
+        trade.restricted_security == false
+        portfolio.position_limit_breached == false
+        trade.suitability_score >= 80
+        portfolio.concentration_after_percent <= 20
+      }
+    }
+    then { outcome { decision allow reason "trade passes compliance checks" attributes { route "send-to-broker" queue "none" } metadata { severity "low" } } }
+    reason "trade passes compliance checks"
+    reason_code "TRADE_APPROVED"
+    tags ["approved"]
+  }
+}
+
+test "compliant trade" {
+  decision "trade_compliance"
+  input {
+    account.kyc_valid true
+    trade.restricted_security false
+    trade.suitability_score 92
+    trade.notional_usd 50000
+    portfolio.position_limit_breached false
+    portfolio.concentration_after_percent 12
+  }
+  expect { effect "allow" reason_code "TRADE_APPROVED" }
 }

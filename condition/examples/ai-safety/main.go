@@ -48,7 +48,7 @@ func main() {
 
 	for _, c := range safetyQueue() {
 		signal := classify(c.Turn)
-		resp, err := svc.Evaluate(ctx, "ai-safety", condition.EvaluateRequest{Decision: "ai_safety", Input: facts(c.Turn, signal)})
+		resp, err := svc.Evaluate(ctx, "ai-safety", condition.EvaluateRequest{Decision: "ai_safety", Input: safetyDecisionFacts(c.Turn, signal)})
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -95,7 +95,7 @@ func classify(turn ConversationTurn) SafetySignal {
 	return SafetySignal{Intent: intent, RiskScore: risk, Confidence: confidence, Findings: findings, PIIFields: pii}
 }
 
-func facts(turn ConversationTurn, signal SafetySignal) map[string]any {
+func safetyDecisionFacts(turn ConversationTurn, signal SafetySignal) map[string]any {
 	return map[string]any{
 		"ai": map[string]any{
 			"tenant":      turn.Tenant,

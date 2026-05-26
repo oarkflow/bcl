@@ -1,92 +1,89 @@
 bcl { version "1.0" strict true }
 
-module "payment-risk-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "payments-risk" domain "payments" }
+version "1"
+environment "example"
+metadata { owner "payments-risk" domain "payments" }
 
-  reason_code_catalog "payment_risk" {
-    code "STOLEN_CARD" { description "Card is reported stolen" }
-    code "STEP_UP" { description "Payment requires stronger customer authentication" }
-    code "AUTHORIZE" { description "Payment is low risk" }
+reason_code_catalog "payment_risk" {
+  code "STOLEN_CARD" { description "Card is reported stolen" }
+  code "STEP_UP" { description "Payment requires stronger customer authentication" }
+  code "AUTHORIZE" { description "Payment is low risk" }
+}
+
+decision_schema "payment_risk" {
+  effects [allow, deny, require_review]
+  default require_review
+  strategy first_match
+}
+
+decision_table "payment_risk" {
+  default require_review
+  hit_policy first
+
+  row "deny-stolen-card" {
+    priority 100
+    when { card.stolen == true }
+    then { outcome { decision deny reason "card is reported stolen" attributes { route "decline" queue "fraud" } metadata { severity "critical" } } obligation notify_fraud_ops { channel "pager" } }
+    reason "card is reported stolen"
+    reason_code "STOLEN_CARD"
+    tags ["fraud", "block"]
   }
 
-  decision_schema "payment_risk" {
-    effects [allow, deny, require_review]
-    default require_review
-    strategy first_match
+  row "review-risky-payment" {
+    priority 60
+    when { any { payment.risk_score >= 65 payment.cross_border == true customer.trusted == false } }
+    then { outcome { decision require_review reason "step-up authentication required" attributes { route "3ds-step-up" queue "authentication" } metadata { severity "medium" } } advice require_3ds { version "2" } }
+    reason "step-up authentication required"
+    reason_code "STEP_UP"
+    tags ["3ds", "manual-review"]
   }
 
-  decision_table "payment_risk" {
-    default require_review
-    hit_policy first
+  row "allow-trusted-low-risk-payment" {
+    priority 20
+    when { all { card.stolen == false payment.risk_score < 30 payment.cross_border == false customer.trusted == true } }
+    then { outcome { decision allow reason "trusted low-risk payment" attributes { route "authorize" queue "none" } metadata { severity "low" } } }
+    reason "trusted low-risk payment"
+    reason_code "AUTHORIZE"
+    tags ["authorization"]
+  }
+}
 
-    row "deny-stolen-card" {
-      priority 100
-      when { card.stolen == true }
-      then { outcome { decision deny reason "card is reported stolen" attributes { route "decline" queue "fraud" } metadata { severity "critical" } } obligation notify_fraud_ops { channel "pager" } }
-      reason "card is reported stolen"
-      reason_code "STOLEN_CARD"
-      tags ["fraud", "block"]
-    }
-
-    row "review-risky-payment" {
-      priority 60
-      when { any { payment.risk_score >= 65 payment.cross_border == true customer.trusted == false } }
-      then { outcome { decision require_review reason "step-up authentication required" attributes { route "3ds-step-up" queue "authentication" } metadata { severity "medium" } } advice require_3ds { version "2" } }
-      reason "step-up authentication required"
-      reason_code "STEP_UP"
-      tags ["3ds", "manual-review"]
-    }
-
-    row "allow-trusted-low-risk-payment" {
-      priority 20
-      when { all { card.stolen == false payment.risk_score < 30 payment.cross_border == false customer.trusted == true } }
-      then { outcome { decision allow reason "trusted low-risk payment" attributes { route "authorize" queue "none" } metadata { severity "low" } } }
-      reason "trusted low-risk payment"
-      reason_code "AUTHORIZE"
-      tags ["authorization"]
-    }
+rule_set "payment_risk" {
+  rule "score-cross-border" {
+    phase score
+    priority 30
+    when { payment.cross_border == true }
+    then { score += 25 }
+    reason "cross-border payment"
   }
 
-  rule_set "payment_risk" {
-    rule "score-cross-border" {
-      phase score
-      priority 30
-      when { payment.cross_border == true }
-      then { score += 25 }
-      reason "cross-border payment"
-    }
-
-    rule "score-trusted-customer" {
-      phase score
-      priority 10
-      when { all { customer.trusted == true card.stolen == false } }
-      then { score += -15 }
-      reason "trusted customer lowers risk"
-    }
+  rule "score-trusted-customer" {
+    phase score
+    priority 10
+    when { all { customer.trusted == true card.stolen == false } }
+    then { score += -15 }
+    reason "trusted customer lowers risk"
   }
+}
 
-  test "stolen card" {
-    decision "payment_risk"
-    input {
-      card.stolen true
-      payment.risk_score 95
-      payment.cross_border false
-      customer.trusted true
-    }
-    expect { effect "deny" reason_code "STOLEN_CARD" }
+test "stolen card" {
+  decision "payment_risk"
+  input {
+    card.stolen true
+    payment.risk_score 95
+    payment.cross_border false
+    customer.trusted true
   }
+  expect { effect "deny" reason_code "STOLEN_CARD" }
+}
 
-  test "trusted low risk" {
-    decision "payment_risk"
-    input {
-      card.stolen false
-      payment.risk_score 12
-      payment.cross_border false
-      customer.trusted true
-    }
-    expect { effect "allow" reason_code "AUTHORIZE" }
+test "trusted low risk" {
+  decision "payment_risk"
+  input {
+    card.stolen false
+    payment.risk_score 12
+    payment.cross_border false
+    customer.trusted true
   }
+  expect { effect "allow" reason_code "AUTHORIZE" }
 }

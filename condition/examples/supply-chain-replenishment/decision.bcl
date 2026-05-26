@@ -1,83 +1,80 @@
 bcl { version "1.0" strict true }
 
-module "supply-chain-replenishment-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "supply-chain" domain "inventory" }
+version "1"
+environment "example"
+metadata { owner "supply-chain" domain "inventory" }
 
-  reason_code_catalog "replenishment" {
-    code "VENDOR_BLOCK" { description "Replenishment cannot use selected vendor" }
-    code "PLANNER_REVIEW" { description "Planner must review replenishment" }
-    code "AUTO_REPLENISH" { description "Replenishment can be placed automatically" }
-  }
+reason_code_catalog "replenishment" {
+  code "VENDOR_BLOCK" { description "Replenishment cannot use selected vendor" }
+  code "PLANNER_REVIEW" { description "Planner must review replenishment" }
+  code "AUTO_REPLENISH" { description "Replenishment can be placed automatically" }
+}
 
-  decision_schema "replenishment" {
-    effects [allow, deny, require_review]
-    default require_review
-    strategy first_match
-  }
+decision_schema "replenishment" {
+  effects [allow, deny, require_review]
+  default require_review
+  strategy first_match
+}
 
-  decision_table "replenishment" {
-    default require_review
-    hit_policy first
+decision_table "replenishment" {
+  default require_review
+  hit_policy first
 
-    row "deny-noncompliant-vendor" {
-      priority 100
-      when {
-        any {
-          vendor.active == false
-          vendor.quality_score < 60
-        }
+  row "deny-noncompliant-vendor" {
+    priority 100
+    when {
+      any {
+        vendor.active == false
+        vendor.quality_score < 60
       }
-      then { outcome { decision deny reason "vendor cannot fulfill replenishment" attributes { route "vendor-block" queue "supplier-risk" } metadata { severity "high" } } obligation open_supplier_case { type "quality" } }
-      reason "vendor cannot fulfill replenishment"
-      reason_code "VENDOR_BLOCK"
-      tags ["vendor"]
     }
-
-    row "review-supply-risk" {
-      priority 70
-      when {
-        any {
-          sku.stockout_days <= 5
-          forecast.demand_spike == true
-          vendor.lead_time_days > 21
-        }
-      }
-      then { outcome { decision require_review reason "planner review required" attributes { route "planner-review" queue "inventory-planning" } metadata { severity "medium" } } advice split_purchase_order { mode "multi_vendor" } }
-      reason "planner review required"
-      reason_code "PLANNER_REVIEW"
-      tags ["planner"]
-    }
-
-    row "allow-auto-replenishment" {
-      priority 30
-      when {
-        all {
-          sku.stockout_days > 10
-          vendor.active == true
-          vendor.quality_score >= 80
-          vendor.lead_time_days <= 14
-          forecast.demand_spike == false
-        }
-      }
-      then { outcome { decision allow reason "auto replenishment approved" attributes { route "create-po" queue "none" } metadata { severity "low" } } }
-      reason "auto replenishment approved"
-      reason_code "AUTO_REPLENISH"
-      tags ["auto-po"]
-    }
+    then { outcome { decision deny reason "vendor cannot fulfill replenishment" attributes { route "vendor-block" queue "supplier-risk" } metadata { severity "high" } } obligation open_supplier_case { type "quality" } }
+    reason "vendor cannot fulfill replenishment"
+    reason_code "VENDOR_BLOCK"
+    tags ["vendor"]
   }
 
-  test "auto replenish" {
-    decision "replenishment"
-    input {
-      sku.stockout_days 18
-      vendor.active true
-      vendor.quality_score 92
-      vendor.lead_time_days 9
-      forecast.demand_spike false
+  row "review-supply-risk" {
+    priority 70
+    when {
+      any {
+        sku.stockout_days <= 5
+        forecast.demand_spike == true
+        vendor.lead_time_days > 21
+      }
     }
-    expect { effect "allow" reason_code "AUTO_REPLENISH" }
+    then { outcome { decision require_review reason "planner review required" attributes { route "planner-review" queue "inventory-planning" } metadata { severity "medium" } } advice split_purchase_order { mode "multi_vendor" } }
+    reason "planner review required"
+    reason_code "PLANNER_REVIEW"
+    tags ["planner"]
   }
+
+  row "allow-auto-replenishment" {
+    priority 30
+    when {
+      all {
+        sku.stockout_days > 10
+        vendor.active == true
+        vendor.quality_score >= 80
+        vendor.lead_time_days <= 14
+        forecast.demand_spike == false
+      }
+    }
+    then { outcome { decision allow reason "auto replenishment approved" attributes { route "create-po" queue "none" } metadata { severity "low" } } }
+    reason "auto replenishment approved"
+    reason_code "AUTO_REPLENISH"
+    tags ["auto-po"]
+  }
+}
+
+test "auto replenish" {
+  decision "replenishment"
+  input {
+    sku.stockout_days 18
+    vendor.active true
+    vendor.quality_score 92
+    vendor.lead_time_days 9
+    forecast.demand_spike false
+  }
+  expect { effect "allow" reason_code "AUTO_REPLENISH" }
 }

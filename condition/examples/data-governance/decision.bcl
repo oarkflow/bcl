@@ -1,77 +1,74 @@
 bcl { version "1.0" strict true }
 
-module "data-governance-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "data-platform" domain "governance" }
+version "1"
+environment "example"
+metadata { owner "data-platform" domain "governance" }
 
-  reason_code_catalog "data_access" {
-    code "RESIDENCY_BLOCK" { description "Data access violates residency or legal hold policy" }
-    code "MASK_PII" { description "Access is allowed only with protected fields masked" }
-    code "FULL_ACCESS" { description "Access satisfies data governance policy" }
-  }
+reason_code_catalog "data_access" {
+  code "RESIDENCY_BLOCK" { description "Data access violates residency or legal hold policy" }
+  code "MASK_PII" { description "Access is allowed only with protected fields masked" }
+  code "FULL_ACCESS" { description "Access satisfies data governance policy" }
+}
 
-  decision_schema "data_access" {
-    effects [allow, deny, require_review]
-    default require_review
-    strategy first_match
-  }
+decision_schema "data_access" {
+  effects [allow, deny, require_review]
+  default require_review
+  strategy first_match
+}
 
-  decision_table "data_access" {
-    default require_review
-    hit_policy first
+decision_table "data_access" {
+  default require_review
+  hit_policy first
 
-    row "deny-residency-or-legal-hold" {
-      priority 100
-      when {
-        any {
-          dataset.legal_hold == true
-          request.region_allowed == false
-        }
+  row "deny-residency-or-legal-hold" {
+    priority 100
+    when {
+      any {
+        dataset.legal_hold == true
+        query.region_allowed == false
       }
-      then { outcome { decision deny reason "data access is blocked by governance policy" attributes { route "deny" transform "none" } metadata { severity "critical" } } obligation audit_access_denial { category "data_governance" } }
-      reason "data access is blocked by governance policy"
-      reason_code "RESIDENCY_BLOCK"
-      tags ["residency", "legal-hold"]
     }
+    then { outcome { decision deny reason "data access is blocked by governance policy" attributes { route "deny" transform "none" } metadata { severity "critical" } } obligation audit_access_denial { category "data_governance" } }
+    reason "data access is blocked by governance policy"
+    reason_code "RESIDENCY_BLOCK"
+    tags ["residency", "legal-hold"]
+  }
 
-    row "review-or-mask-pii" {
-      priority 70
-      when { request.masking_required == true }
-      then { outcome { decision require_review reason "PII must be masked or reviewed" attributes { route "masking-proxy" transform "mask-pii" } metadata { severity "medium" } } advice apply_masking_policy { columns "email,phone,ssn" } }
-      reason "PII must be masked or reviewed"
-      reason_code "MASK_PII"
-      tags ["pii", "masking"]
-    }
+  row "review-or-mask-pii" {
+    priority 70
+    when { query.masking_required == true }
+    then { outcome { decision require_review reason "PII must be masked or reviewed" attributes { route "masking-proxy" transform "mask-pii" } metadata { severity "medium" } } advice apply_masking_policy { columns "email,phone,ssn" } }
+    reason "PII must be masked or reviewed"
+    reason_code "MASK_PII"
+    tags ["pii", "masking"]
+  }
 
-    row "allow-governed-access" {
-      priority 30
-      when {
-        all {
-          request.region_allowed == true
-          dataset.legal_hold == false
-          user.clearance == "restricted"
-          request.purpose == "casework"
-        }
+  row "allow-governed-access" {
+    priority 30
+    when {
+      all {
+        query.region_allowed == true
+        dataset.legal_hold == false
+        user.clearance == "restricted"
+        query.purpose == "casework"
       }
-      then { outcome { decision allow reason "governed full access approved" attributes { route "warehouse" transform "none" } metadata { severity "low" } } }
-      reason "governed full access approved"
-      reason_code "FULL_ACCESS"
-      tags ["data-access"]
     }
+    then { outcome { decision allow reason "governed full access approved" attributes { route "warehouse" transform "none" } metadata { severity "low" } } }
+    reason "governed full access approved"
+    reason_code "FULL_ACCESS"
+    tags ["data-access"]
   }
+}
 
-  test "casework access" {
-    decision "data_access"
-    input {
-      dataset.contains_pii true
-      dataset.legal_hold false
-      user.clearance "restricted"
-      request.region_allowed true
-      request.purpose "casework"
-      request.masking_required false
-    }
-    expect { effect "allow" reason_code "FULL_ACCESS" }
+test "casework access" {
+  decision "data_access"
+  input {
+    dataset.contains_pii true
+    dataset.legal_hold false
+    user.clearance "restricted"
+    query.region_allowed true
+    query.purpose "casework"
+    query.masking_required false
   }
+  expect { effect "allow" reason_code "FULL_ACCESS" }
 }

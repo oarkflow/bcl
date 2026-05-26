@@ -1,93 +1,90 @@
 bcl { version "1.0" strict true }
 
-module "logistics-routing-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "fulfillment-platform" domain "logistics" }
+version "1"
+environment "example"
+metadata { owner "fulfillment-platform" domain "logistics" }
 
-  reason_code_catalog "logistics_routing" {
-    code "HAZMAT_BLOCK" { description "Carrier cannot handle hazardous goods" }
-    code "CAPACITY_REVIEW" { description "Shipment needs capacity review" }
-    code "EXPRESS_ROUTE" { description "Shipment can use express carrier" }
-    code "STANDARD_ROUTE" { description "Shipment can use selected standard carrier" }
-  }
+reason_code_catalog "logistics_routing" {
+  code "HAZMAT_BLOCK" { description "Carrier cannot handle hazardous goods" }
+  code "CAPACITY_REVIEW" { description "Shipment needs capacity review" }
+  code "EXPRESS_ROUTE" { description "Shipment can use express carrier" }
+  code "STANDARD_ROUTE" { description "Shipment can use selected standard carrier" }
+}
 
-  decision_schema "logistics_routing" {
-    effects [allow, deny, require_review]
-    default require_review
-    strategy first_match
-  }
+decision_schema "logistics_routing" {
+  effects [allow, deny, require_review]
+  default require_review
+  strategy first_match
+}
 
-  decision_table "logistics_routing" {
-    default require_review
-    hit_policy first
+decision_table "logistics_routing" {
+  default require_review
+  hit_policy first
 
-    row "deny-hazmat-uncertified" {
-      priority 100
-      when {
-        all {
-          shipment.hazmat == true
-          carrier.hazmat_certified == false
-        }
+  row "deny-hazmat-uncertified" {
+    priority 100
+    when {
+      all {
+        shipment.hazmat == true
+        carrier.hazmat_certified == false
       }
-      then { outcome { decision deny reason "carrier is not hazmat certified" attributes { route "blocked" queue "carrier-risk" } metadata { severity "high" } } obligation audit_log { category "logistics" } }
-      reason "carrier is not hazmat certified"
-      reason_code "HAZMAT_BLOCK"
-      tags ["hazmat", "block"]
     }
-
-    row "review-capacity-or-heavy" {
-      priority 60
-      when { any { shipment.weight_kg > 1000 carrier.capacity_available == false } }
-      then { outcome { decision require_review reason "capacity planning required" attributes { route "capacity-review" queue "dispatch" } metadata { severity "medium" } } advice find_alternate_carrier { mode "ground" } }
-      reason "capacity planning required"
-      reason_code "CAPACITY_REVIEW"
-      tags ["manual-review"]
-    }
-
-    row "allow-express-route" {
-      priority 20
-      when {
-        all {
-          shipment.service == "express"
-          carrier.capacity_available == true
-          carrier.express_enabled == true
-        }
-      }
-      then { outcome { decision allow reason "express route selected" attributes { route "express" queue "none" } metadata { severity "low" } } }
-      reason "express route selected"
-      reason_code "EXPRESS_ROUTE"
-      tags ["express"]
-    }
-
-    row "allow-certified-standard-route" {
-      priority 10
-      when {
-        all {
-          shipment.service == "standard"
-          carrier.capacity_available == true
-          carrier.hazmat_certified == true
-          shipment.weight_kg <= 1000
-        }
-      }
-      then { outcome { decision allow reason "standard certified route selected" attributes { route "standard" queue "none" } metadata { severity "low" } } }
-      reason "standard certified route selected"
-      reason_code "STANDARD_ROUTE"
-      tags ["standard"]
-    }
+    then { outcome { decision deny reason "carrier is not hazmat certified" attributes { route "blocked" queue "carrier-risk" } metadata { severity "high" } } obligation audit_log { category "logistics" } }
+    reason "carrier is not hazmat certified"
+    reason_code "HAZMAT_BLOCK"
+    tags ["hazmat", "block"]
   }
 
-  test "express route" {
-    decision "logistics_routing"
-    input {
-      shipment.hazmat false
-      shipment.weight_kg 20
-      shipment.service "express"
-      carrier.hazmat_certified true
-      carrier.capacity_available true
-      carrier.express_enabled true
-    }
-    expect { effect "allow" reason_code "EXPRESS_ROUTE" }
+  row "review-capacity-or-heavy" {
+    priority 60
+    when { any { shipment.weight_kg > 1000 carrier.capacity_available == false } }
+    then { outcome { decision require_review reason "capacity planning required" attributes { route "capacity-review" queue "dispatch" } metadata { severity "medium" } } advice find_alternate_carrier { mode "ground" } }
+    reason "capacity planning required"
+    reason_code "CAPACITY_REVIEW"
+    tags ["manual-review"]
   }
+
+  row "allow-express-route" {
+    priority 20
+    when {
+      all {
+        shipment.service == "express"
+        carrier.capacity_available == true
+        carrier.express_enabled == true
+      }
+    }
+    then { outcome { decision allow reason "express route selected" attributes { route "express" queue "none" } metadata { severity "low" } } }
+    reason "express route selected"
+    reason_code "EXPRESS_ROUTE"
+    tags ["express"]
+  }
+
+  row "allow-certified-standard-route" {
+    priority 10
+    when {
+      all {
+        shipment.service == "standard"
+        carrier.capacity_available == true
+        carrier.hazmat_certified == true
+        shipment.weight_kg <= 1000
+      }
+    }
+    then { outcome { decision allow reason "standard certified route selected" attributes { route "standard" queue "none" } metadata { severity "low" } } }
+    reason "standard certified route selected"
+    reason_code "STANDARD_ROUTE"
+    tags ["standard"]
+  }
+}
+
+test "express route" {
+  decision "logistics_routing"
+  input {
+    shipment.hazmat false
+    shipment.weight_kg 20
+    shipment.service "express"
+    carrier.hazmat_certified true
+    carrier.capacity_available true
+    carrier.express_enabled true
+  }
+  expect { effect "allow" reason_code "EXPRESS_ROUTE" }
 }

@@ -1,85 +1,82 @@
 bcl { version "1.0" strict true }
 
-module "insurance-claims-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "claims-ops" domain "insurance" }
+version "1"
+environment "example"
+metadata { owner "claims-ops" domain "insurance" }
 
-  reason_code_catalog "claim_triage" {
-    code "FRAUD_SIU" { description "Claim requires special investigations handling" }
-    code "ADJUSTER_REVIEW" { description "Claim needs adjuster review" }
-    code "FAST_TRACK" { description "Claim can be settled automatically" }
-  }
+reason_code_catalog "claim_triage" {
+  code "FRAUD_SIU" { description "Claim requires special investigations handling" }
+  code "ADJUSTER_REVIEW" { description "Claim needs adjuster review" }
+  code "FAST_TRACK" { description "Claim can be settled automatically" }
+}
 
-  decision_schema "claim_triage" {
-    effects [allow, deny, require_review]
-    default require_review
-    strategy first_match
-  }
+decision_schema "claim_triage" {
+  effects [allow, deny, require_review]
+  default require_review
+  strategy first_match
+}
 
-  decision_table "claim_triage" {
-    default require_review
-    hit_policy first
+decision_table "claim_triage" {
+  default require_review
+  hit_policy first
 
-    row "deny-suspicious-claim" {
-      priority 100
-      when {
-        any {
-          claim.duplicate == true
-          provider.suspicious == true
-          claim.fraud_score >= 85
-        }
+  row "deny-suspicious-claim" {
+    priority 100
+    when {
+      any {
+        claim.duplicate == true
+        provider.suspicious == true
+        claim.fraud_score >= 85
       }
-      then { outcome { decision deny reason "claim needs fraud investigation" attributes { route "siu" queue "fraud-investigations" } metadata { severity "high" } } obligation preserve_evidence { category "claim" } }
-      reason "claim needs fraud investigation"
-      reason_code "FRAUD_SIU"
-      tags ["fraud", "siu"]
     }
-
-    row "review-complex-claim" {
-      priority 70
-      when {
-        any {
-          claim.estimate_usd > 5000
-          claim.coverage_gap == true
-          claim.missing_documents == true
-        }
-      }
-      then { outcome { decision require_review reason "adjuster review required" attributes { route "adjuster-review" queue "claims" } metadata { severity "medium" } } advice request_documents { type "photos,police_report" } }
-      reason "adjuster review required"
-      reason_code "ADJUSTER_REVIEW"
-      tags ["manual-review"]
-    }
-
-    row "allow-fast-track" {
-      priority 30
-      when {
-        all {
-          claim.estimate_usd <= 1500
-          claim.fraud_score < 30
-          claim.coverage_gap == false
-          claim.missing_documents == false
-          claim.duplicate == false
-        }
-      }
-      then { outcome { decision allow reason "claim qualifies for fast-track settlement" attributes { route "settle" queue "none" } metadata { severity "low" } } }
-      reason "claim qualifies for fast-track settlement"
-      reason_code "FAST_TRACK"
-      tags ["settlement"]
-    }
+    then { outcome { decision deny reason "claim needs fraud investigation" attributes { route "siu" queue "fraud-investigations" } metadata { severity "high" } } obligation preserve_evidence { category "claim" } }
+    reason "claim needs fraud investigation"
+    reason_code "FRAUD_SIU"
+    tags ["fraud", "siu"]
   }
 
-  test "fast track windshield" {
-    decision "claim_triage"
-    input {
-      claim.estimate_usd 650
-      claim.fraud_score 10
-      claim.coverage_gap false
-      claim.missing_documents false
-      claim.duplicate false
-      provider.suspicious false
+  row "review-complex-claim" {
+    priority 70
+    when {
+      any {
+        claim.estimate_usd > 5000
+        claim.coverage_gap == true
+        claim.missing_documents == true
+      }
     }
-    expect { effect "allow" reason_code "FAST_TRACK" }
+    then { outcome { decision require_review reason "adjuster review required" attributes { route "adjuster-review" queue "claims" } metadata { severity "medium" } } advice request_documents { type "photos,police_report" } }
+    reason "adjuster review required"
+    reason_code "ADJUSTER_REVIEW"
+    tags ["manual-review"]
   }
+
+  row "allow-fast-track" {
+    priority 30
+    when {
+      all {
+        claim.estimate_usd <= 1500
+        claim.fraud_score < 30
+        claim.coverage_gap == false
+        claim.missing_documents == false
+        claim.duplicate == false
+      }
+    }
+    then { outcome { decision allow reason "claim qualifies for fast-track settlement" attributes { route "settle" queue "none" } metadata { severity "low" } } }
+    reason "claim qualifies for fast-track settlement"
+    reason_code "FAST_TRACK"
+    tags ["settlement"]
+  }
+}
+
+test "fast track windshield" {
+  decision "claim_triage"
+  input {
+    claim.estimate_usd 650
+    claim.fraud_score 10
+    claim.coverage_gap false
+    claim.missing_documents false
+    claim.duplicate false
+    provider.suspicious false
+  }
+  expect { effect "allow" reason_code "FAST_TRACK" }
 }

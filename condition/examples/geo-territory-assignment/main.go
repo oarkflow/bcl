@@ -62,6 +62,7 @@ func main() {
 		fmt.Printf("\n%s %s\n", c.Lead.ID, c.Name)
 		fmt.Printf("  territory: best=%s distance=%dmi capacity=%d%% residency=%v\n", plan.Territory.Name, plan.DistanceMiles, plan.Territory.CapacityPercent, plan.DataResidencyOK)
 		fmt.Printf("  decision: effect=%s action=%v reason=%s\n", decision.Effect, decision.Attributes["action"], decision.ReasonCode)
+		applyTerritoryAssignment(c, plan, decision.Effect)
 	}
 }
 
@@ -106,4 +107,15 @@ func distanceMiles(lat1, lon1, lat2, lon2 float64) int {
 	dLon := (lon2 - lon1) * math.Pi / 180
 	a := math.Sin(dLat/2)*math.Sin(dLat/2) + math.Cos(lat1*math.Pi/180)*math.Cos(lat2*math.Pi/180)*math.Sin(dLon/2)*math.Sin(dLon/2)
 	return int(earthMiles * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a)))
+}
+
+func applyTerritoryAssignment(c TerritoryCase, p AssignmentPlan, effect string) {
+	switch effect {
+	case "allow":
+		fmt.Printf("  assign %s to territory %s and notify account executive\n", c.Lead.ID, p.Territory.Name)
+	case "require_review":
+		fmt.Printf("  queue %s for sales-ops review; capacity=%d%% distance=%dmi\n", c.Lead.ID, p.Territory.CapacityPercent, p.DistanceMiles)
+	default:
+		fmt.Printf("  reject lead %s for regional compliance review\n", c.Lead.ID)
+	}
 }

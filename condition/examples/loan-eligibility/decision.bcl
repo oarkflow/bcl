@@ -1,83 +1,80 @@
 bcl { version "1.0" strict true }
 
-module "loan-eligibility-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "credit-risk" domain "lending" }
+version "1"
+environment "example"
+metadata { owner "credit-risk" domain "lending" }
 
-  reason_code_catalog "loan_eligibility" {
-    code "CREDIT_DECLINE" { description "Applicant does not meet credit policy" }
-    code "UNDERWRITING_REVIEW" { description "Loan needs underwriting review" }
-    code "AUTO_APPROVE" { description "Loan can be approved automatically" }
-  }
+reason_code_catalog "loan_eligibility" {
+  code "CREDIT_DECLINE" { description "Applicant does not meet credit policy" }
+  code "UNDERWRITING_REVIEW" { description "Loan needs underwriting review" }
+  code "AUTO_APPROVE" { description "Loan can be approved automatically" }
+}
 
-  decision_schema "loan_eligibility" {
-    effects [allow, deny, require_review]
-    default require_review
-    strategy first_match
-  }
+decision_schema "loan_eligibility" {
+  effects [allow, deny, require_review]
+  default require_review
+  strategy first_match
+}
 
-  decision_table "loan_eligibility" {
-    default require_review
-    hit_policy first
+decision_table "loan_eligibility" {
+  default require_review
+  hit_policy first
 
-    row "deny-credit-policy" {
-      priority 100
-      when {
-        any {
-          applicant.credit_score < 580
-          applicant.debt_to_income_percent > 55
-          applicant.bankruptcy_recent == true
-        }
+  row "deny-credit-policy" {
+    priority 100
+    when {
+      any {
+        applicant.credit_score < 580
+        applicant.debt_to_income_percent > 55
+        applicant.bankruptcy_recent == true
       }
-      then { outcome { decision deny reason "applicant fails credit policy" attributes { route "decline" queue "credit-risk" } metadata { severity "high" } } obligation send_adverse_action { channel "mail" } }
-      reason "applicant fails credit policy"
-      reason_code "CREDIT_DECLINE"
-      tags ["credit", "decline"]
     }
-
-    row "review-borderline-application" {
-      priority 70
-      when {
-        any {
-          applicant.credit_score < 680
-          loan.amount_usd > 50000
-          collateral.verified == false
-        }
-      }
-      then { outcome { decision require_review reason "underwriting review required" attributes { route "manual-underwriting" queue "underwriting" } metadata { severity "medium" } } advice request_documents { type "income,collateral" } }
-      reason "underwriting review required"
-      reason_code "UNDERWRITING_REVIEW"
-      tags ["underwriting"]
-    }
-
-    row "allow-prime-borrower" {
-      priority 30
-      when {
-        all {
-          applicant.credit_score >= 720
-          applicant.debt_to_income_percent <= 35
-          applicant.bankruptcy_recent == false
-          collateral.verified == true
-        }
-      }
-      then { outcome { decision allow reason "prime borrower meets policy" attributes { route "approve" queue "none" } metadata { severity "low" } } }
-      reason "prime borrower meets policy"
-      reason_code "AUTO_APPROVE"
-      tags ["auto-approve"]
-    }
+    then { outcome { decision deny reason "applicant fails credit policy" attributes { route "decline" queue "credit-risk" } metadata { severity "high" } } obligation send_adverse_action { channel "mail" } }
+    reason "applicant fails credit policy"
+    reason_code "CREDIT_DECLINE"
+    tags ["credit", "decline"]
   }
 
-  test "prime borrower" {
-    decision "loan_eligibility"
-    input {
-      applicant.credit_score 760
-      applicant.debt_to_income_percent 28
-      applicant.bankruptcy_recent false
-      loan.amount_usd 42000
-      collateral.verified true
+  row "review-borderline-application" {
+    priority 70
+    when {
+      any {
+        applicant.credit_score < 680
+        loan.amount_usd > 50000
+        collateral.verified == false
+      }
     }
-    expect { effect "allow" reason_code "AUTO_APPROVE" }
+    then { outcome { decision require_review reason "underwriting review required" attributes { route "manual-underwriting" queue "underwriting" } metadata { severity "medium" } } advice request_documents { type "income,collateral" } }
+    reason "underwriting review required"
+    reason_code "UNDERWRITING_REVIEW"
+    tags ["underwriting"]
   }
+
+  row "allow-prime-borrower" {
+    priority 30
+    when {
+      all {
+        applicant.credit_score >= 720
+        applicant.debt_to_income_percent <= 35
+        applicant.bankruptcy_recent == false
+        collateral.verified == true
+      }
+    }
+    then { outcome { decision allow reason "prime borrower meets policy" attributes { route "approve" queue "none" } metadata { severity "low" } } }
+    reason "prime borrower meets policy"
+    reason_code "AUTO_APPROVE"
+    tags ["auto-approve"]
+  }
+}
+
+test "prime borrower" {
+  decision "loan_eligibility"
+  input {
+    applicant.credit_score 760
+    applicant.debt_to_income_percent 28
+    applicant.bankruptcy_recent false
+    loan.amount_usd 42000
+    collateral.verified true
+  }
+  expect { effect "allow" reason_code "AUTO_APPROVE" }
 }

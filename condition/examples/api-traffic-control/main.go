@@ -56,7 +56,7 @@ func main() {
 
 	for _, c := range edgeTraffic() {
 		signals := inspectEdgeRequest(c)
-		resp, err := svc.Evaluate(ctx, "api-traffic-control", condition.EvaluateRequest{Decision: "api_traffic_control", Input: facts(c, signals)})
+		resp, err := svc.Evaluate(ctx, "api-traffic-control", condition.EvaluateRequest{Decision: "api_traffic_control", Input: edgeGatewayFacts(c, signals)})
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -96,9 +96,9 @@ func inspectEdgeRequest(c EdgeCase) EdgeSignals {
 	return EdgeSignals{BotScore: min(bot, 100), CountryBlocked: c.Request.Country == "RU", RateRatio: ratio, BackendPool: pool}
 }
 
-func facts(c EdgeCase, s EdgeSignals) map[string]any {
+func edgeGatewayFacts(c EdgeCase, s EdgeSignals) map[string]any {
 	return map[string]any{
-		"request": map[string]any{
+		"edge": map[string]any{
 			"id":              c.Request.ID,
 			"bot_score":       s.BotScore,
 			"country_blocked": s.CountryBlocked,

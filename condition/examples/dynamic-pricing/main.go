@@ -60,7 +60,7 @@ func main() {
 
 	for _, c := range pricingFeed() {
 		rec := recommendPrice(c)
-		resp, err := svc.Evaluate(ctx, "dynamic-pricing", condition.EvaluateRequest{Decision: "dynamic_pricing", Input: facts(c, rec)})
+		resp, err := svc.Evaluate(ctx, "dynamic-pricing", condition.EvaluateRequest{Decision: "dynamic_pricing", Input: pricingDecisionFacts(c, rec)})
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -98,7 +98,7 @@ func recommendPrice(c PricingCase) PriceRecommendation {
 	return PriceRecommendation{MarginPercent: margin, DemandIndex: demand, DaysOfSupply: daysSupply, PriceCents: price, Rationale: rationale}
 }
 
-func facts(c PricingCase, rec PriceRecommendation) map[string]any {
+func pricingDecisionFacts(c PricingCase, rec PriceRecommendation) map[string]any {
 	return map[string]any{
 		"customer": map[string]any{"id": c.Shopper.ID, "loyalty_tier": c.Shopper.LoyaltyTier, "segment": c.Shopper.Segment},
 		"offer": map[string]any{

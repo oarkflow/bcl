@@ -57,7 +57,7 @@ func main() {
 
 	for _, c := range dispatchBoard() {
 		choice := selectCarrier(c)
-		resp, err := svc.Evaluate(ctx, "logistics-routing", condition.EvaluateRequest{Decision: "logistics_routing", Input: facts(c.Shipment, choice.Carrier)})
+		resp, err := svc.Evaluate(ctx, "logistics-routing", condition.EvaluateRequest{Decision: "logistics_routing", Input: routingDecisionFacts(c.Shipment, choice.Carrier)})
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -116,7 +116,7 @@ func selectCarrier(c DispatchCase) CarrierChoice {
 	return choices[0]
 }
 
-func facts(shipment Shipment, carrier CarrierLane) map[string]any {
+func routingDecisionFacts(shipment Shipment, carrier CarrierLane) map[string]any {
 	return map[string]any{
 		"shipment": map[string]any{
 			"id":          shipment.ID,

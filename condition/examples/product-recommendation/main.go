@@ -60,6 +60,7 @@ func main() {
 		fmt.Printf("\n%s %s\n", c.Customer.ID, c.Name)
 		fmt.Printf("  top_offer: sku=%s category=%s score=%d margin=%d%% inventory=%d\n", rec.Product.SKU, rec.Product.Category, rec.Score, rec.Product.MarginPercent, rec.Product.InventoryUnits)
 		fmt.Printf("  decision: effect=%s action=%v reason=%s\n", decision.Effect, decision.Attributes["action"], decision.ReasonCode)
+		renderRecommendation(c, rec, decision.Effect)
 	}
 }
 
@@ -99,5 +100,16 @@ func rankProducts(c RecommendationCase) Recommendation {
 			"product":        map[string]any{"sku": top.product.SKU, "category": top.product.Category, "minimum_age": top.product.MinimumAge, "requires_license": top.product.RequiresLicense, "inventory_units": top.product.InventoryUnits, "eligible": eligible},
 			"recommendation": map[string]any{"score": top.score, "margin_percent": top.product.MarginPercent, "review_required": reviewRequired, "show_offer": showOffer},
 		},
+	}
+}
+
+func renderRecommendation(c RecommendationCase, rec Recommendation, effect string) {
+	switch effect {
+	case "allow":
+		fmt.Printf("  render offer %s to customer %s\n", rec.Product.SKU, c.Customer.ID)
+	case "require_review":
+		fmt.Printf("  send placement to growth-ops; margin=%d%% score=%d\n", rec.Product.MarginPercent, rec.Score)
+	default:
+		fmt.Printf("  suppress offer %s and select next eligible candidate\n", rec.Product.SKU)
 	}
 }

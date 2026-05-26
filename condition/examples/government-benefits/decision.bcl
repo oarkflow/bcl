@@ -1,86 +1,83 @@
 bcl { version "1.0" strict true }
 
-module "government-benefits-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "citizen-services" domain "public-sector" }
+version "1"
+environment "example"
+metadata { owner "citizen-services" domain "public-sector" }
 
-  reason_code_catalog "benefit_eligibility" {
-    code "INELIGIBLE" { description "Applicant does not meet statutory requirements" }
-    code "CASEWORKER_REVIEW" { description "Application needs caseworker review" }
-    code "AUTO_APPROVE" { description "Applicant qualifies for benefits" }
-  }
+reason_code_catalog "benefit_eligibility" {
+  code "INELIGIBLE" { description "Applicant does not meet statutory requirements" }
+  code "CASEWORKER_REVIEW" { description "Application needs caseworker review" }
+  code "AUTO_APPROVE" { description "Applicant qualifies for benefits" }
+}
 
-  decision_schema "benefit_eligibility" {
-    effects [allow, deny, require_review]
-    default require_review
-    strategy first_match
-  }
+decision_schema "benefit_eligibility" {
+  effects [allow, deny, require_review]
+  default require_review
+  strategy first_match
+}
 
-  decision_table "benefit_eligibility" {
-    default require_review
-    hit_policy first
+decision_table "benefit_eligibility" {
+  default require_review
+  hit_policy first
 
-    row "deny-statutory-ineligible" {
-      priority 100
-      when {
-        any {
-          applicant.resident == false
-          applicant.age < 18
-          application.fraud_hold == true
-        }
+  row "deny-statutory-ineligible" {
+    priority 100
+    when {
+      any {
+        applicant.resident == false
+        applicant.age < 18
+        application.fraud_hold == true
       }
-      then { outcome { decision deny reason "applicant is not statutorily eligible" attributes { route "reject" queue "eligibility" } metadata { severity "medium" } } obligation notify_applicant { channel "mail" } }
-      reason "applicant is not statutorily eligible"
-      reason_code "INELIGIBLE"
-      tags ["eligibility"]
     }
-
-    row "review-income-or-documents" {
-      priority 70
-      when {
-        any {
-          household.income_usd > program.max_income_usd
-          application.missing_documents == true
-          applicant.address_verified == false
-        }
-      }
-      then { outcome { decision require_review reason "caseworker review required" attributes { route "caseworker-review" queue "benefits" } metadata { severity "medium" } } advice request_documents { type "income,address" } }
-      reason "caseworker review required"
-      reason_code "CASEWORKER_REVIEW"
-      tags ["manual-review"]
-    }
-
-    row "allow-qualified-household" {
-      priority 30
-      when {
-        all {
-          applicant.resident == true
-          applicant.age >= 18
-          applicant.address_verified == true
-          household.income_usd <= program.max_income_usd
-          application.missing_documents == false
-        }
-      }
-      then { outcome { decision allow reason "household qualifies for benefits" attributes { route "approve-benefit" queue "none" } metadata { severity "low" } } }
-      reason "household qualifies for benefits"
-      reason_code "AUTO_APPROVE"
-      tags ["auto-approve"]
-    }
+    then { outcome { decision deny reason "applicant is not statutorily eligible" attributes { route "reject" queue "eligibility" } metadata { severity "medium" } } obligation notify_applicant { channel "mail" } }
+    reason "applicant is not statutorily eligible"
+    reason_code "INELIGIBLE"
+    tags ["eligibility"]
   }
 
-  test "qualified household" {
-    decision "benefit_eligibility"
-    input {
-      applicant.resident true
-      applicant.age 42
-      applicant.address_verified true
-      household.income_usd 28000
-      program.max_income_usd 36000
-      application.missing_documents false
-      application.fraud_hold false
+  row "review-income-or-documents" {
+    priority 70
+    when {
+      any {
+        household.income_usd > program.max_income_usd
+        application.missing_documents == true
+        applicant.address_verified == false
+      }
     }
-    expect { effect "allow" reason_code "AUTO_APPROVE" }
+    then { outcome { decision require_review reason "caseworker review required" attributes { route "caseworker-review" queue "benefits" } metadata { severity "medium" } } advice request_documents { type "income,address" } }
+    reason "caseworker review required"
+    reason_code "CASEWORKER_REVIEW"
+    tags ["manual-review"]
   }
+
+  row "allow-qualified-household" {
+    priority 30
+    when {
+      all {
+        applicant.resident == true
+        applicant.age >= 18
+        applicant.address_verified == true
+        household.income_usd <= program.max_income_usd
+        application.missing_documents == false
+      }
+    }
+    then { outcome { decision allow reason "household qualifies for benefits" attributes { route "approve-benefit" queue "none" } metadata { severity "low" } } }
+    reason "household qualifies for benefits"
+    reason_code "AUTO_APPROVE"
+    tags ["auto-approve"]
+  }
+}
+
+test "qualified household" {
+  decision "benefit_eligibility"
+  input {
+    applicant.resident true
+    applicant.age 42
+    applicant.address_verified true
+    household.income_usd 28000
+    program.max_income_usd 36000
+    application.missing_documents false
+    application.fraud_hold false
+  }
+  expect { effect "allow" reason_code "AUTO_APPROVE" }
 }

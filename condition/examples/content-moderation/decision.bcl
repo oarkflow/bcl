@@ -1,82 +1,79 @@
 bcl { version "1.0" strict true }
 
-module "content-moderation-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "trust-safety" domain "media" }
+version "1"
+environment "example"
+metadata { owner "trust-safety" domain "media" }
 
-  reason_code_catalog "content_moderation" {
-    code "REMOVE_CONTENT" { description "Content violates removal policy" }
-    code "MODERATOR_REVIEW" { description "Content needs human moderator review" }
-    code "PUBLISH_CONTENT" { description "Content can be published" }
-  }
+reason_code_catalog "content_moderation" {
+  code "REMOVE_CONTENT" { description "Content violates removal policy" }
+  code "MODERATOR_REVIEW" { description "Content needs human moderator review" }
+  code "PUBLISH_CONTENT" { description "Content can be published" }
+}
 
-  decision_schema "content_moderation" {
-    effects [allow, deny, require_review]
-    default require_review
-    strategy first_match
-  }
+decision_schema "content_moderation" {
+  effects [allow, deny, require_review]
+  default require_review
+  strategy first_match
+}
 
-  decision_table "content_moderation" {
-    default require_review
-    hit_policy first
+decision_table "content_moderation" {
+  default require_review
+  hit_policy first
 
-    row "deny-severe-content" {
-      priority 100
-      when {
-        any {
-          classifier.nsfw_score >= 0.95
-          classifier.toxicity_score >= 0.9
-          classifier.copyright_match == true
-        }
+  row "deny-severe-content" {
+    priority 100
+    when {
+      any {
+        classifier.nsfw_score >= 0.95
+        classifier.toxicity_score >= 0.9
+        classifier.copyright_match == true
       }
-      then { outcome { decision deny reason "content violates platform policy" attributes { route "remove" queue "trust-safety" } metadata { severity "high" } } obligation notify_creator { reason "policy_violation" } }
-      reason "content violates platform policy"
-      reason_code "REMOVE_CONTENT"
-      tags ["moderation", "remove"]
     }
-
-    row "review-borderline-content" {
-      priority 70
-      when {
-        any {
-          classifier.nsfw_score >= 0.65
-          classifier.toxicity_score >= 0.6
-          creator.reputation_score < 40
-        }
-      }
-      then { outcome { decision require_review reason "content needs moderator review" attributes { route "moderation-queue" queue "human-review" } metadata { severity "medium" } } advice limit_distribution { mode "hold" } }
-      reason "content needs moderator review"
-      reason_code "MODERATOR_REVIEW"
-      tags ["review"]
-    }
-
-    row "allow-low-risk-content" {
-      priority 30
-      when {
-        all {
-          classifier.nsfw_score < 0.3
-          classifier.toxicity_score < 0.3
-          classifier.copyright_match == false
-          creator.reputation_score >= 60
-        }
-      }
-      then { outcome { decision allow reason "content is safe to publish" attributes { route "publish" queue "none" } metadata { severity "low" } } }
-      reason "content is safe to publish"
-      reason_code "PUBLISH_CONTENT"
-      tags ["publish"]
-    }
+    then { outcome { decision deny reason "content violates platform policy" attributes { route "remove" queue "trust-safety" } metadata { severity "high" } } obligation notify_creator { reason "policy_violation" } }
+    reason "content violates platform policy"
+    reason_code "REMOVE_CONTENT"
+    tags ["moderation", "remove"]
   }
 
-  test "low risk post" {
-    decision "content_moderation"
-    input {
-      classifier.nsfw_score 0.05
-      classifier.toxicity_score 0.08
-      classifier.copyright_match false
-      creator.reputation_score 82
+  row "review-borderline-content" {
+    priority 70
+    when {
+      any {
+        classifier.nsfw_score >= 0.65
+        classifier.toxicity_score >= 0.6
+        creator.reputation_score < 40
+      }
     }
-    expect { effect "allow" reason_code "PUBLISH_CONTENT" }
+    then { outcome { decision require_review reason "content needs moderator review" attributes { route "moderation-queue" queue "human-review" } metadata { severity "medium" } } advice limit_distribution { mode "hold" } }
+    reason "content needs moderator review"
+    reason_code "MODERATOR_REVIEW"
+    tags ["review"]
   }
+
+  row "allow-low-risk-content" {
+    priority 30
+    when {
+      all {
+        classifier.nsfw_score < 0.3
+        classifier.toxicity_score < 0.3
+        classifier.copyright_match == false
+        creator.reputation_score >= 60
+      }
+    }
+    then { outcome { decision allow reason "content is safe to publish" attributes { route "publish" queue "none" } metadata { severity "low" } } }
+    reason "content is safe to publish"
+    reason_code "PUBLISH_CONTENT"
+    tags ["publish"]
+  }
+}
+
+test "low risk post" {
+  decision "content_moderation"
+  input {
+    classifier.nsfw_score 0.05
+    classifier.toxicity_score 0.08
+    classifier.copyright_match false
+    creator.reputation_score 82
+  }
+  expect { effect "allow" reason_code "PUBLISH_CONTENT" }
 }

@@ -1,64 +1,61 @@
 bcl { version "1.0" strict true }
 
-module "geo-territory-assignment-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "revenue-ops" domain "territory-management" }
+version "1"
+environment "example"
+metadata { owner "revenue-ops" domain "territory-management" }
 
-  reason_code_catalog "geo_territory_assignment" {
-    code "REGION_BLOCKED" { description "Lead cannot be served due to regional compliance restrictions" }
-    code "CAPACITY_REVIEW" { description "Best territory is at capacity or outside licensed radius" }
-    code "ASSIGN_TERRITORY" { description "Lead can be assigned to the best territory" }
+reason_code_catalog "geo_territory_assignment" {
+  code "REGION_BLOCKED" { description "Lead cannot be served due to regional compliance restrictions" }
+  code "CAPACITY_REVIEW" { description "Best territory is at capacity or outside licensed radius" }
+  code "ASSIGN_TERRITORY" { description "Lead can be assigned to the best territory" }
+}
+
+decision_schema "geo_territory_assignment" {
+  effects [allow, deny, require_review]
+  default require_review
+  strategy first_match
+}
+
+decision_table "geo_territory_assignment" {
+  default require_review
+  hit_policy first
+
+  row "deny-blocked-region" {
+    priority 100
+    when { any { lead.country == "IR" lead.country == "KP" territory.data_residency_ok == false } }
+    then { outcome { decision deny reason "lead region is blocked by compliance" attributes { action "reject-lead" queue "compliance" } metadata { severity "high" } } obligation create_audit_case { queue "geo-compliance" } }
+    reason "lead region is blocked by compliance"
+    reason_code "REGION_BLOCKED"
+    tags ["geo", "compliance"]
   }
 
-  decision_schema "geo_territory_assignment" {
-    effects [allow, deny, require_review]
-    default require_review
-    strategy first_match
+  row "review-capacity-or-radius" {
+    priority 70
+    when { any { territory.capacity_percent >= 90 territory.distance_miles > 250 territory.licensed == false } }
+    then { outcome { decision require_review reason "territory assignment needs manager review" attributes { action "review-assignment" queue "sales-ops" } metadata { severity "medium" } } advice rebalance_territory { cadence "weekly" } }
+    reason "territory assignment needs manager review"
+    reason_code "CAPACITY_REVIEW"
+    tags ["capacity", "territory"]
   }
 
-  decision_table "geo_territory_assignment" {
-    default require_review
-    hit_policy first
-
-    row "deny-blocked-region" {
-      priority 100
-      when { any { lead.country == "IR" lead.country == "KP" territory.data_residency_ok == false } }
-      then { outcome { decision deny reason "lead region is blocked by compliance" attributes { action "reject-lead" queue "compliance" } metadata { severity "high" } } obligation create_audit_case { queue "geo-compliance" } }
-      reason "lead region is blocked by compliance"
-      reason_code "REGION_BLOCKED"
-      tags ["geo", "compliance"]
-    }
-
-    row "review-capacity-or-radius" {
-      priority 70
-      when { any { territory.capacity_percent >= 90 territory.distance_miles > 250 territory.licensed == false } }
-      then { outcome { decision require_review reason "territory assignment needs manager review" attributes { action "review-assignment" queue "sales-ops" } metadata { severity "medium" } } advice rebalance_territory { cadence "weekly" } }
-      reason "territory assignment needs manager review"
-      reason_code "CAPACITY_REVIEW"
-      tags ["capacity", "territory"]
-    }
-
-    row "allow-territory-assignment" {
-      priority 20
-      when { all { territory.capacity_percent < 90 territory.distance_miles <= 250 territory.licensed == true territory.data_residency_ok == true } }
-      then { outcome { decision allow reason "lead assigned to territory" attributes { action "assign-ae" queue "none" } metadata { severity "low" } } }
-      reason "lead assigned to territory"
-      reason_code "ASSIGN_TERRITORY"
-      tags ["assignment"]
-    }
+  row "allow-territory-assignment" {
+    priority 20
+    when { all { territory.capacity_percent < 90 territory.distance_miles <= 250 territory.licensed == true territory.data_residency_ok == true } }
+    then { outcome { decision allow reason "lead assigned to territory" attributes { action "assign-ae" queue "none" } metadata { severity "low" } } }
+    reason "lead assigned to territory"
+    reason_code "ASSIGN_TERRITORY"
+    tags ["assignment"]
   }
+}
 
-  test "assign territory" {
-    decision "geo_territory_assignment"
-    input {
-      lead.country "US"
-      territory.capacity_percent 64
-      territory.distance_miles 80
-      territory.licensed true
-      territory.data_residency_ok true
-    }
-    expect { effect "allow" reason_code "ASSIGN_TERRITORY" }
+test "assign territory" {
+  decision "geo_territory_assignment"
+  input {
+    lead.country "US"
+    territory.capacity_percent 64
+    territory.distance_miles 80
+    territory.licensed true
+    territory.data_residency_ok true
   }
+  expect { effect "allow" reason_code "ASSIGN_TERRITORY" }
 }

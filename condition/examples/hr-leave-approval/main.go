@@ -96,7 +96,7 @@ func analyzeLeave(c LeaveCase) LeaveAnalysis {
 		OverlapsBlackout: blackout,
 		Facts: map[string]any{
 			"employee": map[string]any{"id": c.Employee.ID, "leave_balance_days": c.Employee.LeaveBalanceDays},
-			"request":  map[string]any{"id": c.Request.ID, "days": days, "overlaps_blackout": blackout},
+			"leave":    map[string]any{"id": c.Request.ID, "days": days, "overlaps_blackout": blackout},
 			"team":     map[string]any{"id": c.Employee.Team, "coverage_percent": coverage},
 		},
 	}

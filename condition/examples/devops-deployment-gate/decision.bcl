@@ -1,85 +1,82 @@
 bcl { version "1.0" strict true }
 
-module "devops-deployment-gate-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "platform-engineering" domain "devops" }
+version "1"
+environment "example"
+metadata { owner "platform-engineering" domain "devops" }
 
-  reason_code_catalog "deployment_gate" {
-    code "DEPLOY_BLOCK" { description "Deployment must be blocked" }
-    code "SRE_REVIEW" { description "Deployment needs SRE review" }
-    code "PROMOTE" { description "Deployment can be promoted" }
-  }
+reason_code_catalog "deployment_gate" {
+  code "DEPLOY_BLOCK" { description "Deployment must be blocked" }
+  code "SRE_REVIEW" { description "Deployment needs SRE review" }
+  code "PROMOTE" { description "Deployment can be promoted" }
+}
 
-  decision_schema "deployment_gate" {
-    effects [allow, deny, require_review]
-    default require_review
-    strategy first_match
-  }
+decision_schema "deployment_gate" {
+  effects [allow, deny, require_review]
+  default require_review
+  strategy first_match
+}
 
-  decision_table "deployment_gate" {
-    default require_review
-    hit_policy first
+decision_table "deployment_gate" {
+  default require_review
+  hit_policy first
 
-    row "deny-failing-controls" {
-      priority 100
-      when {
-        any {
-          checks.tests_passed == false
-          checks.security_scan_passed == false
-          change.freeze_window == true
-        }
+  row "deny-failing-controls" {
+    priority 100
+    when {
+      any {
+        checks.tests_passed == false
+        checks.security_scan_passed == false
+        change.freeze_window == true
       }
-      then { outcome { decision deny reason "deployment controls failed" attributes { route "block-deploy" queue "release" } metadata { severity "high" } } obligation create_incident_note { type "blocked_deploy" } }
-      reason "deployment controls failed"
-      reason_code "DEPLOY_BLOCK"
-      tags ["deployment", "block"]
     }
-
-    row "review-risky-canary" {
-      priority 70
-      when {
-        any {
-          canary.error_rate_percent > 2
-          canary.latency_p95_ms > 500
-          change.risk_score >= 70
-        }
-      }
-      then { outcome { decision require_review reason "deployment needs SRE review" attributes { route "sre-review" queue "sre" } metadata { severity "medium" } } advice extend_canary { minutes 30 } }
-      reason "deployment needs SRE review"
-      reason_code "SRE_REVIEW"
-      tags ["canary", "review"]
-    }
-
-    row "allow-healthy-release" {
-      priority 30
-      when {
-        all {
-          checks.tests_passed == true
-          checks.security_scan_passed == true
-          canary.error_rate_percent <= 1
-          canary.latency_p95_ms <= 350
-          change.freeze_window == false
-        }
-      }
-      then { outcome { decision allow reason "deployment is healthy" attributes { route "promote" queue "none" } metadata { severity "low" } } }
-      reason "deployment is healthy"
-      reason_code "PROMOTE"
-      tags ["promote"]
-    }
+    then { outcome { decision deny reason "deployment controls failed" attributes { route "block-deploy" queue "release" } metadata { severity "high" } } obligation create_incident_note { type "blocked_deploy" } }
+    reason "deployment controls failed"
+    reason_code "DEPLOY_BLOCK"
+    tags ["deployment", "block"]
   }
 
-  test "healthy release" {
-    decision "deployment_gate"
-    input {
-      checks.tests_passed true
-      checks.security_scan_passed true
-      canary.error_rate_percent 0.3
-      canary.latency_p95_ms 220
-      change.freeze_window false
-      change.risk_score 20
+  row "review-risky-canary" {
+    priority 70
+    when {
+      any {
+        canary.error_rate_percent > 2
+        canary.latency_p95_ms > 500
+        change.risk_score >= 70
+      }
     }
-    expect { effect "allow" reason_code "PROMOTE" }
+    then { outcome { decision require_review reason "deployment needs SRE review" attributes { route "sre-review" queue "sre" } metadata { severity "medium" } } advice extend_canary { minutes 30 } }
+    reason "deployment needs SRE review"
+    reason_code "SRE_REVIEW"
+    tags ["canary", "review"]
   }
+
+  row "allow-healthy-release" {
+    priority 30
+    when {
+      all {
+        checks.tests_passed == true
+        checks.security_scan_passed == true
+        canary.error_rate_percent <= 1
+        canary.latency_p95_ms <= 350
+        change.freeze_window == false
+      }
+    }
+    then { outcome { decision allow reason "deployment is healthy" attributes { route "promote" queue "none" } metadata { severity "low" } } }
+    reason "deployment is healthy"
+    reason_code "PROMOTE"
+    tags ["promote"]
+  }
+}
+
+test "healthy release" {
+  decision "deployment_gate"
+  input {
+    checks.tests_passed true
+    checks.security_scan_passed true
+    canary.error_rate_percent 0.3
+    canary.latency_p95_ms 220
+    change.freeze_window false
+    change.risk_score 20
+  }
+  expect { effect "allow" reason_code "PROMOTE" }
 }

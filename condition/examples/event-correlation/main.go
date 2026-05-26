@@ -62,6 +62,7 @@ func main() {
 		fmt.Printf("\n%s %s\n", c.Order.ID, c.Name)
 		fmt.Printf("  sequence: new_device=%v reset=%v address_change=%v gift_card=%d%%\n", features.NewDeviceLogin, features.PasswordReset, features.AddressChange, features.GiftCardPercent)
 		fmt.Printf("  decision: effect=%s action=%v reason=%s\n", decision.Effect, decision.Attributes["action"], decision.ReasonCode)
+		processCorrelatedOrder(c, features, decision.Effect)
 	}
 }
 
@@ -108,5 +109,16 @@ func correlate(c CorrelationCase) SequenceFeatures {
 			"sequence": map[string]any{"new_device_login": newDevice, "password_reset": reset, "address_change": address, "takeover_purchase": takeoverPurchase, "partial_takeover": partialTakeover, "benign": benign},
 			"order":    map[string]any{"gift_card_percent": giftCardPercent, "shipping_country": c.Order.ShippingCountry},
 		},
+	}
+}
+
+func processCorrelatedOrder(c CorrelationCase, f SequenceFeatures, effect string) {
+	switch effect {
+	case "allow":
+		fmt.Printf("  release order %s to fulfillment\n", c.Order.ID)
+	case "require_review":
+		fmt.Printf("  hold order %s and verify customer; gift_card=%d%%\n", c.Order.ID, f.GiftCardPercent)
+	default:
+		fmt.Printf("  cancel order %s, lock account, preserve correlated event trail\n", c.Order.ID)
 	}
 }

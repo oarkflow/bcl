@@ -1,124 +1,121 @@
 bcl { version "1.0" strict true }
 
-module "access-control-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "identity-platform" domain "authorization" }
+version "1"
+environment "example"
+metadata { owner "identity-platform" domain "authorization" }
 
-  reason_code_catalog "access_control" {
-    code "BREAK_GLASS" { description "Emergency access is allowed but audited" }
-    code "STALE_MFA" { description "Sensitive action requires recent MFA" }
-    code "UNTRUSTED_SESSION" { description "Session requires stronger verification" }
-    code "TENANT_ADMIN" { description "Tenant admin may perform the action" }
-    code "OFF_HOURS_PRIVILEGED" { description "Privileged change outside office hours requires review" }
-    code "POLICY_DENY" { description "Request does not meet access policy" }
+reason_code_catalog "access_control" {
+  code "BREAK_GLASS" { description "Emergency access is allowed but audited" }
+  code "STALE_MFA" { description "Sensitive action requires recent MFA" }
+  code "UNTRUSTED_SESSION" { description "Session requires stronger verification" }
+  code "TENANT_ADMIN" { description "Tenant admin may perform the action" }
+  code "OFF_HOURS_PRIVILEGED" { description "Privileged change outside office hours requires review" }
+  code "POLICY_DENY" { description "Request does not meet access policy" }
+}
+
+decision_schema "access_control" {
+  effects [allow, deny, require_review]
+  default deny
+  strategy first_match
+}
+
+decision_table "access_control" {
+  default deny
+  hit_policy first
+
+  row "allow-emergency-break-glass" {
+    priority 100
+    when { all { user.break_glass == true access.action == "restore_service" } }
+    then { outcome { decision allow reason "emergency break-glass access" attributes { route "audit-and-allow" control "break-glass" } metadata { severity "critical" } } obligation create_audit_case { queue "security" } }
+    reason "emergency break-glass access"
+    reason_code "BREAK_GLASS"
+    tags ["emergency", "audit"]
   }
 
-  decision_schema "access_control" {
-    effects [allow, deny, require_review]
-    default deny
-    strategy first_match
+  row "review-untrusted-session" {
+    priority 80
+    when { any { session.risk_score >= 70 session.device_trusted == false session.country_allowed == false } }
+    then { outcome { decision require_review reason "session risk requires MFA" attributes { route "mfa-challenge" control "step-up" } metadata { severity "high" } } advice require_mfa { factor "webauthn" } }
+    reason "session risk requires MFA"
+    reason_code "UNTRUSTED_SESSION"
+    tags ["mfa", "risk"]
   }
 
-  decision_table "access_control" {
-    default deny
-    hit_policy first
-
-    row "allow-emergency-break-glass" {
-      priority 100
-      when { all { user.break_glass == true request.action == "restore_service" } }
-      then { outcome { decision allow reason "emergency break-glass access" attributes { route "audit-and-allow" control "break-glass" } metadata { severity "critical" } } obligation create_audit_case { queue "security" } }
-      reason "emergency break-glass access"
-      reason_code "BREAK_GLASS"
-      tags ["emergency", "audit"]
-    }
-
-    row "review-untrusted-session" {
-      priority 80
-      when { any { session.risk_score >= 70 session.device_trusted == false session.country_allowed == false } }
-      then { outcome { decision require_review reason "session risk requires MFA" attributes { route "mfa-challenge" control "step-up" } metadata { severity "high" } } advice require_mfa { factor "webauthn" } }
-      reason "session risk requires MFA"
-      reason_code "UNTRUSTED_SESSION"
-      tags ["mfa", "risk"]
-    }
-
-    row "review-stale-mfa-for-export" {
-      priority 75
-      when { session.fresh_mfa_required == true }
-      then { outcome { decision require_review reason "data export requires recent MFA" attributes { route "mfa-challenge" control "fresh-mfa" } metadata { severity "medium" } } advice require_fresh_mfa { factor "webauthn" } }
-      reason "data export requires recent MFA"
-      reason_code "STALE_MFA"
-      tags ["mfa", "data-export"]
-    }
-
-    row "review-off-hours-privileged-change" {
-      priority 65
-      when { session.off_hours_policy_change == true }
-      then { outcome { decision require_review reason "privileged policy change outside office hours" attributes { route "manager-approval" control "time-bound" } metadata { severity "medium" } } obligation create_off_hours_audit_case { queue "iam-governance" } }
-      reason "privileged policy change outside office hours"
-      reason_code "OFF_HOURS_PRIVILEGED"
-      tags ["time-policy"]
-    }
-
-    row "allow-tenant-admin" {
-      priority 40
-      when { user.entitlement == "tenant-admin" }
-      then { outcome { decision allow reason "tenant admin access" attributes { route "allow" control "rbac-abac" } metadata { severity "low" } } }
-      reason "tenant admin access"
-      reason_code "TENANT_ADMIN"
-      tags ["rbac", "abac"]
-    }
-
-    row "deny-by-policy" {
-      priority 1
-      when { request.sensitivity == "restricted" }
-      then { outcome { decision deny reason "restricted resource requires separate approval" attributes { route "deny" control "policy" } metadata { severity "medium" } } }
-      reason "restricted resource requires separate approval"
-      reason_code "POLICY_DENY"
-      tags ["deny"]
-    }
+  row "review-stale-mfa-for-export" {
+    priority 75
+    when { session.fresh_mfa_required == true }
+    then { outcome { decision require_review reason "data export requires recent MFA" attributes { route "mfa-challenge" control "fresh-mfa" } metadata { severity "medium" } } advice require_fresh_mfa { factor "webauthn" } }
+    reason "data export requires recent MFA"
+    reason_code "STALE_MFA"
+    tags ["mfa", "data-export"]
   }
 
-  test "admin same tenant" {
-    decision "access_control"
-    input {
-      user.role "admin"
-      user.tenant_id "t-100"
-      user.entitlement "tenant-admin"
-      user.break_glass false
-      request.tenant_id "t-100"
-      request.action "read_report"
-      request.sensitivity "standard"
-      session.risk_score 12
-      session.device_trusted true
-      session.country_allowed true
-      session.office_hours true
-      session.mfa_age_minutes 20
-      session.fresh_mfa_required false
-      session.off_hours_policy_change false
-    }
-    expect { effect "allow" reason_code "TENANT_ADMIN" }
+  row "review-off-hours-privileged-change" {
+    priority 65
+    when { session.off_hours_policy_change == true }
+    then { outcome { decision require_review reason "privileged policy change outside office hours" attributes { route "manager-approval" control "time-bound" } metadata { severity "medium" } } obligation create_off_hours_audit_case { queue "iam-governance" } }
+    reason "privileged policy change outside office hours"
+    reason_code "OFF_HOURS_PRIVILEGED"
+    tags ["time-policy"]
   }
 
-  test "risky session" {
-    decision "access_control"
-    input {
-      user.role "admin"
-      user.tenant_id "t-100"
-      user.entitlement "tenant-admin"
-      user.break_glass false
-      request.tenant_id "t-100"
-      request.action "export_data"
-      request.sensitivity "standard"
-      session.risk_score 91
-      session.device_trusted false
-      session.country_allowed true
-      session.office_hours true
-      session.mfa_age_minutes 540
-      session.fresh_mfa_required true
-      session.off_hours_policy_change false
-    }
-    expect { effect "require_review" reason_code "UNTRUSTED_SESSION" }
+  row "allow-tenant-admin" {
+    priority 40
+    when { user.entitlement == "tenant-admin" }
+    then { outcome { decision allow reason "tenant admin access" attributes { route "allow" control "rbac-abac" } metadata { severity "low" } } }
+    reason "tenant admin access"
+    reason_code "TENANT_ADMIN"
+    tags ["rbac", "abac"]
   }
+
+  row "deny-by-policy" {
+    priority 1
+    when { access.sensitivity == "restricted" }
+    then { outcome { decision deny reason "restricted resource requires separate approval" attributes { route "deny" control "policy" } metadata { severity "medium" } } }
+    reason "restricted resource requires separate approval"
+    reason_code "POLICY_DENY"
+    tags ["deny"]
+  }
+}
+
+test "admin same tenant" {
+  decision "access_control"
+  input {
+    user.role "admin"
+    user.tenant_id "t-100"
+    user.entitlement "tenant-admin"
+    user.break_glass false
+    access.tenant_id "t-100"
+    access.action "read_report"
+    access.sensitivity "standard"
+    session.risk_score 12
+    session.device_trusted true
+    session.country_allowed true
+    session.office_hours true
+    session.mfa_age_minutes 20
+    session.fresh_mfa_required false
+    session.off_hours_policy_change false
+  }
+  expect { effect "allow" reason_code "TENANT_ADMIN" }
+}
+
+test "risky session" {
+  decision "access_control"
+  input {
+    user.role "admin"
+    user.tenant_id "t-100"
+    user.entitlement "tenant-admin"
+    user.break_glass false
+    access.tenant_id "t-100"
+    access.action "export_data"
+    access.sensitivity "standard"
+    session.risk_score 91
+    session.device_trusted false
+    session.country_allowed true
+    session.office_hours true
+    session.mfa_age_minutes 540
+    session.fresh_mfa_required true
+    session.off_hours_policy_change false
+  }
+  expect { effect "require_review" reason_code "UNTRUSTED_SESSION" }
 }

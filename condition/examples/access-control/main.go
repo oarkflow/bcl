@@ -136,7 +136,7 @@ func buildAccessContext(c AccessCase) AccessContext {
 				"entitlement": entitlement,
 				"break_glass": entitlement == "break-glass",
 			},
-			"request": map[string]any{
+			"access": map[string]any{
 				"action":      c.Request.Action,
 				"tenant_id":   c.Request.Resource.TenantID,
 				"sensitivity": c.Request.Resource.Sensitivity,

@@ -63,7 +63,7 @@ func main() {
 
 	for _, c := range authorizationFeed() {
 		enriched := enrichAuthorization(c)
-		resp, err := svc.Evaluate(ctx, "payment-risk", condition.EvaluateRequest{Decision: "payment_risk", Input: facts(c, enriched), IncludeFeatures: true})
+		resp, err := svc.Evaluate(ctx, "payment-risk", condition.EvaluateRequest{Decision: "payment_risk", Input: authorizationDecisionFacts(c, enriched), IncludeFeatures: true})
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -133,7 +133,7 @@ func enrichAuthorization(c AuthorizationCase) AuthorizationEnrichment {
 	return AuthorizationEnrichment{RiskScore: clamp(risk, 0, 99), CrossBorder: crossBorder, VelocityCount: velocity, TrustedMerchant: trusted, Reasons: reasons}
 }
 
-func facts(c AuthorizationCase, e AuthorizationEnrichment) map[string]any {
+func authorizationDecisionFacts(c AuthorizationCase, e AuthorizationEnrichment) map[string]any {
 	return map[string]any{
 		"payment": map[string]any{
 			"id":           c.Payment.ID,

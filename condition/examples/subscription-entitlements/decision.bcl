@@ -1,68 +1,65 @@
 bcl { version "1.0" strict true }
 
-module "subscription-entitlements-example" {
-  source "./module.bcl"
-  version "1"
-  environment "example"
-  metadata { owner "billing-platform" domain "subscriptions" }
+version "1"
+environment "example"
+metadata { owner "billing-platform" domain "subscriptions" }
 
-  reason_code_catalog "entitlement_check" {
-    code "PLAN_BLOCK" { description "Feature is not available for the current plan" }
-    code "QUOTA_THROTTLE" { description "Tenant exceeded usage quota" }
-    code "FEATURE_ENABLED" { description "Feature request is entitled" }
+reason_code_catalog "entitlement_check" {
+  code "PLAN_BLOCK" { description "Feature is not available for the current plan" }
+  code "QUOTA_THROTTLE" { description "Tenant exceeded usage quota" }
+  code "FEATURE_ENABLED" { description "Feature request is entitled" }
+}
+
+decision_schema "entitlement_check" {
+  effects [allow, deny, require_review]
+  default deny
+  strategy first_match
+}
+
+decision_table "entitlement_check" {
+  default deny
+  hit_policy first
+
+  row "deny-plan-mismatch" {
+    priority 100
+    when { tenant.plan_allows_feature == false }
+    then { outcome { decision deny reason "plan does not include feature" attributes { route "upgrade-wall" action "deny" } metadata { severity "medium" } } obligation emit_billing_event { type "feature_block" } }
+    reason "plan does not include feature"
+    reason_code "PLAN_BLOCK"
+    tags ["billing"]
   }
 
-  decision_schema "entitlement_check" {
-    effects [allow, deny, require_review]
-    default deny
-    strategy first_match
+  row "review-quota-exceeded" {
+    priority 70
+    when { tenant.usage_percent >= 100 }
+    then { outcome { decision require_review reason "tenant quota exceeded" attributes { route "quota-throttle" action "throttle" } metadata { severity "medium" } } advice recommend_upgrade { plan "enterprise" } }
+    reason "tenant quota exceeded"
+    reason_code "QUOTA_THROTTLE"
+    tags ["quota"]
   }
 
-  decision_table "entitlement_check" {
-    default deny
-    hit_policy first
-
-    row "deny-plan-mismatch" {
-      priority 100
-      when { tenant.plan_allows_feature == false }
-      then { outcome { decision deny reason "plan does not include feature" attributes { route "upgrade-wall" action "deny" } metadata { severity "medium" } } obligation emit_billing_event { type "feature_block" } }
-      reason "plan does not include feature"
-      reason_code "PLAN_BLOCK"
-      tags ["billing"]
-    }
-
-    row "review-quota-exceeded" {
-      priority 70
-      when { tenant.usage_percent >= 100 }
-      then { outcome { decision require_review reason "tenant quota exceeded" attributes { route "quota-throttle" action "throttle" } metadata { severity "medium" } } advice recommend_upgrade { plan "enterprise" } }
-      reason "tenant quota exceeded"
-      reason_code "QUOTA_THROTTLE"
-      tags ["quota"]
-    }
-
-    row "allow-entitled-feature" {
-      priority 30
-      when {
-        all {
-          tenant.plan_allows_feature == true
-          tenant.usage_percent < 100
-          feature.enabled == true
-        }
+  row "allow-entitled-feature" {
+    priority 30
+    when {
+      all {
+        tenant.plan_allows_feature == true
+        tenant.usage_percent < 100
+        feature.enabled == true
       }
-      then { outcome { decision allow reason "feature access is entitled" attributes { route "feature-service" action "allow" } metadata { severity "low" } } }
-      reason "feature access is entitled"
-      reason_code "FEATURE_ENABLED"
-      tags ["entitlement"]
     }
+    then { outcome { decision allow reason "feature access is entitled" attributes { route "feature-service" action "allow" } metadata { severity "low" } } }
+    reason "feature access is entitled"
+    reason_code "FEATURE_ENABLED"
+    tags ["entitlement"]
   }
+}
 
-  test "entitled feature" {
-    decision "entitlement_check"
-    input {
-      tenant.plan_allows_feature true
-      tenant.usage_percent 42
-      feature.enabled true
-    }
-    expect { effect "allow" reason_code "FEATURE_ENABLED" }
+test "entitled feature" {
+  decision "entitlement_check"
+  input {
+    tenant.plan_allows_feature true
+    tenant.usage_percent 42
+    feature.enabled true
   }
+  expect { effect "allow" reason_code "FEATURE_ENABLED" }
 }
