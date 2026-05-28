@@ -1143,6 +1143,184 @@ func TestServiceEvaluateLifecycleInjectsChainStateIntoPreDecision(t *testing.T) 
 	}
 }
 
+func TestServiceEvaluateLifecycleResultReferencesAndStructuredResponse(t *testing.T) {
+	ctx := context.Background()
+	source := `module "result-ref" {
+  routes "http" {
+    route "login" { method "POST" pattern "/login" }
+  }
+
+  decision_table "pre_guard" {
+    default allow
+    hit_policy first
+    row "override-limit" {
+      priority 200
+      when { request.mode == "override" }
+      then { outcome { decision require_review reason "override limit" attributes { result "auth.limit" retry_after_seconds 60 headers { x_policy "override" } body { message "custom try later" extra true } } metadata { severity "medium" } } }
+      reason "override limit"
+      reason_code "OVERRIDE_LIMIT"
+    }
+    row "active-limit" {
+      priority 100
+      when { chain_state.failed_login.step == "limit" }
+      then { outcome { decision require_review reason "active limit" attributes { result "auth.limit" } metadata { severity "medium" } } }
+      reason "active limit"
+      reason_code "ACTIVE_LIMIT"
+    }
+    row "full-path-limit" {
+      priority 50
+      when { request.mode == "full_path" }
+      then { outcome { decision require_review reason "full path limit" attributes { result "auth_chain.failed_login.limit" } metadata { severity "medium" } } }
+      reason "full path limit"
+      reason_code "FULL_PATH_LIMIT"
+    }
+  }
+
+  decision_table "observe_login" {
+    default allow
+    hit_policy first
+    row "failed" {
+      when { response.status >= 400 }
+      then { outcome { decision require_review reason "failed login" attributes { action "failed_login" } metadata { severity "medium" } } }
+      reason "failed login"
+      reason_code "FAILED_LOGIN"
+    }
+  }
+
+  chain "auth_chain" {
+    entity "request.actor_key"
+    watch "failed_login" {
+      event "failed_login"
+      window "10m"
+      step "limit" {
+        id "auth.limit"
+        threshold 1
+        action "rate_limit"
+        severity "medium"
+        ttl "5m"
+        response {
+          blocking true
+          status 429
+          retry_after_seconds 120
+          headers {
+            x_policy "limit"
+          }
+          body {
+            error "rate_limit"
+            message "try later"
+          }
+        }
+      }
+    }
+  }
+
+  lifecycle "http_request" {
+    entity "request.actor_key"
+    routes "http"
+    phase "pre" { decision "pre_guard" }
+    phase "post" { decision "observe_login" chain "auth_chain" }
+  }
+}`
+	store := storage.NewMemoryStore()
+	svc := NewService(store, Config{})
+	if resp, err := svc.Publish(ctx, PublishRequest{Name: "result-ref", Source: source}); err != nil {
+		t.Fatalf("%v: %#v", err, resp)
+	}
+	post, err := svc.EvaluateLifecycle(ctx, "result-ref", "http_request", LifecycleEvaluateRequest{
+		Phase:    "post",
+		Method:   "POST",
+		Path:     "/login",
+		Input:    map[string]any{"request": map[string]any{"actor_key": "u-result"}},
+		Response: map[string]any{"status": 401},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if post.Evaluation.Enforcement == nil || post.Evaluation.Enforcement.Body["message"] != "try later" || post.Evaluation.Enforcement.Headers["x_policy"] != "limit" {
+		t.Fatalf("post structured enforcement = %#v", post.Evaluation.Enforcement)
+	}
+	state, err := store.GetChainState(ctx, "auth_chain", "failed_login", "u-result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mapFromAny(state.Attributes["body"])["error"] != "rate_limit" {
+		t.Fatalf("state did not persist structured body: %#v", state.Attributes)
+	}
+	pre, err := svc.EvaluateLifecycle(ctx, "result-ref", "http_request", LifecycleEvaluateRequest{
+		Phase:  "pre",
+		Method: "POST",
+		Path:   "/login",
+		Input:  map[string]any{"request": map[string]any{"actor_key": "u-result"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pre.Evaluation.Enforcement == nil || pre.Evaluation.Enforcement.Status != 429 || pre.Evaluation.Enforcement.Step != "limit" || pre.Evaluation.Enforcement.Body["message"] != "try later" {
+		t.Fatalf("alias result enforcement = %#v", pre.Evaluation.Enforcement)
+	}
+	override, err := svc.EvaluateLifecycle(ctx, "result-ref", "http_request", LifecycleEvaluateRequest{
+		Phase:  "pre",
+		Method: "POST",
+		Path:   "/login",
+		Input:  map[string]any{"request": map[string]any{"actor_key": "u-result", "mode": "override"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if override.Evaluation.Enforcement == nil || override.Evaluation.Enforcement.RetryAfterSeconds != 60 || override.Evaluation.Enforcement.Body["message"] != "custom try later" || override.Evaluation.Enforcement.Body["error"] != "rate_limit" || override.Evaluation.Enforcement.Headers["x_policy"] != "override" {
+		t.Fatalf("override result enforcement = %#v", override.Evaluation.Enforcement)
+	}
+	fullPath, err := svc.EvaluateLifecycle(ctx, "result-ref", "http_request", LifecycleEvaluateRequest{
+		Phase:  "pre",
+		Method: "POST",
+		Path:   "/login",
+		Input:  map[string]any{"request": map[string]any{"actor_key": "fresh-user", "mode": "full_path"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fullPath.Evaluation.Enforcement == nil || fullPath.Evaluation.Enforcement.Step != "limit" || fullPath.Evaluation.Enforcement.Chain != "auth_chain" {
+		t.Fatalf("full path result enforcement = %#v", fullPath.Evaluation.Enforcement)
+	}
+}
+
+func TestServiceValidatesResultReferences(t *testing.T) {
+	ctx := context.Background()
+	duplicate := `module "duplicate-results" {
+  decision_table "d" { default allow row "r" { then { outcome { decision allow attributes { action "allow" } } } } }
+  chain "c" {
+    entity "request.actor_key"
+    watch "w" {
+      event "e"
+      step "a" { id "shared.result" threshold 1 action "notify" }
+      step "b" { id "shared.result" threshold 2 action "notify" }
+    }
+  }
+}`
+	svc := NewService(storage.NewMemoryStore(), Config{})
+	if resp, err := svc.Publish(ctx, PublishRequest{Name: "duplicate-results", Source: duplicate}); err == nil {
+		t.Fatalf("expected duplicate result id error, got %#v", resp)
+	}
+	unknown := `module "unknown-result" {
+  decision_table "d" {
+    default allow
+    row "r" {
+      then { outcome { decision require_review attributes { result "missing.result" } } }
+    }
+  }
+  chain "c" {
+    entity "request.actor_key"
+    watch "w" {
+      event "e"
+      step "a" { threshold 1 action "notify" }
+    }
+  }
+}`
+	if resp, err := svc.Publish(ctx, PublishRequest{Name: "unknown-result", Source: unknown}); err == nil {
+		t.Fatalf("expected unknown result error, got %#v", resp)
+	}
+}
+
 func TestServiceEvaluateLifecycleTenantIsolationAndWebhookAllowlist(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(storage.NewMemoryStore(), Config{Runtime: RuntimePolicy{AllowedActionSinks: []string{"webhook"}, AllowedWebhookHosts: []string{"example.invalid"}, AllowedWebhookMethods: []string{"POST"}}})

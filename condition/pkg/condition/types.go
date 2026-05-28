@@ -170,6 +170,7 @@ type EnforcementEnvelope struct {
 	Status            int               `json:"status,omitempty"`
 	Blocking          bool              `json:"blocking,omitempty"`
 	RetryAfterSeconds int               `json:"retry_after_seconds,omitempty"`
+	ExpiresAt         *time.Time        `json:"expires_at,omitempty"`
 	Chain             string            `json:"chain,omitempty"`
 	Watch             string            `json:"watch,omitempty"`
 	Step              string            `json:"step,omitempty"`
@@ -239,6 +240,7 @@ type ChainWatchDefinition struct {
 
 type ChainStep struct {
 	ID         string         `json:"id"`
+	ResultID   string         `json:"result_id,omitempty"`
 	Threshold  int            `json:"threshold"`
 	Action     string         `json:"action"`
 	Severity   string         `json:"severity,omitempty"`

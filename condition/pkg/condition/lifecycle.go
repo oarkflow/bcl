@@ -415,7 +415,7 @@ func enforcementFromDecision(decision *bcl.DecisionResult) *EnforcementEnvelope 
 	return env
 }
 
-func enforcementFromState(state storage.ChainStateRecord, reason string) *EnforcementEnvelope {
+func enforcementFromState(state storage.ChainStateRecord, reason string, now time.Time) *EnforcementEnvelope {
 	if state.Action == "" || state.Step == "" {
 		return nil
 	}
@@ -434,15 +434,78 @@ func enforcementFromState(state storage.ChainStateRecord, reason string) *Enforc
 		Headers:    stringMapFromAny(attrs["headers"]),
 		Attributes: attrs,
 		Metadata:   metadata,
+		ExpiresAt:  state.ExpiresAt,
 	}
 	if env.Reason == "" {
 		env.Reason = fmt.Sprintf("%s triggered %s", state.Watch, state.Step)
 	}
-	if retry := intAny(attrs["retry_after_seconds"]); retry > 0 {
-		env.RetryAfterSeconds = retry
+	if intAny(attrs["retry_after_seconds"]) > 0 {
+		if remaining := remainingSeconds(state.ExpiresAt, now); remaining > 0 {
+			env.RetryAfterSeconds = remaining
+		} else if retry := intAny(attrs["retry_after_seconds"]); retry > 0 {
+			env.RetryAfterSeconds = retry
+		}
 	}
 	env.Body = enforcementBody(attrs, env)
 	return env
+}
+
+func enforcementWithActiveState(env *EnforcementEnvelope, states []storage.ChainStateRecord, now time.Time) *EnforcementEnvelope {
+	if env == nil {
+		return nil
+	}
+	for _, state := range states {
+		if !matchesEnforcementState(env, state) {
+			continue
+		}
+		env.ExpiresAt = state.ExpiresAt
+		envRetry := intAny(env.Attributes["retry_after_seconds"])
+		stateRetry := intAny(state.Attributes["retry_after_seconds"])
+		if envRetry > 0 && stateRetry > 0 && envRetry != stateRetry {
+			return env
+		}
+		if stateRetry > 0 {
+			remaining := remainingSeconds(state.ExpiresAt, now)
+			if remaining <= 0 {
+				return env
+			}
+			env.RetryAfterSeconds = remaining
+			if env.Body != nil {
+				if _, ok := env.Body["retry_after_seconds"]; ok {
+					env.Body["retry_after_seconds"] = remaining
+				}
+			}
+		}
+		return env
+	}
+	return env
+}
+
+func matchesEnforcementState(env *EnforcementEnvelope, state storage.ChainStateRecord) bool {
+	if state.Action == "" || state.Step == "" {
+		return false
+	}
+	if env.Chain != "" && env.Chain != state.Chain {
+		return false
+	}
+	if env.Watch != "" && env.Watch != state.Watch {
+		return false
+	}
+	if env.Step != "" && env.Step != state.Step {
+		return false
+	}
+	if env.Action != "" && env.Action != state.Action {
+		return false
+	}
+	return env.Chain != "" || env.Watch != "" || env.Step != "" || env.Action != ""
+}
+
+func remainingSeconds(expiresAt *time.Time, now time.Time) int {
+	if expiresAt == nil || !expiresAt.After(now) {
+		return 0
+	}
+	remaining := expiresAt.Sub(now)
+	return int((remaining + time.Second - time.Nanosecond) / time.Second)
 }
 
 func enforcementBody(attrs map[string]any, env *EnforcementEnvelope) map[string]any {

@@ -209,6 +209,7 @@ func chainStepFromBlock(block map[string]any) (*ChainStep, error) {
 		return nil, fmt.Errorf("step is missing id")
 	}
 	body := bodyMap(block["body"])
+	step.ResultID = stringAny(body["id"])
 	step.Threshold = intAny(body["threshold"])
 	step.Action = stringAny(body["action"])
 	step.Severity = stringAny(body["severity"])
@@ -226,11 +227,30 @@ func chainStepFromBlock(block map[string]any) (*ChainStep, error) {
 	}
 	for key, value := range body {
 		switch key {
-		case "threshold", "action", "severity", "ttl", "metadata":
+		case "id", "threshold", "action", "severity", "ttl", "metadata", "response":
 		default:
 			step.Attributes[key] = literalValue(value)
 		}
 	}
+	if headers := contentMapAny(body["headers"]); len(headers) > 0 {
+		step.Attributes["headers"] = headers
+	}
+	if headers := childBlockContent(block["body"], "headers"); len(headers) > 0 {
+		step.Attributes["headers"] = headers
+	}
+	if body := contentMapAny(body["body"]); len(body) > 0 {
+		step.Attributes["body"] = body
+	}
+	if body := childBlockContent(block["body"], "body"); len(body) > 0 {
+		step.Attributes["body"] = body
+	}
+	if response := contentMapAny(body["response"]); len(response) > 0 {
+		step.Attributes = deepMergeMaps(step.Attributes, response)
+	}
+	if response := childBlockContent(block["body"], "response"); len(response) > 0 {
+		step.Attributes = deepMergeMaps(step.Attributes, response)
+	}
+	normalizeLegacyBodyAttributes(step.Attributes)
 	if len(step.Attributes) == 0 {
 		step.Attributes = nil
 	}
@@ -238,6 +258,89 @@ func chainStepFromBlock(block map[string]any) (*ChainStep, error) {
 		step.Metadata = nil
 	}
 	return step, nil
+}
+
+func childBlockContent(v any, typ string) map[string]any {
+	blocks := childBlocks(v, typ)
+	if len(blocks) == 0 {
+		return nil
+	}
+	return blockContentMap(blocks[len(blocks)-1]["body"])
+}
+
+func contentMapAny(v any) map[string]any {
+	switch x := v.(type) {
+	case nil:
+		return nil
+	case map[string]any:
+		if body, ok := x["body"]; ok {
+			if m := contentMapAny(body); len(m) > 0 {
+				return m
+			}
+		}
+		if fields, ok := x["fields"].([]any); ok {
+			return blockContentMap(fields)
+		}
+		out := map[string]any{}
+		for key, value := range x {
+			if key == "type" || key == "span" || key == "fields" {
+				continue
+			}
+			out[key] = literalValue(value)
+		}
+		if len(out) > 0 {
+			return out
+		}
+	case []any:
+		return blockContentMap(x)
+	case []map[string]any:
+		items := make([]any, 0, len(x))
+		for _, item := range x {
+			items = append(items, item)
+		}
+		return blockContentMap(items)
+	}
+	return nil
+}
+
+func blockContentMap(v any) map[string]any {
+	out := map[string]any{}
+	for _, item := range blockList(v) {
+		if name := stringAny(item["name"]); name != "" {
+			out[name] = contentLiteralValue(item["value"])
+			continue
+		}
+		typ := stringAny(item["type"])
+		if typ == "" || typ == "assignment" {
+			name := stringAny(item["name"])
+			if name != "" {
+				out[name] = contentLiteralValue(item["value"])
+			}
+			continue
+		}
+		child := blockContentMap(item["body"])
+		if existing, ok := out[typ]; ok {
+			out[typ] = append(blockList(existing), child)
+		} else {
+			out[typ] = child
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func contentLiteralValue(v any) any {
+	if m, ok := v.(map[string]any); ok {
+		if fields, ok := m["fields"].([]any); ok {
+			return blockContentMap(fields)
+		}
+		if data, exists := m["data"]; exists {
+			return data
+		}
+	}
+	return literalValue(v)
 }
 
 func metadataFromChildBlocks(v any) map[string]any {
@@ -360,6 +463,9 @@ func chainStateFacts(states []storage.ChainStateRecord) map[string]any {
 			"attributes": state.Attributes,
 			"metadata":   state.Metadata,
 			"updated_at": state.UpdatedAt.Format(time.RFC3339Nano),
+		}
+		if state.ExpiresAt != nil {
+			out[state.Watch].(map[string]any)["expires_at"] = state.ExpiresAt.Format(time.RFC3339Nano)
 		}
 	}
 	return out

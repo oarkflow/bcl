@@ -44,16 +44,23 @@ func TestTokenizeFileHighlightsConditionLifecycleKeywords(t *testing.T) {
 	toks, diags := TokenizeFile("condition.bcl", []byte(`lifecycle "http_request" {
   phase "pre" {
     decision "pre_request_guard"
+    result "login.rate_limit.2m"
   }
 }
 
 chain "account_risk_chain" {
   watch "failed_login_escalation" {
     step "rate_limit_2m" {
+      id "login.rate_limit.2m"
       blocking true
       status 429
       retry_after_seconds 120
       grace_attempts 3
+      response {
+        body {
+          message "try later"
+        }
+      }
     }
   }
 }
@@ -71,6 +78,9 @@ chain "account_risk_chain" {
 		"status":              false,
 		"retry_after_seconds": false,
 		"grace_attempts":      false,
+		"id":                  false,
+		"response":            false,
+		"result":              false,
 	}
 	for _, tok := range toks {
 		if _, ok := want[tok.Text]; ok && tok.Type == "keyword" {
@@ -257,6 +267,46 @@ func TestAnalyzeCompletePlatformExampleHasCleanEditorDiagnostics(t *testing.T) {
 	} {
 		if _, ok := analysis.Declarations[want]; !ok {
 			t.Fatalf("missing indexed symbol %q", want)
+		}
+	}
+}
+
+func TestAnalyzeFileReportsConditionResultReferenceDiagnostics(t *testing.T) {
+	src := []byte(`chain "risk" {
+  entity "request.actor_key"
+  watch "failed_login" {
+    event "failed_login"
+    step "limit" {
+      id "auth.limit"
+      threshold 1
+      action "rate_limit"
+    }
+    step "other" {
+      id "auth.limit"
+      threshold 2
+      action "rate_limit"
+    }
+  }
+}
+
+decision_table "guard" {
+  default allow
+  row "missing" {
+    then {
+      outcome {
+        decision require_review
+        attributes {
+          result "missing.result"
+        }
+      }
+    }
+  }
+}`)
+	_, diags := AnalyzeFile("result-refs.bcl", src, nil)
+	text := FormatDiagnostics(diags)
+	for _, want := range []string{`duplicate result id "auth.limit"`, `unknown result "missing.result"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q diagnostic in %s", want, text)
 		}
 	}
 }

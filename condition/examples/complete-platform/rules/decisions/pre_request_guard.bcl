@@ -13,14 +13,7 @@ decision_table "pre_request_guard" {
         decision deny
         reason "active account lock or ban"
         attributes {
-          action "ban"
-          blocking true
-          status 423
-          chain "account_risk_chain"
-          watch "failed_login_escalation"
-          step "lock_ban"
-          body_code "ban"
-          body_message "account locked or banned"
+          result "login.ban.lock"
         }
         metadata {
           severity "critical"
@@ -42,15 +35,7 @@ decision_table "pre_request_guard" {
         decision deny
         reason "active login suspension"
         attributes {
-          action "suspend"
-          blocking true
-          status 403
-          retry_after_seconds 86400
-          chain "account_risk_chain"
-          watch "failed_login_escalation"
-          step "suspend_24h"
-          body_code "suspend"
-          body_message "account suspended for 24 hours"
+          result "login.suspend.24h"
         }
         metadata {
           severity "critical"
@@ -72,15 +57,7 @@ decision_table "pre_request_guard" {
         decision deny
         reason "active login block"
         attributes {
-          action "block"
-          blocking true
-          status 403
-          retry_after_seconds 1800
-          chain "account_risk_chain"
-          watch "failed_login_escalation"
-          step "block_30m"
-          body_code "block"
-          body_message "login temporarily blocked for 30 minutes"
+          result "login.block.30m"
         }
         metadata {
           severity "critical"
@@ -102,15 +79,7 @@ decision_table "pre_request_guard" {
         decision require_review
         reason "active login rate limit for 5 minutes"
         attributes {
-          action "rate_limit"
-          blocking true
-          status 429
-          retry_after_seconds 300
-          chain "account_risk_chain"
-          watch "failed_login_escalation"
-          step "rate_limit_5m"
-          body_code "rate_limit"
-          body_message "login temporarily rate limited for 5 minutes"
+          result "login.rate_limit.5m"
         }
         metadata {
           severity "high"
@@ -132,15 +101,7 @@ decision_table "pre_request_guard" {
         decision require_review
         reason "active login rate limit for 2 minutes"
         attributes {
-          action "rate_limit"
-          blocking true
-          status 429
-          retry_after_seconds 120
-          chain "account_risk_chain"
-          watch "failed_login_escalation"
-          step "rate_limit_2m"
-          body_code "rate_limit"
-          body_message "login temporarily rate limited for 2 minutes"
+          result "login.rate_limit.2m"
         }
         metadata {
           severity "medium"

@@ -26,10 +26,11 @@ func TestCompletePlatformBadLoginUsesProgressiveJitter(t *testing.T) {
 	}
 	assertEnforcement(t, resp, http.StatusTooManyRequests, "rate_limit", "rate_limit_2m", "120")
 
+	now = now.Add(30 * time.Second)
 	resp, _ = doTestRequest(t, app, mustRequest(http.MethodPost, "/login", "application/json", `{"username":"alice","password":"bad"}`, nil))
-	assertEnforcement(t, resp, http.StatusTooManyRequests, "rate_limit", "rate_limit_2m", "120")
+	assertEnforcement(t, resp, http.StatusTooManyRequests, "rate_limit", "rate_limit_2m", "90")
 
-	now = now.Add(2*time.Minute + time.Second)
+	now = now.Add(90*time.Second + time.Second)
 	if err := runtime.store.DeleteExpiredChainStates(context.Background(), time.Now().UTC().Add(365*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}

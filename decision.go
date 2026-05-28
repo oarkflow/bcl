@@ -2283,6 +2283,9 @@ func blockBodyMap(v any) map[string]any {
 		}
 		return nil
 	default:
+		if body, ok := decisionMapValue(x)["body"].([]any); ok {
+			return decisionBodyItemsMap(body)
+		}
 		if body, ok := decisionMapValue(x)["body"].(map[string]any); ok {
 			return body
 		}
@@ -2291,6 +2294,43 @@ func blockBodyMap(v any) map[string]any {
 		}
 	}
 	return nil
+}
+
+func decisionBodyItemsMap(items []any) map[string]any {
+	out := map[string]any{}
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name := scalarString(m["name"]); name != "" {
+			out[name] = decisionLiteralValue(m["value"])
+			continue
+		}
+		typ := scalarString(m["type"])
+		if typ == "" || typ == "assignment" {
+			if name := scalarString(m["name"]); name != "" {
+				out[name] = decisionLiteralValue(m["value"])
+			}
+			continue
+		}
+		if body, ok := m["body"].([]any); ok {
+			out[typ] = decisionBodyItemsMap(body)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func decisionLiteralValue(v any) any {
+	if m, ok := v.(map[string]any); ok {
+		if data, exists := m["data"]; exists {
+			return data
+		}
+	}
+	return v
 }
 
 func decisionMapValue(v any) map[string]any {

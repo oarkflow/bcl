@@ -496,6 +496,68 @@ func lifecycleReferenceDiagnostics(doc *Document) []Diagnostic {
 	return diags
 }
 
+func resultReferenceDiagnostics(doc *Document) []Diagnostic {
+	if doc == nil {
+		return nil
+	}
+	results := map[string]Span{}
+	var refs []struct {
+		value string
+		span  Span
+	}
+	var diags []Diagnostic
+	var walk func([]Node, string, string)
+	walk = func(nodes []Node, chainID, watchID string) {
+		for _, n := range nodes {
+			if a, ok := n.(*Assignment); ok {
+				if a.Name == "result" {
+					if value := literalString(a.Value); value != "" {
+						refs = append(refs, struct {
+							value string
+							span  Span
+						}{value: value, span: a.Span})
+					}
+				}
+				if obj, ok := a.Value.(*Object); ok {
+					walk(obj.Fields, chainID, watchID)
+				}
+				continue
+			}
+			b, ok := n.(*Block)
+			if !ok {
+				continue
+			}
+			nextChain, nextWatch := chainID, watchID
+			switch b.Type {
+			case "chain":
+				nextChain = b.ID
+				nextWatch = ""
+			case "watch":
+				nextWatch = b.ID
+			case "step":
+				if chainID != "" && watchID != "" && b.ID != "" {
+					results[chainID+"."+watchID+"."+b.ID] = b.Span
+				}
+				if alias := blockString(b, "id"); alias != "" {
+					if _, exists := results[alias]; exists {
+						diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("duplicate result id %q", alias), Span: b.Span})
+					} else {
+						results[alias] = b.Span
+					}
+				}
+			}
+			walk(b.Body, nextChain, nextWatch)
+		}
+	}
+	walk(doc.Items, "", "")
+	for _, ref := range refs {
+		if _, ok := results[ref.value]; !ok {
+			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("unknown result %q", ref.value), Span: ref.span})
+		}
+	}
+	return diags
+}
+
 type lintRouteSegment struct {
 	kind string
 	name string
@@ -630,6 +692,7 @@ func Lint(doc *Document, opts *Options) []Diagnostic {
 	diags := Validate(doc, opts)
 	diags = append(diags, routeCatalogDiagnostics(doc)...)
 	diags = append(diags, lifecycleReferenceDiagnostics(doc)...)
+	diags = append(diags, resultReferenceDiagnostics(doc)...)
 	var hasVersion bool
 	for _, n := range doc.Items {
 		if b, ok := n.(*Block); ok && b.Type == "bcl" {
@@ -1385,7 +1448,7 @@ func hasBlockPathPrefix(blocks map[string]*Block, ref string) bool {
 	return false
 }
 
-func validateCycles(blocks map[string]*Block, refs map[string][]Span, diags *[]Diagnostic) {
+func validateCycles(blocks map[string]*Block, _ map[string][]Span, diags *[]Diagnostic) {
 	graph := map[string][]string{}
 	for id, b := range blocks {
 		localRefs := map[string][]Span{}
@@ -1557,7 +1620,7 @@ func documentStrict(doc *Document) bool {
 	return false
 }
 
-func strictDiagnostics(doc *Document, opts *Options) []Diagnostic {
+func strictDiagnostics(doc *Document, _ *Options) []Diagnostic {
 	var diags []Diagnostic
 	var walk func([]Node)
 	walk = func(nodes []Node) {

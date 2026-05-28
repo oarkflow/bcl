@@ -8,6 +8,7 @@ This example demonstrates the full native Condition platform surface with a runn
 - BCL-owned detection, event derivation, enforcement status, retry headers, and response bodies
 - response classification for expected client errors, unexpected `4xx`, and `5xx`
 - stateful chains with TTL based progression, decay, reset, composite watches, and suppression
+- reusable result references where chain steps own structured `response { body { ... } }` envelopes and pre-request decisions use `attributes { result "..." }`
 - lifecycle `pre`, `post`, and `error` phases
 - BCL `test` and `lifecycle_test` blocks
 - curlable use cases for login, admin access, documents, endpoint errors, app errors, actions, incidents, readiness, and route coverage
@@ -58,6 +59,7 @@ tests/lifecycle_tests.bcl
 - Test credentials: `alice/correct` and `bob/correct` are valid; unknown users and wrong passwords are rejected.
 - Progressive jitter: attempts during an active cooldown are blocked by `pre` middleware and do not advance the ladder. After the current TTL expires, two invalid logins are grace failures and the third invalid login advances to the next step.
 - Pre-request enforcement: active `rate_limit`, `block`, `suspend`, and `ban` state is enforced by Fiber middleware before the handler runs.
+- Result references: `rules/chains/account_risk.bcl` defines each response body once on the step, and `rules/decisions/pre_request_guard.bcl` references those responses by stable result IDs such as `login.rate_limit.2m`.
 - Thin host integration: Fiber parses HTTP facts and applies the Condition enforcement envelope; policy conditions, event names, status codes, retry seconds, and response body messages live in imported BCL rule files.
 - Admin authorization: `GET /admin/reports` emits `admin_denied` for non-admin actors and contributes to account risk correlation.
 - Document routing: `GET /documents/:document_id` demonstrates native route matching and unexpected `4xx` detection.

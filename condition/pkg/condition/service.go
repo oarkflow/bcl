@@ -440,6 +440,7 @@ func (s *Service) EvaluateChain(ctx context.Context, definition, chainID string,
 			continue
 		}
 		if report != nil && report.Decision != nil {
+			hydrateDecisionResult(record.Program, report.Decision)
 			pendingEvents = append(pendingEvents, s.eventsFromDecision(record, chain.ID, entityKey, report.Decision)...)
 			evaluation.FinalDecision = chooseFinalDecision(evaluation.FinalDecision, report.Decision)
 		}
@@ -569,8 +570,9 @@ func (s *Service) EvaluateLifecycle(ctx context.Context, definition, lifecycleID
 			continue
 		}
 		if report != nil && report.Decision != nil {
+			hydrateDecisionResult(record.Program, report.Decision)
 			evaluation.FinalDecision(report.Decision)
-			evaluation.AddEnforcement(enforcementFromDecision(report.Decision))
+			evaluation.AddEnforcement(enforcementWithActiveState(enforcementFromDecision(report.Decision), chainStates, now))
 			evaluation.Actions = append(evaluation.Actions, s.lifecycleActionsFromDecision(ctx, record, lifecycle.ID, entityKey, report.Decision, req.DryRun)...)
 		}
 	}
@@ -600,7 +602,7 @@ func (s *Service) EvaluateLifecycle(ctx context.Context, definition, lifecycleID
 		evaluation.Chains = append(evaluation.Chains, resp.Evaluation)
 		evaluation.FinalAction, evaluation.FinalEffect, evaluation.FinalReason, finalSeverity = chooseFinalAction(evaluation.FinalAction, evaluation.FinalEffect, evaluation.FinalReason, finalSeverity, resp.Evaluation.FinalAction, resp.Evaluation.FinalEffect, resp.Evaluation.FinalReason, resp.Evaluation.FinalSeverity)
 		for _, state := range resp.Evaluation.StateAfter {
-			evaluation.AddEnforcement(enforcementFromState(state, resp.Evaluation.FinalReason))
+			evaluation.AddEnforcement(enforcementFromState(state, resp.Evaluation.FinalReason, now))
 		}
 		for _, event := range resp.Evaluation.Events {
 			action := LifecycleAction{Name: event.EventType, ReasonCode: event.ReasonCode, Severity: event.Severity, Attributes: cloneMap(event.Attributes), Metadata: cloneMap(event.Metadata)}
@@ -1143,6 +1145,7 @@ func (s *Service) validatePublish(ctx context.Context, req ValidationRequest) (*
 		report.Diagnostics = append(report.Diagnostics, validateChains(program)...)
 		report.Diagnostics = append(report.Diagnostics, validateRoutesAndLifecycles(program)...)
 		report.Diagnostics = append(report.Diagnostics, validatePolicyContracts(program)...)
+		report.Diagnostics = append(report.Diagnostics, resultReferenceDiagnostics(program)...)
 	}
 	if strict {
 		requireVersionDeclaration(&report.Diagnostics)

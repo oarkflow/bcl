@@ -10,63 +10,88 @@ chain "account_risk_chain" {
       category "account_risk"
     }
     step "rate_limit_2m" {
+      id "login.rate_limit.2m"
       threshold 3
       action "rate_limit"
       severity "medium"
       ttl "2m"
-      blocking true
-      status 429
-      retry_after_seconds 120
       grace_attempts 3
-      body_code "rate_limit"
-      body_message "login temporarily rate limited for 2 minutes"
+      response {
+        blocking true
+        status 429
+        retry_after_seconds 120
+        body {
+          error "rate_limit"
+          message "login temporarily rate limited for 2 minutes"
+        }
+      }
     }
     step "rate_limit_5m" {
+      id "login.rate_limit.5m"
       threshold 6
       action "rate_limit"
       severity "high"
       ttl "5m"
-      blocking true
-      status 429
-      retry_after_seconds 300
       grace_attempts 3
-      body_code "rate_limit"
-      body_message "login temporarily rate limited for 5 minutes"
+      response {
+        blocking true
+        status 429
+        retry_after_seconds 300
+        body {
+          error "rate_limit"
+          message "login temporarily rate limited for 5 minutes"
+        }
+      }
     }
     step "block_30m" {
+      id "login.block.30m"
       threshold 9
       action "block"
       severity "critical"
       ttl "30m"
-      blocking true
-      status 403
-      retry_after_seconds 1800
       grace_attempts 3
-      body_code "block"
-      body_message "login temporarily blocked for 30 minutes"
+      response {
+        blocking true
+        status 403
+        retry_after_seconds 1800
+        body {
+          error "block"
+          message "login temporarily blocked for 30 minutes"
+        }
+      }
     }
     step "suspend_24h" {
+      id "login.suspend.24h"
       threshold 12
       action "suspend"
       severity "critical"
       ttl "24h"
-      blocking true
-      status 403
-      retry_after_seconds 86400
       grace_attempts 3
-      body_code "suspend"
-      body_message "account suspended for 24 hours"
+      response {
+        blocking true
+        status 403
+        retry_after_seconds 86400
+        body {
+          error "suspend"
+          message "account suspended for 24 hours"
+        }
+      }
     }
     step "lock_ban" {
+      id "login.ban.lock"
       threshold 15
       action "ban"
       severity "critical"
       ttl "720h"
-      blocking true
-      status 423
       grace_attempts 3
-      body_code "ban"
-      body_message "account locked or banned"
+      response {
+        blocking true
+        status 423
+        body {
+          error "ban"
+          message "account locked or banned"
+        }
+      }
     }
   }
 
@@ -93,8 +118,15 @@ chain "account_risk_chain" {
       action "block"
       severity "critical"
       ttl "30m"
-      status 403
-      retry_after_seconds 300
+      response {
+        blocking true
+        status 403
+        retry_after_seconds 300
+        body {
+          error "block"
+          message "account activity temporarily blocked after takeover risk"
+        }
+      }
     }
   }
 }
