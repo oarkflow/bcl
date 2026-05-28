@@ -1,0 +1,266 @@
+test "expected 401 is healthy" {
+  decision "response_observability"
+  input {
+    response.status 401
+    response.healthy true
+  }
+  expect {
+    effect "allow"
+    reason_code "HEALTHY_RESPONSE"
+  }
+}
+
+test "unexpected 404 is unhealthy" {
+  decision "response_observability"
+  input {
+    response.status 404
+    response.healthy false
+  }
+  expect {
+    effect "require_review"
+    reason_code "UNEXPECTED_4XX"
+  }
+}
+
+lifecycle_test "trusted session is healthy" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/session/continue"
+  input {
+    request.actor_key "alice"
+  }
+  request {
+    headers {
+      content_type "application/json"
+    }
+    body {
+      actor "alice"
+    }
+    session {
+      impossible_travel false
+      token_reuse false
+      mfa_bypass_attempt false
+    }
+    device {
+      trusted true
+    }
+    network {
+      asn_changed false
+      ip_reputation 10
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      ok true
+    }
+    format "json"
+  }
+  expect {
+    final_action "healthy"
+    route "session_continue"
+  }
+}
+
+lifecycle_test "impossible travel triggers step up" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/session/continue"
+  input {
+    request.actor_key "alice"
+  }
+  request {
+    session {
+      impossible_travel true
+      token_reuse false
+      mfa_bypass_attempt false
+    }
+    network {
+      asn_changed false
+      ip_reputation 15
+    }
+    device {
+      trusted true
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      ok true
+    }
+    format "json"
+  }
+  expect {
+    final_action "step_up"
+    route "session_continue"
+  }
+}
+
+lifecycle_test "blocked country is denied" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/payments/authorize"
+  input {
+    request.actor_key "buyer-1"
+  }
+  request {
+    geo {
+      country "IR"
+      region "blocked"
+    }
+    payment {
+      amount_vs_avg 1
+      velocity_10m 1
+      new_method false
+      shipping_country "IR"
+      billing_country "IR"
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      accepted true
+    }
+    format "json"
+  }
+  expect {
+    final_action "block"
+    route "payment_authorize"
+  }
+}
+
+lifecycle_test "cross-region pii export is quarantined" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/data/query"
+  input {
+    request.actor_key "analyst-1"
+  }
+  request {
+    tenant {
+      region "us"
+      verified true
+    }
+    geo {
+      country "DE"
+      region "eu"
+    }
+    data {
+      pii_export true
+      bulk_rows 25000
+      restricted_dataset true
+      cross_region true
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      accepted true
+    }
+    format "json"
+  }
+  expect {
+    final_action "quarantine"
+    route "data_query"
+  }
+}
+
+lifecycle_test "payment spike is challenged" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/payments/authorize"
+  input {
+    request.actor_key "buyer-2"
+  }
+  request {
+    geo {
+      country "US"
+      region "us"
+    }
+    payment {
+      amount_vs_avg 6
+      velocity_10m 1
+      new_method false
+      shipping_country "US"
+      billing_country "US"
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      accepted true
+    }
+    format "json"
+  }
+  expect {
+    final_action "challenge"
+    route "payment_authorize"
+  }
+}
+
+lifecycle_test "business abuse is monitored" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/support/tickets"
+  input {
+    request.actor_key "tenant-user-1"
+  }
+  request {
+    tenant {
+      verified false
+    }
+    support {
+      ticket_spam true
+      sla_manipulation false
+      severity 1
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      ticket "created"
+    }
+    format "json"
+  }
+  expect {
+    final_action "monitor"
+    route "support_ticket"
+  }
+}
+
+lifecycle_test "api server errors escalate" {
+  lifecycle "http_request"
+  phase "post"
+  method "GET"
+  path "/api/resource"
+  input {
+    request.actor_key "api"
+    request.application_key "anomaly-detection-demo"
+  }
+  request {
+    format "json"
+  }
+  response {
+    status 500
+    body {
+      error "forced"
+    }
+    format "json"
+  }
+  expect {
+    final_action "api_5xx"
+    route "api_resource"
+  }
+}

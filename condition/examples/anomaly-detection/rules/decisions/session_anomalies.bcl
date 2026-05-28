@@ -1,0 +1,63 @@
+decision_table "session_anomaly_detection" {
+  contract "anomaly_actions"
+  default allow
+  hit_policy first
+
+  row "detect-session-hijacking" {
+    priority 100
+    when {
+      all {
+        route.category == "identity"
+        any {
+          request.session.impossible_travel == true
+          request.session.token_reuse == true
+          request.session.mfa_bypass_attempt == true
+          request.network.asn_changed == true
+          request.network.ip_reputation >= 80
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "session hijacking anomaly detected"
+        attributes {
+          action "session_anomaly"
+          threat "session_hijacking"
+        }
+        metadata {
+          severity "critical"
+          category "identity"
+        }
+      }
+    }
+    reason "session hijacking anomaly detected"
+    reason_code "SESSION_HIJACKING"
+  }
+
+  row "detect-sensitive-untrusted-device" {
+    priority 80
+    when {
+      all {
+        route.sensitivity == "critical"
+        request.device.trusted == false
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "sensitive route accessed from untrusted device"
+        attributes {
+          action "session_anomaly"
+          threat "untrusted_sensitive_access"
+        }
+        metadata {
+          severity "high"
+          category "identity"
+        }
+      }
+    }
+    reason "sensitive route accessed from untrusted device"
+    reason_code "UNTRUSTED_SENSITIVE_ACCESS"
+  }
+}

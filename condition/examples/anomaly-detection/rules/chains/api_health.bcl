@@ -1,0 +1,46 @@
+chain "api_health_chain" {
+  entity "request.application_key"
+
+  watch "api_health" {
+    event "api_5xx"
+    events [
+      "api_5xx"
+      "unexpected_4xx"
+    ]
+    window "10m"
+    metadata {
+      category "api"
+      threat "service_health"
+    }
+
+    step "notify_api_health" {
+      id "api.notify"
+      threshold 3
+      action "notify"
+      severity "high"
+      ttl "10m"
+      response {
+        blocking false
+        status 200
+        body {
+          message "API anomaly notification emitted"
+        }
+      }
+    }
+
+    step "escalate_api_health" {
+      id "api.escalate"
+      threshold 5
+      action "escalate"
+      severity "critical"
+      ttl "30m"
+      response {
+        blocking false
+        status 200
+        body {
+          message "API anomaly escalated"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,91 @@
+routes "http" {
+  route "session_continue" {
+    method "POST"
+    pattern "/session/continue"
+    metadata {
+      category "identity"
+      policy_type "session-risk"
+      sensitivity "high"
+    }
+  }
+
+  route "payment_authorize" {
+    method "POST"
+    pattern "/payments/authorize"
+    metadata {
+      category "commerce"
+      policy_type "payment-risk"
+      sensitivity "high"
+    }
+  }
+
+  route "order_checkout" {
+    method "POST"
+    pattern "/orders/checkout"
+    metadata {
+      category "commerce"
+      policy_type "order-risk"
+      sensitivity "medium"
+    }
+  }
+
+  route "support_ticket" {
+    method "POST"
+    pattern "/support/tickets"
+    metadata {
+      category "support"
+      policy_type "business-abuse"
+      sensitivity "medium"
+    }
+  }
+
+  route "logistics_shipment" {
+    method "POST"
+    pattern "/logistics/shipments"
+    metadata {
+      category "logistics"
+      policy_type "shipment-risk"
+      sensitivity "medium"
+    }
+  }
+
+  route "data_query" {
+    method "POST"
+    pattern "/data/query"
+    metadata {
+      category "data"
+      policy_type "data-governance"
+      sensitivity "critical"
+    }
+  }
+
+  route "api_resource" {
+    method "GET"
+    pattern "/api/resource"
+    metadata {
+      category "api"
+      policy_type "api-health"
+      sensitivity "low"
+    }
+  }
+
+  route "api_resource_mutation" {
+    method "POST"
+    pattern "/api/resource"
+    metadata {
+      category "api"
+      policy_type "api-health"
+      sensitivity "medium"
+    }
+  }
+
+  route "risk_console" {
+    method "GET"
+    pattern "/admin/risk-console"
+    metadata {
+      category "admin"
+      policy_type "business-control"
+      sensitivity "critical"
+    }
+  }
+}

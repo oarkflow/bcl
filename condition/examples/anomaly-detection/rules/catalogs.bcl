@@ -1,0 +1,172 @@
+action_catalog "default" {
+  action "allow" {
+    sink "event"
+    severity "low"
+  }
+
+  action "healthy" {
+    sink "event"
+    severity "low"
+  }
+
+  action "monitor" {
+    sink "event"
+    severity "medium"
+  }
+
+  action "step_up" {
+    sink "event"
+    severity "high"
+  }
+
+  action "challenge" {
+    sink "event"
+    severity "high"
+  }
+
+  action "hold" {
+    sink "event"
+    severity "high"
+  }
+
+  action "reject" {
+    sink "event"
+    severity "critical"
+  }
+
+  action "block" {
+    sink "event"
+    severity "critical"
+  }
+
+  action "suspend" {
+    sink "event"
+    severity "critical"
+  }
+
+  action "terminate_session" {
+    sink "event"
+    severity "critical"
+  }
+
+  action "notify" {
+    sink "event"
+    severity "high"
+    retries 3
+  }
+
+  action "escalate" {
+    sink "event"
+    severity "critical"
+    retries 3
+  }
+
+  action "open_case" {
+    sink "event"
+    severity "high"
+  }
+
+  action "quarantine" {
+    sink "event"
+    severity "critical"
+  }
+
+  action "session_anomaly" {
+    sink "event"
+    severity "high"
+  }
+
+  action "geo_violation" {
+    sink "event"
+    severity "critical"
+  }
+
+  action "business_rule_violation" {
+    sink "event"
+    severity "high"
+  }
+
+  action "payment_or_order_anomaly" {
+    sink "event"
+    severity "high"
+  }
+
+  action "data_access_anomaly" {
+    sink "event"
+    severity "critical"
+  }
+
+  action "unexpected_4xx" {
+    sink "event"
+    severity "medium"
+  }
+
+  action "api_5xx" {
+    sink "event"
+    severity "high"
+  }
+}
+
+output_contract "anomaly_actions" {
+  actions [
+    "allow"
+    "healthy"
+    "monitor"
+    "step_up"
+    "challenge"
+    "hold"
+    "reject"
+    "block"
+    "suspend"
+    "terminate_session"
+    "notify"
+    "escalate"
+    "open_case"
+    "quarantine"
+    "session_anomaly"
+    "geo_violation"
+    "business_rule_violation"
+    "payment_or_order_anomaly"
+    "data_access_anomaly"
+    "unexpected_4xx"
+    "api_5xx"
+  ]
+  severities [
+    "low"
+    "medium"
+    "high"
+    "critical"
+  ]
+}
+
+standard_facts "http" {
+  fact "request" {
+    schema "http_request"
+  }
+
+  fact "response" {
+    schema "http_response"
+  }
+
+  fact "route" {
+    schema "route_fact"
+  }
+
+  fact "tenant" {
+    schema "tenant_fact"
+  }
+
+  fact "risk" {
+    schema "risk_fact"
+  }
+}
+
+response_classifier "http" {
+  healthy_below 400
+  unhealthy_at_or_above 500
+  expected_client_statuses [
+    400
+    401
+    403
+  ]
+}

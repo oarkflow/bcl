@@ -1,0 +1,46 @@
+chain "data_exfiltration_chain" {
+  entity "request.actor_key"
+
+  watch "data_exfiltration" {
+    event "data_access_anomaly"
+    window "1h"
+    metadata {
+      category "data"
+      threat "exfiltration"
+    }
+
+    step "quarantine_access" {
+      id "data.quarantine"
+      threshold 1
+      action "quarantine"
+      severity "critical"
+      ttl "30m"
+      response {
+        blocking true
+        status 423
+        retry_after_seconds 1800
+        body {
+          error "data_access_quarantined"
+          message "data access quarantined after exfiltration signal"
+        }
+      }
+    }
+
+    step "suspend_data_access" {
+      id "data.suspend"
+      threshold 3
+      action "suspend"
+      severity "critical"
+      ttl "24h"
+      response {
+        blocking true
+        status 403
+        retry_after_seconds 86400
+        body {
+          error "data_access_suspended"
+          message "data access suspended after repeated exfiltration signals"
+        }
+      }
+    }
+  }
+}

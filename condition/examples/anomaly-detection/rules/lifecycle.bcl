@@ -1,0 +1,28 @@
+lifecycle "http_request" {
+  entity "request.actor_key"
+  routes "http"
+
+  phase "pre" {
+    decision "pre_request_guard"
+  }
+
+  phase "post" {
+    decision "response_observability"
+    decision "session_anomaly_detection"
+    decision "geo_policy_detection"
+    decision "business_rule_detection"
+    decision "commerce_risk_detection"
+    decision "data_governance_detection"
+    chain "identity_anomaly_chain"
+    chain "geo_policy_chain"
+    chain "business_abuse_chain"
+    chain "commerce_risk_chain"
+    chain "data_exfiltration_chain"
+    chain "api_health_chain"
+  }
+
+  phase "error" {
+    decision "response_observability"
+    chain "api_health_chain"
+  }
+}

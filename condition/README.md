@@ -119,6 +119,7 @@ For the native Condition policy platform features, read:
 - `examples/request-lifecycle`
 - `examples/http-auth-guard`
 - `examples/complete-platform`
+- `examples/anomaly-detection`
 
 These cover policy packages, contracts, action catalogs, route catalogs, overlays, lifecycle phases, request/response envelopes, response classification, stateful chains, composite watches, decay/cooldown/reset behavior, action delivery, incidents, route coverage, and lifecycle tests.
 

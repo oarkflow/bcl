@@ -1,0 +1,66 @@
+decision_table "commerce_risk_detection" {
+  contract "anomaly_actions"
+  default allow
+  hit_policy first
+
+  row "payment-spike" {
+    priority 100
+    when {
+      all {
+        route.id == "payment_authorize"
+        any {
+          request.payment.amount_vs_avg >= 4
+          request.payment.velocity_10m >= 3
+          request.payment.new_method == true
+          request.payment.shipping_country != request.payment.billing_country
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "payment anomaly requires challenge"
+        attributes {
+          action "payment_or_order_anomaly"
+          threat "payment_spike"
+        }
+        metadata {
+          severity "high"
+          category "commerce"
+        }
+      }
+    }
+    reason "payment anomaly requires challenge"
+    reason_code "PAYMENT_ANOMALY"
+  }
+
+  row "risky-order" {
+    priority 80
+    when {
+      all {
+        route.id == "order_checkout"
+        any {
+          request.order.gift_card_percent >= 70
+          request.order.reseller_score >= 80
+          request.order.shipping_country != request.order.billing_country
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "order anomaly requires hold"
+        attributes {
+          action "payment_or_order_anomaly"
+          threat "order_fraud"
+        }
+        metadata {
+          severity "high"
+          category "commerce"
+        }
+      }
+    }
+    reason "order anomaly requires hold"
+    reason_code "ORDER_ANOMALY"
+  }
+}

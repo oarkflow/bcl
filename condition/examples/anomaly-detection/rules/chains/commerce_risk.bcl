@@ -1,0 +1,63 @@
+chain "commerce_risk_chain" {
+  entity "request.actor_key"
+
+  watch "commerce_risk" {
+    event "payment_or_order_anomaly"
+    window "1h"
+    metadata {
+      category "commerce"
+      threat "fraudulent_transaction"
+    }
+
+    step "challenge_payment" {
+      id "commerce.challenge"
+      threshold 1
+      action "challenge"
+      severity "high"
+      ttl "10m"
+      response {
+        blocking true
+        status 402
+        retry_after_seconds 600
+        body {
+          error "payment_challenge"
+          message "transaction requires customer verification"
+        }
+      }
+    }
+
+    step "hold_order" {
+      id "commerce.hold"
+      threshold 2
+      action "hold"
+      severity "high"
+      ttl "30m"
+      response {
+        blocking true
+        status 409
+        retry_after_seconds 1800
+        body {
+          error "order_held"
+          message "order held for risk review"
+        }
+      }
+    }
+
+    step "reject_transaction" {
+      id "commerce.reject"
+      threshold 4
+      action "reject"
+      severity "critical"
+      ttl "2h"
+      response {
+        blocking true
+        status 403
+        retry_after_seconds 7200
+        body {
+          error "transaction_rejected"
+          message "transaction rejected after repeated commerce anomalies"
+        }
+      }
+    }
+  }
+}

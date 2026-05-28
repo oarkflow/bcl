@@ -1,0 +1,269 @@
+decision_table "pre_request_guard" {
+  contract "anomaly_actions"
+  default allow
+  hit_policy first
+
+  row "active-session-suspend" {
+    priority 600
+    when {
+      chain_state.identity_session.step == "suspend_identity"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active identity suspension"
+        attributes {
+          result "session.suspend"
+        }
+        metadata {
+          severity "critical"
+          category "identity"
+        }
+      }
+    }
+    reason "active identity suspension"
+    reason_code "ACTIVE_IDENTITY_SUSPEND"
+  }
+
+  row "active-session-terminate" {
+    priority 590
+    when {
+      chain_state.identity_session.step == "terminate_session"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active session termination"
+        attributes {
+          result "session.terminate"
+        }
+        metadata {
+          severity "critical"
+          category "identity"
+        }
+      }
+    }
+    reason "active session termination"
+    reason_code "ACTIVE_SESSION_TERMINATE"
+  }
+
+  row "active-step-up" {
+    priority 580
+    when {
+      chain_state.identity_session.step == "step_up"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active step-up requirement"
+        attributes {
+          result "session.step_up"
+        }
+        metadata {
+          severity "high"
+          category "identity"
+        }
+      }
+    }
+    reason "active step-up requirement"
+    reason_code "ACTIVE_STEP_UP"
+  }
+
+  row "active-geo-suspend" {
+    priority 560
+    when {
+      chain_state.geo_region_policy.step == "suspend_geo_access"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active regional suspension"
+        attributes {
+          result "geo.suspend"
+        }
+        metadata {
+          severity "critical"
+          category "geo"
+        }
+      }
+    }
+    reason "active regional suspension"
+    reason_code "ACTIVE_GEO_SUSPEND"
+  }
+
+  row "active-region-block" {
+    priority 550
+    when {
+      chain_state.geo_region_policy.step == "block_region"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active region block"
+        attributes {
+          result "geo.block_region"
+        }
+        metadata {
+          severity "critical"
+          category "geo"
+        }
+      }
+    }
+    reason "active region block"
+    reason_code "ACTIVE_REGION_BLOCK"
+  }
+
+  row "active-data-suspend" {
+    priority 530
+    when {
+      chain_state.data_exfiltration.step == "suspend_data_access"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active data access suspension"
+        attributes {
+          result "data.suspend"
+        }
+        metadata {
+          severity "critical"
+          category "data"
+        }
+      }
+    }
+    reason "active data access suspension"
+    reason_code "ACTIVE_DATA_SUSPEND"
+  }
+
+  row "active-data-quarantine" {
+    priority 520
+    when {
+      chain_state.data_exfiltration.step == "quarantine_access"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active data quarantine"
+        attributes {
+          result "data.quarantine"
+        }
+        metadata {
+          severity "critical"
+          category "data"
+        }
+      }
+    }
+    reason "active data quarantine"
+    reason_code "ACTIVE_DATA_QUARANTINE"
+  }
+
+  row "active-commerce-reject" {
+    priority 500
+    when {
+      chain_state.commerce_risk.step == "reject_transaction"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active commerce rejection"
+        attributes {
+          result "commerce.reject"
+        }
+        metadata {
+          severity "critical"
+          category "commerce"
+        }
+      }
+    }
+    reason "active commerce rejection"
+    reason_code "ACTIVE_COMMERCE_REJECT"
+  }
+
+  row "active-commerce-hold" {
+    priority 490
+    when {
+      chain_state.commerce_risk.step == "hold_order"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active commerce hold"
+        attributes {
+          result "commerce.hold"
+        }
+        metadata {
+          severity "high"
+          category "commerce"
+        }
+      }
+    }
+    reason "active commerce hold"
+    reason_code "ACTIVE_COMMERCE_HOLD"
+  }
+
+  row "active-commerce-challenge" {
+    priority 480
+    when {
+      chain_state.commerce_risk.step == "challenge_payment"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active commerce challenge"
+        attributes {
+          result "commerce.challenge"
+        }
+        metadata {
+          severity "high"
+          category "commerce"
+        }
+      }
+    }
+    reason "active commerce challenge"
+    reason_code "ACTIVE_COMMERCE_CHALLENGE"
+  }
+
+  row "active-business-case" {
+    priority 460
+    when {
+      chain_state.business_abuse.step == "open_business_case"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active business abuse case"
+        attributes {
+          result "business.open_case"
+        }
+        metadata {
+          severity "critical"
+          category "business"
+        }
+      }
+    }
+    reason "active business abuse case"
+    reason_code "ACTIVE_BUSINESS_CASE"
+  }
+
+  row "active-business-hold" {
+    priority 450
+    when {
+      chain_state.business_abuse.step == "hold_business"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active business hold"
+        attributes {
+          result "business.hold"
+        }
+        metadata {
+          severity "high"
+          category "business"
+        }
+      }
+    }
+    reason "active business hold"
+    reason_code "ACTIVE_BUSINESS_HOLD"
+  }
+}

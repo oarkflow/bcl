@@ -1,0 +1,128 @@
+decision_table "business_rule_detection" {
+  contract "anomaly_actions"
+  default allow
+  hit_policy first
+
+  row "off-hours-admin-operation" {
+    priority 100
+    when {
+      all {
+        route.id == "risk_console"
+        request.business.business_hours == false
+        request.actor.role != "risk_admin"
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "off-hours admin operation violates business controls"
+        attributes {
+          action "business_rule_violation"
+          threat "off_hours_admin"
+        }
+        metadata {
+          severity "high"
+          category "business"
+        }
+      }
+    }
+    reason "off-hours admin operation violates business controls"
+    reason_code "OFF_HOURS_ADMIN"
+  }
+
+  row "support-abuse" {
+    priority 90
+    when {
+      all {
+        route.id == "support_ticket"
+        any {
+          request.support.ticket_spam == true
+          request.support.sla_manipulation == true
+          all {
+            request.support.severity <= 1
+            request.tenant.verified == false
+          }
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "support workflow anomaly detected"
+        attributes {
+          action "business_rule_violation"
+          threat "support_workflow_abuse"
+        }
+        metadata {
+          severity "high"
+          category "support"
+        }
+      }
+    }
+    reason "support workflow anomaly detected"
+    reason_code "SUPPORT_ABUSE"
+  }
+
+  row "logistics-policy-violation" {
+    priority 80
+    when {
+      all {
+        route.id == "logistics_shipment"
+        any {
+          request.logistics.restricted_destination == true
+          all {
+            request.logistics.hazmat == true
+            request.logistics.carrier_certified == false
+          }
+          request.logistics.reroute_attempts >= 3
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "logistics business anomaly detected"
+        attributes {
+          action "business_rule_violation"
+          threat "logistics_policy_violation"
+        }
+        metadata {
+          severity "high"
+          category "logistics"
+        }
+      }
+    }
+    reason "logistics business anomaly detected"
+    reason_code "LOGISTICS_POLICY"
+  }
+
+  row "order-business-abuse" {
+    priority 70
+    when {
+      all {
+        route.id == "order_checkout"
+        any {
+          request.order.discount_percent >= 80
+          request.order.coupon_reuse_count >= 4
+          request.order.refund_count_7d >= 3
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "order business rule anomaly detected"
+        attributes {
+          action "business_rule_violation"
+          threat "order_abuse"
+        }
+        metadata {
+          severity "high"
+          category "business"
+        }
+      }
+    }
+    reason "order business rule anomaly detected"
+    reason_code "ORDER_BUSINESS_ABUSE"
+  }
+}

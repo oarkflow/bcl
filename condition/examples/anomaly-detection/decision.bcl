@@ -1,0 +1,30 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+version "1"
+environment "example"
+metadata {
+  owner "risk-platform"
+  domain "anomaly-detection"
+}
+
+import "./rules/package.bcl"
+import "./rules/catalogs.bcl"
+import "./rules/routes.bcl"
+import "./rules/decisions/pre_request_guard.bcl"
+import "./rules/decisions/response_observability.bcl"
+import "./rules/decisions/session_anomalies.bcl"
+import "./rules/decisions/geo_policy.bcl"
+import "./rules/decisions/business_rules.bcl"
+import "./rules/decisions/commerce_risk.bcl"
+import "./rules/decisions/data_governance.bcl"
+import "./rules/chains/identity_anomaly.bcl"
+import "./rules/chains/geo_policy.bcl"
+import "./rules/chains/business_abuse.bcl"
+import "./rules/chains/commerce_risk.bcl"
+import "./rules/chains/data_exfiltration.bcl"
+import "./rules/chains/api_health.bcl"
+import "./rules/lifecycle.bcl"
+import "./tests/lifecycle_tests.bcl"

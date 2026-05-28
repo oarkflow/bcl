@@ -1,0 +1,36 @@
+decision_table "data_governance_detection" {
+  contract "anomaly_actions"
+  default allow
+  hit_policy first
+
+  row "data-exfiltration" {
+    priority 100
+    when {
+      all {
+        route.id == "data_query"
+        any {
+          request.data.pii_export == true
+          request.data.bulk_rows >= 10000
+          request.data.restricted_dataset == true
+          request.data.cross_region == true
+        }
+      }
+    }
+    then {
+      outcome {
+        decision deny
+        reason "data access anomaly detected"
+        attributes {
+          action "data_access_anomaly"
+          threat "data_exfiltration"
+        }
+        metadata {
+          severity "critical"
+          category "data"
+        }
+      }
+    }
+    reason "data access anomaly detected"
+    reason_code "DATA_EXFILTRATION"
+  }
+}
