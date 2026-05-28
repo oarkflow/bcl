@@ -1,0 +1,153 @@
+action_catalog "default" {
+  action "allow" {
+    sink "event"
+    severity "low"
+  }
+
+  action "healthy" {
+    sink "event"
+    severity "low"
+  }
+
+  action "failed_login" {
+    sink "event"
+    severity "medium"
+  }
+
+  action "successful_login" {
+    sink "event"
+    severity "low"
+  }
+
+  action "admin_denied" {
+    sink "event"
+    severity "high"
+  }
+
+  action "rate_limit" {
+    sink "event"
+    severity "medium"
+    retries 1
+  }
+
+  action "warning" {
+    sink "event"
+    severity "high"
+    approval "review"
+  }
+
+  action "block" {
+    sink "event"
+    severity "critical"
+    approval "required"
+    retries 1
+  }
+
+  action "suspend" {
+    sink "event"
+    severity "critical"
+    approval "required"
+    retries 1
+  }
+
+  action "ban" {
+    sink "event"
+    severity "critical"
+    approval "required"
+    retries 1
+  }
+
+  action "notify" {
+    sinks [
+      "event"
+      "webhook"
+    ]
+    severity "high"
+    approval "required"
+    retries 3
+  }
+
+  action "escalate" {
+    sink "event"
+    severity "critical"
+    approval "required"
+    retries 3
+  }
+
+  action "unexpected_4xx" {
+    sink "event"
+    severity "medium"
+  }
+
+  action "endpoint_5xx" {
+    sink "event"
+    severity "high"
+  }
+
+  action "app_5xx" {
+    sink "event"
+    severity "high"
+  }
+}
+
+output_contract "platform_actions" {
+  actions [
+    "allow"
+    "failed_login"
+    "successful_login"
+    "admin_denied"
+    "rate_limit"
+    "warning"
+    "block"
+    "suspend"
+    "ban"
+    "notify"
+    "escalate"
+    "healthy"
+    "unexpected_4xx"
+    "endpoint_5xx"
+    "app_5xx"
+  ]
+  severities [
+    "low"
+    "medium"
+    "high"
+    "critical"
+  ]
+}
+
+standard_facts "http" {
+  fact "request" {
+    schema "http_request"
+  }
+
+  fact "response" {
+    schema "http_response"
+  }
+
+  fact "route" {
+    schema "route_fact"
+  }
+
+  fact "tenant" {
+    schema "tenant_fact"
+  }
+
+  fact "risk" {
+    schema "risk_fact"
+  }
+
+  fact "state" {
+    schema "state_fact"
+  }
+}
+
+response_classifier "http" {
+  healthy_below 400
+  unhealthy_at_or_above 500
+  expected_client_statuses [
+    400
+    401
+    403
+  ]
+}

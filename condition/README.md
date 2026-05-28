@@ -111,6 +111,17 @@ Audit writes are fail-closed: if the audit sink cannot read the previous hash or
 
 A complete runnable BCL server config is in `examples/production-server`.
 
+## Platform Guide And Complete Examples
+
+For the native Condition policy platform features, read:
+
+- `docs/platform-guide.md`
+- `examples/request-lifecycle`
+- `examples/http-auth-guard`
+- `examples/complete-platform`
+
+These cover policy packages, contracts, action catalogs, route catalogs, overlays, lifecycle phases, request/response envelopes, response classification, stateful chains, composite watches, decay/cooldown/reset behavior, action delivery, incidents, route coverage, and lifecycle tests.
+
 ## HTTP API
 
 Use `X-Roles: condition-admin` for local demos, or configure roles in `.authz`.

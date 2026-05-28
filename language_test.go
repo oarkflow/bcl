@@ -40,6 +40,50 @@ policy "allow-admin" {
 	}
 }
 
+func TestTokenizeFileHighlightsConditionLifecycleKeywords(t *testing.T) {
+	toks, diags := TokenizeFile("condition.bcl", []byte(`lifecycle "http_request" {
+  phase "pre" {
+    decision "pre_request_guard"
+  }
+}
+
+chain "account_risk_chain" {
+  watch "failed_login_escalation" {
+    step "rate_limit_2m" {
+      blocking true
+      status 429
+      retry_after_seconds 120
+      grace_attempts 3
+    }
+  }
+}
+`))
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	want := map[string]bool{
+		"lifecycle":           false,
+		"phase":               false,
+		"chain":               false,
+		"watch":               false,
+		"step":                false,
+		"blocking":            false,
+		"status":              false,
+		"retry_after_seconds": false,
+		"grace_attempts":      false,
+	}
+	for _, tok := range toks {
+		if _, ok := want[tok.Text]; ok && tok.Type == "keyword" {
+			want[tok.Text] = true
+		}
+	}
+	for keyword, saw := range want {
+		if !saw {
+			t.Fatalf("missing keyword token for %q in %#v", keyword, toks)
+		}
+	}
+}
+
 func TestTokenizeSchemaExposesExpandedSchemaTokens(t *testing.T) {
 	toks, diags := TokenizeFile("decision.schema", []byte(`schema ticket {
   options {
@@ -182,6 +226,37 @@ lifecycle "http_request" {
 	for _, want := range []string{"duplicate route id", "duplicate route GET /users", "unknown routes", "unknown decision", "unknown chain"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q diagnostic in %s", want, text)
+		}
+	}
+}
+
+func TestAnalyzeCompletePlatformExampleHasCleanEditorDiagnostics(t *testing.T) {
+	path := "condition/examples/complete-platform/decision.bcl"
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis, diags := AnalyzeFile(path, src, &Options{Strict: true, Partial: false, ResolveImports: true, BaseDir: filepath.Dir(path)})
+	if analysis == nil {
+		t.Fatal("missing analysis")
+	}
+	text := FormatDiagnostics(diags)
+	if strings.Contains(text, "expected declaration, assignment, or block") {
+		t.Fatalf("complete-platform example should not produce parser diagnostics:\n%s", text)
+	}
+	if text != "" {
+		t.Fatalf("unexpected complete-platform diagnostics:\n%s", text)
+	}
+	for _, want := range []string{
+		"decision_table.login_observability",
+		"decision_table.response_observability",
+		"decision_table.admin_access",
+		"chain.account_risk_chain",
+		"lifecycle.http_request",
+		"lifecycle_test.json login failure emits failed login",
+	} {
+		if _, ok := analysis.Declarations[want]; !ok {
+			t.Fatalf("missing indexed symbol %q", want)
 		}
 	}
 }

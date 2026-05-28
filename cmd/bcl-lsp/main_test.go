@@ -377,6 +377,64 @@ description null
 	}
 }
 
+func TestLSPAnalyzesImportedConditionFileThroughEntrypoint(t *testing.T) {
+	dir := t.TempDir()
+	rulesDir := filepath.Join(dir, "rules")
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	decisionPath := filepath.Join(dir, "decision.bcl")
+	guardPath := filepath.Join(rulesDir, "guard.bcl")
+	lifecyclePath := filepath.Join(rulesDir, "lifecycle.bcl")
+	if err := os.WriteFile(decisionPath, []byte(`bcl {
+  version "1.0"
+}
+
+import "./rules/guard.bcl"
+import "./rules/lifecycle.bcl"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(guardPath, []byte(`decision_table "pre_request_guard" {
+  default allow
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lifecyclePath, []byte(`routes "http" {
+  route "login" {
+    method "POST"
+    pattern "/login"
+  }
+}
+
+lifecycle "http_request" {
+  routes "http"
+  phase "pre" {
+    decision "pre_request_guard"
+  }
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	s := &server{out: &out, files: map[string]string{}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+	a := s.analyzeURI(pathURI(lifecyclePath))
+	for _, d := range a.Diagnostics {
+		if strings.Contains(d.Message, `unknown decision "pre_request_guard"`) {
+			t.Fatalf("imported lifecycle should resolve sibling decision through decision.bcl: %#v", a.Diagnostics)
+		}
+	}
+	if _, ok := a.Declarations["decision_table.pre_request_guard"]; !ok {
+		t.Fatalf("expected entrypoint analysis to include imported guard declaration")
+	}
+	published := publishedDiagnosticsByURI(t, out.String())
+	if got := published[pathURI(lifecyclePath)]; len(got) != 0 {
+		t.Fatalf("lifecycle should receive clear diagnostics, got %#v", got)
+	}
+}
+
 func publishedDiagnosticsByURI(t *testing.T, raw string) map[string][]string {
 	t.Helper()
 	out := map[string][]string{}

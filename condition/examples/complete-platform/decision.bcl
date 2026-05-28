@@ -1,0 +1,26 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+version "1"
+environment "example"
+metadata {
+  owner "platform-security"
+  domain "complete-platform"
+}
+
+import "./rules/package.bcl"
+import "./rules/catalogs.bcl"
+import "./rules/routes.bcl"
+import "./rules/overlays.bcl"
+import "./rules/decisions/pre_request_guard.bcl"
+import "./rules/decisions/response_observability.bcl"
+import "./rules/endpoints/login.bcl"
+import "./rules/endpoints/admin_reports.bcl"
+import "./rules/endpoints/documents.bcl"
+import "./rules/endpoints/failures.bcl"
+import "./rules/chains/account_risk.bcl"
+import "./rules/chains/response_errors.bcl"
+import "./rules/lifecycle.bcl"
+import "./tests/lifecycle_tests.bcl"

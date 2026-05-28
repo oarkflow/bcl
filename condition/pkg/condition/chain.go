@@ -574,6 +574,18 @@ func (s *Service) applyWatch(ctx context.Context, record storage.DefinitionRecor
 		_ = ctx
 		return state, nil
 	}
+	if previous.Action != "" && previous.ExpiresAt != nil && previous.ExpiresAt.After(now) && count <= previous.Counters[watch.Event] {
+		_ = ctx
+		return previous, nil
+	}
+	if intAny(matched.Attributes["grace_attempts"]) > 0 && latestGeneratedStepThreshold(events, chainID, watch.ID, entityKey, now) >= matched.Threshold {
+		if window > 0 {
+			expires := now.Add(window)
+			state.ExpiresAt = &expires
+		}
+		_ = ctx
+		return state, nil
+	}
 	suppressActive := watch.Suppress || truthyAny(previous.Metadata["suppress"]) || suppressibleAction(matched.Action)
 	if suppressActive && existingGeneratedActive(events, chainID, watch.ID, entityKey, matched.Action, now) {
 		state.Step = previous.Step
@@ -757,6 +769,31 @@ func existingGeneratedActive(events []storage.ChainEventRecord, chain, watch, en
 		}
 	}
 	return false
+}
+
+func latestGeneratedStepThreshold(events []storage.ChainEventRecord, chain, watch, entityKey string, now time.Time) int {
+	threshold := 0
+	var latest time.Time
+	for _, event := range events {
+		if event.Chain != chain || event.Watch != watch || event.EntityKey != entityKey {
+			continue
+		}
+		if event.ExpiresAt != nil && !event.ExpiresAt.After(now) {
+			continue
+		}
+		if stringAny(event.Attributes["step"]) == "" {
+			continue
+		}
+		eventThreshold := intAny(event.Attributes["threshold"])
+		if eventThreshold <= 0 {
+			continue
+		}
+		if latest.IsZero() || event.CreatedAt.After(latest) || (event.CreatedAt.Equal(latest) && eventThreshold > threshold) {
+			latest = event.CreatedAt
+			threshold = eventThreshold
+		}
+	}
+	return threshold
 }
 
 func suppressibleAction(action string) bool {

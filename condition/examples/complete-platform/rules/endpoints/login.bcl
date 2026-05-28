@@ -1,0 +1,84 @@
+decision_table "login_observability" {
+  contract "platform_actions"
+  default allow
+  hit_policy first
+
+  row "json-login-failed" {
+    priority 100
+    when {
+      all {
+        route.id == "login"
+        request.body_format == "json"
+        request.body_json.username != ""
+        response.class == "expected_client_error"
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "json login failed"
+        attributes {
+          action "failed_login"
+        }
+        metadata {
+          severity "medium"
+          category "authn"
+        }
+      }
+    }
+    reason "json login failed"
+    reason_code "JSON_LOGIN_FAILED"
+  }
+
+  row "form-login-failed" {
+    priority 90
+    when {
+      all {
+        route.id == "login"
+        request.body_format == "form"
+        request.body_form.grant_type == "password"
+        response.class == "expected_client_error"
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "form login failed"
+        attributes {
+          action "failed_login"
+        }
+        metadata {
+          severity "medium"
+          category "authn"
+        }
+      }
+    }
+    reason "form login failed"
+    reason_code "FORM_LOGIN_FAILED"
+  }
+
+  row "login-success" {
+    priority 10
+    when {
+      all {
+        route.id == "login"
+        response.status < 400
+      }
+    }
+    then {
+      outcome {
+        decision allow
+        reason "login succeeded"
+        attributes {
+          action "successful_login"
+        }
+        metadata {
+          severity "low"
+          category "authn"
+        }
+      }
+    }
+    reason "login succeeded"
+    reason_code "LOGIN_SUCCESS"
+  }
+}

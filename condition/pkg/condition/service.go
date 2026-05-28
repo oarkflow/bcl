@@ -537,6 +537,15 @@ func (s *Service) EvaluateLifecycle(ctx context.Context, definition, lifecycleID
 	if len(requestFacts) > 0 || req.Method != "" || req.Path != "" {
 		augmented["request"] = requestFacts
 	}
+	now := s.now()
+	_ = s.store.DeleteExpiredChainStates(ctx, now)
+	chainStates, chainEvents := s.lifecycleChainContext(ctx, definition, record, lifecycle, augmented)
+	if len(chainStates) > 0 {
+		augmented["chain_state"] = mergeMaps(mapFromAny(augmented["chain_state"]), chainStateFacts(chainStates))
+	}
+	if len(chainEvents) > 0 {
+		augmented["chain_events"] = chainEventFacts(chainEvents)
+	}
 	entityKey := strings.TrimSpace(req.EntityKey)
 	if entityKey == "" {
 		entityKey = strings.TrimSpace(fmt.Sprint(lookupInputPath(augmented, lifecycle.EntityKeyPath)))
@@ -561,6 +570,7 @@ func (s *Service) EvaluateLifecycle(ctx context.Context, definition, lifecycleID
 		}
 		if report != nil && report.Decision != nil {
 			evaluation.FinalDecision(report.Decision)
+			evaluation.AddEnforcement(enforcementFromDecision(report.Decision))
 			evaluation.Actions = append(evaluation.Actions, s.lifecycleActionsFromDecision(ctx, record, lifecycle.ID, entityKey, report.Decision, req.DryRun)...)
 		}
 	}
@@ -589,6 +599,9 @@ func (s *Service) EvaluateLifecycle(ctx context.Context, definition, lifecycleID
 		}
 		evaluation.Chains = append(evaluation.Chains, resp.Evaluation)
 		evaluation.FinalAction, evaluation.FinalEffect, evaluation.FinalReason, finalSeverity = chooseFinalAction(evaluation.FinalAction, evaluation.FinalEffect, evaluation.FinalReason, finalSeverity, resp.Evaluation.FinalAction, resp.Evaluation.FinalEffect, resp.Evaluation.FinalReason, resp.Evaluation.FinalSeverity)
+		for _, state := range resp.Evaluation.StateAfter {
+			evaluation.AddEnforcement(enforcementFromState(state, resp.Evaluation.FinalReason))
+		}
 		for _, event := range resp.Evaluation.Events {
 			action := LifecycleAction{Name: event.EventType, ReasonCode: event.ReasonCode, Severity: event.Severity, Attributes: cloneMap(event.Attributes), Metadata: cloneMap(event.Metadata)}
 			handled, result := false, &ActionResult{Handled: false, Status: "dry_run"}
@@ -618,6 +631,37 @@ func (s *Service) EvaluateLifecycle(ctx context.Context, definition, lifecycleID
 	}
 	evaluation.AuditID = envelope.ID
 	return &LifecycleEvaluateResponse{Evaluation: evaluation, Audit: envelope}, nil
+}
+
+func (s *Service) lifecycleChainContext(ctx context.Context, definition string, record storage.DefinitionRecord, lifecycle *LifecycleDefinition, input map[string]any) ([]storage.ChainStateRecord, []storage.ChainEventRecord) {
+	if lifecycle == nil {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	var states []storage.ChainStateRecord
+	var events []storage.ChainEventRecord
+	for _, phase := range lifecycle.Phases {
+		for _, chainID := range phase.Chains {
+			if seen[chainID] {
+				continue
+			}
+			seen[chainID] = true
+			chain, err := chainDefinition(record.Program, chainID)
+			if err != nil {
+				continue
+			}
+			entityKey := strings.TrimSpace(fmt.Sprint(lookupInputPath(input, chain.EntityKeyPath)))
+			if entityKey == "" || entityKey == "<nil>" {
+				continue
+			}
+			states = append(states, s.loadChainStates(ctx, chain, entityKey)...)
+			chainEvents, err := s.store.QueryChainEvents(ctx, storage.ChainEventQuery{Definition: definition, Environment: record.Environment, Chain: chain.ID, EntityKey: entityKey, IncludeExpired: true})
+			if err == nil {
+				events = append(events, chainEvents...)
+			}
+		}
+	}
+	return states, events
 }
 
 func lifecycleTraceID(ctx context.Context) string {

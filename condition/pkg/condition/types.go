@@ -154,10 +154,29 @@ type LifecycleEvaluation struct {
 	Decisions   []ChainDecisionResult `json:"decisions,omitempty"`
 	Chains      []ChainEvaluation     `json:"chains,omitempty"`
 	Actions     []LifecycleAction     `json:"actions,omitempty"`
+	Enforcement *EnforcementEnvelope  `json:"enforcement,omitempty"`
 	FinalAction string                `json:"final_action,omitempty"`
 	FinalEffect string                `json:"final_effect,omitempty"`
 	FinalReason string                `json:"final_reason,omitempty"`
 	Diagnostics []bcl.Diagnostic      `json:"diagnostics,omitempty"`
+}
+
+type EnforcementEnvelope struct {
+	Action            string            `json:"action,omitempty"`
+	Effect            string            `json:"effect,omitempty"`
+	Reason            string            `json:"reason,omitempty"`
+	ReasonCode        string            `json:"reason_code,omitempty"`
+	Severity          string            `json:"severity,omitempty"`
+	Status            int               `json:"status,omitempty"`
+	Blocking          bool              `json:"blocking,omitempty"`
+	RetryAfterSeconds int               `json:"retry_after_seconds,omitempty"`
+	Chain             string            `json:"chain,omitempty"`
+	Watch             string            `json:"watch,omitempty"`
+	Step              string            `json:"step,omitempty"`
+	Headers           map[string]string `json:"headers,omitempty"`
+	Body              map[string]any    `json:"body,omitempty"`
+	Attributes        map[string]any    `json:"attributes,omitempty"`
+	Metadata          map[string]any    `json:"metadata,omitempty"`
 }
 
 type LifecycleAction struct {

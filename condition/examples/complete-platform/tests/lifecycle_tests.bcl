@@ -1,0 +1,151 @@
+test "unexpected 404 is unhealthy" {
+  decision "response_observability"
+  input {
+    route.id "document"
+    response.status 404
+    response.class "unexpected_client_error"
+  }
+  expect {
+    effect "require_review"
+    reason_code "UNEXPECTED_4XX"
+  }
+}
+
+test "expected 401 is healthy" {
+  decision "response_observability"
+  input {
+    route.id "login"
+    response.status 401
+    response.healthy true
+  }
+  expect {
+    effect "allow"
+    reason_code "RESPONSE_HEALTHY"
+  }
+}
+
+lifecycle_test "json login failure emits failed login" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/login"
+  input {
+    request.actor_key "alice"
+  }
+  request {
+    headers {
+      content_type "application/json"
+      x_request_id "req-json-login"
+    }
+    body {
+      username "alice"
+    }
+    format "json"
+  }
+  response {
+    status 401
+    headers {
+      content_type "application/json"
+    }
+    body {
+      error "invalid_password"
+    }
+    format "json"
+  }
+  expect {
+    final_action "failed_login"
+    route "login"
+  }
+}
+
+lifecycle_test "form login failure emits failed login" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/login"
+  input {
+    request.actor_key "alice"
+  }
+  request {
+    headers {
+      content_type "application/x-www-form-urlencoded"
+    }
+    body {
+      grant_type "password"
+      username "alice"
+    }
+    format "form"
+  }
+  response {
+    status 401
+    headers {
+      content_type "text/plain"
+    }
+    body "invalid password"
+    format "text"
+  }
+  expect {
+    final_action "failed_login"
+    route "login"
+  }
+}
+
+lifecycle_test "endpoint error starts response chain" {
+  lifecycle "http_request"
+  phase "post"
+  method "GET"
+  path "/fail/endpoint"
+  input {
+    request.actor_key "/fail/endpoint"
+  }
+  request {
+    headers {
+      accept "text/plain"
+    }
+    body ""
+    format "text"
+  }
+  response {
+    status 500
+    headers {
+      content_type "text/plain"
+    }
+    body "endpoint failed"
+    format "text"
+  }
+  expect {
+    final_action "notify"
+    route "endpoint_error"
+  }
+}
+
+lifecycle_test "admin denial contributes to account risk" {
+  lifecycle "http_request"
+  phase "post"
+  method "GET"
+  path "/admin/reports"
+  input {
+    request.actor_key "analyst-1"
+  }
+  request {
+    headers {
+      x_role "analyst"
+    }
+    body ""
+    format "text"
+  }
+  response {
+    status 403
+    headers {
+      content_type "application/json"
+    }
+    body {
+      error "admin role required"
+    }
+    format "json"
+  }
+  expect {
+    final_action "admin_denied"
+    route "admin_reports"
+  }
+}

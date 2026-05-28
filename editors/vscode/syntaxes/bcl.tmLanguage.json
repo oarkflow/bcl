@@ -28,6 +28,9 @@
       "include": "#blocks"
     },
     {
+      "include": "#conditionExpressions"
+    },
+    {
       "include": "#properties"
     },
     {
@@ -103,7 +106,7 @@
       "patterns": [
         {
           "name": "keyword.control.bcl",
-          "match": "\\b(import|as|const|type|schema|options|fields|validate_required_fields|validate_field_types|required|optional|ref|enum|default|title|description|doc|deprecated|sensitive|generated|derived|read_only|write_only|nullable|unique_items|closed|additional_properties|min|max|exclusive_min|exclusive_max|multiple_of|min_len|max_len|min_items|max_items|min_props|max_props|pattern|format|content_encoding|content_media_type|examples|items|prefix_items|contains|pattern_properties|dependent_required|lt_field|lte_field|gt_field|gte_field|eq_field|all_of|any_of|one_of|not|classification|audit|explain|pii|policy_tag|owner|severity|when|override|use|match|case|else|if|then|row|record|approval|outcome|obligation|advice|event|governance|chain|watch|routes|route|lifecycle|phase|entity|entity_key|method|threshold|window|ttl|sink|distinct|decay|cooldown|reset|headers|body|format|field|metric|metrics|policy_package|action_catalog|output_contract|standard_facts|response_classifier|lifecycle_test|lifecycle_test|policy_overlay|capabilities|actions|state|external|contract|severities|sinks|retries|schema)\\b|\\bx_[A-Za-z0-9_]+\\b"
+          "match": "\\b(import|as|const|type|schema|options|fields|validate_required_fields|validate_field_types|required|optional|ref|enum|default|title|description|doc|deprecated|sensitive|generated|derived|read_only|write_only|nullable|unique_items|closed|additional_properties|min|max|exclusive_min|exclusive_max|multiple_of|min_len|max_len|min_items|max_items|min_props|max_props|pattern|format|content_encoding|content_media_type|examples|items|prefix_items|contains|pattern_properties|dependent_required|lt_field|lte_field|gt_field|gte_field|eq_field|all_of|any_of|one_of|not|classification|audit|explain|pii|policy_tag|owner|severity|when|override|use|match|case|else|if|then|row|record|approval|outcome|obligation|advice|event|governance|chain|watch|step|routes|route|lifecycle|phase|entity|entity_key|method|threshold|window|ttl|sink|distinct|decay|cooldown|reset|headers|body|body_code|body_message|format|field|metric|metrics|policy_package|action_catalog|output_contract|standard_facts|response_classifier|lifecycle_test|policy_overlay|capabilities|actions|state|external|contract|severities|sinks|retries|schema|healthy_below|unhealthy_at_or_above|expected_client_statuses|metadata|attributes|reason|reason_code|priority|hit_policy|final_action|blocking|status|retry_after_seconds|grace_attempts|channel|layer|environment|profile)\\b|\\bx_[A-Za-z0-9_]+\\b"
         },
         {
           "name": "constant.language.boolean.bcl",
@@ -115,7 +118,7 @@
         },
         {
           "name": "keyword.control.block.bcl",
-          "match": "\\b(bcl|namespace|profile|module|runtime|evaluation|audit|context|session|policy|rule|set|predicate|pipeline|step|connection|http|connector|source|action|file|command|output|phase|decision_schema|decision_table|rule_set|ranking|dataset|reason_code_catalog|decision_bundle|decision_release|gate|test_matrix|rule_template|row|record|case|outcome|obligation|advice|event|approval|governance|chain|watch|routes|route|lifecycle|policy_overlay|policy_package|action_catalog|output_contract|standard_facts|response_classifier|lifecycle_test|allow|deny|require_review|all|any|not|none|then|retry|auth|headers|capture|on_status|map|headers|body|format|field|include)\\b(?=\\s*(?:\"|[A-Za-z0-9_.-]+)?\\s*\\{)"
+          "match": "\\b(bcl|namespace|profile|module|runtime|evaluation|audit|context|session|policy|rule|set|predicate|pipeline|step|connection|http|connector|source|action|file|command|output|phase|decision_schema|decision_table|rule_set|ranking|dataset|reason_code_catalog|decision_bundle|decision_release|gate|test_matrix|rule_template|row|record|case|outcome|obligation|advice|event|approval|governance|chain|watch|routes|route|lifecycle|policy_overlay|policy_package|action_catalog|output_contract|standard_facts|response_classifier|lifecycle_test|allow|deny|require_review|all|any|not|none|then|retry|auth|headers|capture|on_status|map|body|format|field|include|metadata|attributes|expect|input|request|response)\\b(?=\\s*(?:\"|[A-Za-z0-9_.-]+)?\\s*\\{)"
         }
       ]
     },
@@ -214,11 +217,23 @@
         }
       ]
     },
+    "conditionExpressions": {
+      "patterns": [
+        {
+          "name": "variable.other.reference.bcl",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+\\b"
+        },
+        {
+          "name": "constant.language.effect.bcl",
+          "match": "\\b(allow|deny|require_review|review|block|suspend|ban|notify|escalate|warning|rate_limit|healthy|failed_login|successful_login|admin_denied|unexpected_4xx|endpoint_5xx|app_5xx)\\b"
+        }
+      ]
+    },
     "operators": {
       "patterns": [
         {
           "name": "keyword.operator.bcl",
-          "match": "\\+=|==|!=|<=|>=|&&|\\|\\||=>|\\.\\.|[=<>!+*/%-]|\\b(in|not_in|contains|starts_with|ends_with|matches|has|has_any|has_all|between|exists|empty|equals|greater_than|less_than|greater_or_equal|less_or_equal|and|or|to|as)\\b"
+          "match": "\\+=|==|!=|<=|>=|&&|\\|\\||=>|\\.\\.|[=<>!+*/%-]|\\b(in|not|not_in|contains|starts_with|ends_with|matches|has|has_any|has_all|between|exists|empty|equals|greater_than|less_than|greater_or_equal|less_or_equal|and|or|to|as)\\b"
         }
       ]
     },

@@ -1,0 +1,68 @@
+chain "response_error_chain" {
+  entity "route.id"
+
+  watch "endpoint_errors" {
+    event "endpoint_5xx"
+    window "10m"
+    cooldown "2m"
+    metadata {
+      category "observability"
+      scope "endpoint"
+    }
+    step "endpoint_notify" {
+      threshold 1
+      action "notify"
+      severity "high"
+      ttl "10m"
+      channel "pager"
+    }
+    step "endpoint_escalate" {
+      threshold 5
+      action "escalate"
+      severity "critical"
+      ttl "30m"
+      channel "incident"
+    }
+  }
+
+  watch "app_errors" {
+    event "app_5xx"
+    window "10m"
+    cooldown "2m"
+    metadata {
+      category "observability"
+      scope "application"
+    }
+    step "app_notify" {
+      threshold 1
+      action "notify"
+      severity "high"
+      ttl "10m"
+      channel "pager"
+    }
+    step "app_escalate" {
+      threshold 5
+      action "escalate"
+      severity "critical"
+      ttl "30m"
+      channel "incident"
+    }
+  }
+
+  watch "unexpected_4xx" {
+    event "unexpected_4xx"
+    window "10m"
+    cooldown "2m"
+    metadata {
+      category "observability"
+      scope "client_error"
+    }
+    step "unexpected_4xx_notify" {
+      threshold 3
+      action "notify"
+      severity "high"
+      ttl "15m"
+      channel "logs"
+    }
+  }
+}

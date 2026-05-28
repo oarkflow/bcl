@@ -1,0 +1,57 @@
+decision_table "document_access" {
+  contract "platform_actions"
+  default allow
+  hit_policy first
+
+  row "document-missing-or-hidden" {
+    priority 100
+    when {
+      all {
+        route.id == "document"
+        response.class == "unexpected_client_error"
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "document route returned unexpected client error"
+        attributes {
+          action "unexpected_4xx"
+        }
+        metadata {
+          severity "medium"
+          category "documents"
+          scope "endpoint"
+        }
+      }
+    }
+    reason "document route returned unexpected client error"
+    reason_code "DOCUMENT_UNEXPECTED_4XX"
+  }
+
+  row "document-allowed" {
+    priority 1
+    when {
+      all {
+        route.id == "document"
+        response.status < 400
+      }
+    }
+    then {
+      outcome {
+        decision allow
+        reason "document route allowed"
+        attributes {
+          action "healthy"
+        }
+        metadata {
+          severity "low"
+          category "documents"
+          scope "endpoint"
+        }
+      }
+    }
+    reason "document route allowed"
+    reason_code "DOCUMENT_ALLOWED"
+  }
+}

@@ -1,0 +1,100 @@
+chain "account_risk_chain" {
+  entity "request.actor_key"
+
+  watch "failed_login_escalation" {
+    event "failed_login"
+    window "30d"
+    decay "30d"
+    reset "successful_login"
+    metadata {
+      category "account_risk"
+    }
+    step "rate_limit_2m" {
+      threshold 3
+      action "rate_limit"
+      severity "medium"
+      ttl "2m"
+      blocking true
+      status 429
+      retry_after_seconds 120
+      grace_attempts 3
+      body_code "rate_limit"
+      body_message "login temporarily rate limited for 2 minutes"
+    }
+    step "rate_limit_5m" {
+      threshold 6
+      action "rate_limit"
+      severity "high"
+      ttl "5m"
+      blocking true
+      status 429
+      retry_after_seconds 300
+      grace_attempts 3
+      body_code "rate_limit"
+      body_message "login temporarily rate limited for 5 minutes"
+    }
+    step "block_30m" {
+      threshold 9
+      action "block"
+      severity "critical"
+      ttl "30m"
+      blocking true
+      status 403
+      retry_after_seconds 1800
+      grace_attempts 3
+      body_code "block"
+      body_message "login temporarily blocked for 30 minutes"
+    }
+    step "suspend_24h" {
+      threshold 12
+      action "suspend"
+      severity "critical"
+      ttl "24h"
+      blocking true
+      status 403
+      retry_after_seconds 86400
+      grace_attempts 3
+      body_code "suspend"
+      body_message "account suspended for 24 hours"
+    }
+    step "lock_ban" {
+      threshold 15
+      action "ban"
+      severity "critical"
+      ttl "720h"
+      blocking true
+      status 423
+      grace_attempts 3
+      body_code "ban"
+      body_message "account locked or banned"
+    }
+  }
+
+  watch "takeover_correlation" {
+    event "admin_denied"
+    events [
+      "failed_login"
+      "admin_denied"
+      "new_device"
+    ]
+    window "30m"
+    suppress true
+    metadata {
+      category "account_takeover"
+    }
+    step "takeover_notify" {
+      threshold 10
+      action "notify"
+      severity "high"
+      ttl "15m"
+    }
+    step "takeover_block" {
+      threshold 20
+      action "block"
+      severity "critical"
+      ttl "30m"
+      status 403
+      retry_after_seconds 300
+    }
+  }
+}

@@ -355,6 +355,146 @@ func (e *LifecycleEvaluation) FinalDecision(decision *bcl.DecisionResult) {
 	}
 }
 
+func (e *LifecycleEvaluation) AddEnforcement(candidate *EnforcementEnvelope) {
+	if candidate == nil || candidate.Action == "" {
+		return
+	}
+	if e.Enforcement == nil {
+		e.Enforcement = candidate
+		return
+	}
+	current := e.Enforcement
+	if candidate.Blocking && !current.Blocking {
+		e.Enforcement = candidate
+		return
+	}
+	if candidate.Effect == "deny" && current.Effect != "deny" {
+		e.Enforcement = candidate
+		return
+	}
+	if severityRank(candidate.Severity) >= severityRank(current.Severity) {
+		e.Enforcement = candidate
+	}
+}
+
+func enforcementFromDecision(decision *bcl.DecisionResult) *EnforcementEnvelope {
+	if decision == nil {
+		return nil
+	}
+	attrs := cloneMap(decision.Attributes)
+	action := strings.TrimSpace(fmt.Sprint(attrs["action"]))
+	if action == "" || action == "<nil>" {
+		return nil
+	}
+	metadata := cloneMap(decision.Metadata)
+	env := &EnforcementEnvelope{
+		Action:     action,
+		Effect:     decision.Effect,
+		Reason:     decision.Reason,
+		ReasonCode: decision.ReasonCode,
+		Severity:   stringAny(metadata["severity"]),
+		Status:     intAny(attrs["status"]),
+		Blocking:   truthyAny(attrs["blocking"]) || decision.Effect == "deny",
+		Headers:    stringMapFromAny(attrs["headers"]),
+		Attributes: attrs,
+		Metadata:   metadata,
+	}
+	if retry := intAny(attrs["retry_after_seconds"]); retry > 0 {
+		env.RetryAfterSeconds = retry
+	}
+	if chain := stringAny(attrs["chain"]); chain != "" {
+		env.Chain = chain
+	}
+	if watch := stringAny(attrs["watch"]); watch != "" {
+		env.Watch = watch
+	}
+	if step := stringAny(attrs["step"]); step != "" {
+		env.Step = step
+	}
+	env.Body = enforcementBody(attrs, env)
+	return env
+}
+
+func enforcementFromState(state storage.ChainStateRecord, reason string) *EnforcementEnvelope {
+	if state.Action == "" || state.Step == "" {
+		return nil
+	}
+	attrs := cloneMap(state.Attributes)
+	metadata := cloneMap(state.Metadata)
+	env := &EnforcementEnvelope{
+		Action:     state.Action,
+		Effect:     actionEffect(state.Action),
+		Reason:     reason,
+		Severity:   state.Severity,
+		Status:     intAny(attrs["status"]),
+		Blocking:   truthyAny(attrs["blocking"]),
+		Chain:      state.Chain,
+		Watch:      state.Watch,
+		Step:       state.Step,
+		Headers:    stringMapFromAny(attrs["headers"]),
+		Attributes: attrs,
+		Metadata:   metadata,
+	}
+	if env.Reason == "" {
+		env.Reason = fmt.Sprintf("%s triggered %s", state.Watch, state.Step)
+	}
+	if retry := intAny(attrs["retry_after_seconds"]); retry > 0 {
+		env.RetryAfterSeconds = retry
+	}
+	env.Body = enforcementBody(attrs, env)
+	return env
+}
+
+func enforcementBody(attrs map[string]any, env *EnforcementEnvelope) map[string]any {
+	if body := mapFromAny(attrs["body"]); len(body) > 0 {
+		return body
+	}
+	body := map[string]any{}
+	if code := stringAny(attrs["body_code"]); code != "" {
+		body["error"] = code
+	} else if env.Action != "" {
+		body["error"] = env.Action
+	}
+	if message := stringAny(attrs["body_message"]); message != "" {
+		body["message"] = message
+	} else if env.Reason != "" {
+		body["message"] = env.Reason
+	}
+	if env.RetryAfterSeconds > 0 {
+		body["retry_after_seconds"] = env.RetryAfterSeconds
+	}
+	if env.Chain != "" {
+		body["chain"] = env.Chain
+	}
+	if env.Watch != "" {
+		body["watch"] = env.Watch
+	}
+	if env.Step != "" {
+		body["step"] = env.Step
+	}
+	if len(body) == 0 {
+		return nil
+	}
+	return body
+}
+
+func stringMapFromAny(v any) map[string]string {
+	raw := mapFromAny(v)
+	if len(raw) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for key, value := range raw {
+		if key = strings.TrimSpace(key); key != "" {
+			out[key] = strings.TrimSpace(fmt.Sprint(value))
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func (s *Service) lifecycleActionsFromDecision(ctx context.Context, record storage.DefinitionRecord, lifecycleID, entityKey string, decision *bcl.DecisionResult, dryRun bool) []LifecycleAction {
 	if decision == nil {
 		return nil

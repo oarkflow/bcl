@@ -240,13 +240,27 @@ func (s *server) analyzeURI(uri string) *bcl.Analysis {
 	text, ok := s.files[uri]
 	s.mu.Unlock()
 	path := uriPath(uri)
+	analysisPath := path
+	analysisURI := uri
+	if owner := s.ownerEntrypoint(path); owner != "" && !samePath(owner, path) {
+		analysisPath = owner
+		analysisURI = pathURI(owner)
+		if b, err := os.ReadFile(owner); err == nil {
+			text = string(b)
+			ok = true
+		}
+	}
 	if !ok {
-		if b, err := os.ReadFile(path); err == nil {
+		if b, err := os.ReadFile(analysisPath); err == nil {
 			text = string(b)
 		}
 	}
-	a, diags := bcl.AnalyzeFile(path, []byte(text), &bcl.Options{Strict: true, Partial: s.suppressVersionWarning(path), ResolveImports: true, BaseDir: filepath.Dir(path)})
-	includeDiags := missingIncludeDiagnostics(path, []byte(text))
+	partial := s.suppressVersionWarning(analysisPath)
+	if !samePath(analysisPath, path) {
+		partial = true
+	}
+	a, diags := bcl.AnalyzeFile(analysisPath, []byte(text), &bcl.Options{Strict: true, Partial: partial, ResolveImports: true, BaseDir: filepath.Dir(analysisPath)})
+	includeDiags := missingIncludeDiagnostics(analysisPath, []byte(text))
 	if len(includeDiags) > 0 {
 		diags = replaceRawMissingFileDiagnostics(diags, includeDiags)
 		diags = append(diags, includeDiags...)
@@ -254,8 +268,11 @@ func (s *server) analyzeURI(uri string) *bcl.Analysis {
 	}
 	s.mu.Lock()
 	s.index[uri] = a
+	if analysisURI != uri {
+		s.index[analysisURI] = a
+	}
 	s.mu.Unlock()
-	s.publishDiagnostics(uri, diags)
+	s.publishDiagnostics(analysisURI, diags, append([]string{path}, sourceGraphPaths(analysisPath)...))
 	return a
 }
 
@@ -273,8 +290,13 @@ func (s *server) indexWorkspace() {
 	})
 }
 
-func (s *server) publishDiagnostics(uri string, diags []bcl.Diagnostic) {
+func (s *server) publishDiagnostics(uri string, diags []bcl.Diagnostic, clearPaths []string) {
 	byURI := map[string][]bcl.Diagnostic{uri: nil}
+	for _, path := range clearPaths {
+		if path != "" {
+			byURI[pathURI(path)] = nil
+		}
+	}
 	for _, d := range diags {
 		target := diagnosticURI(uri, d)
 		byURI[target] = append(byURI[target], d)
@@ -291,6 +313,42 @@ func (s *server) publishDiagnostics(uri string, diags []bcl.Diagnostic) {
 		}
 		s.notify("textDocument/publishDiagnostics", map[string]any{"uri": target, "diagnostics": items})
 	}
+}
+
+func (s *server) ownerEntrypoint(path string) string {
+	if path == "" || !isBCLSourceFile(path) {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err == nil {
+		path = abs
+	}
+	if filepath.Base(path) == "decision.bcl" || filepath.Base(path) == "main.bcl" {
+		return path
+	}
+	root := uriPath(s.rootURI)
+	if root == "" {
+		root = filepath.Dir(path)
+	}
+	if absRoot, err := filepath.Abs(root); err == nil {
+		root = absRoot
+	}
+	for dir := filepath.Dir(path); dir != "" && pathWithinOrSame(dir, root); dir = filepath.Dir(dir) {
+		for _, name := range []string{"decision.bcl", "main.bcl"} {
+			candidate := filepath.Join(dir, name)
+			if samePath(candidate, path) {
+				return candidate
+			}
+			if sourceGraphContains(candidate, path) {
+				return candidate
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+	return ""
 }
 
 func diagnosticURI(baseURI string, d bcl.Diagnostic) string {
@@ -637,6 +695,13 @@ func (s *server) reanalyzeDependents(changedURI string) {
 func pathWithin(path, dir string) bool {
 	rel, err := filepath.Rel(dir, path)
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func pathWithinOrSame(path, dir string) bool {
+	if samePath(path, dir) {
+		return true
+	}
+	return pathWithin(path, dir)
 }
 
 func (s *server) codeActions(raw json.RawMessage) []any {
@@ -1022,6 +1087,57 @@ func importedPaths(nodes []bcl.Node, base string) []string {
 			out = append(out, importedPaths(x.Body, base)...)
 		}
 	}
+	return out
+}
+
+func sourceGraphContains(rootPath, targetPath string) bool {
+	if rootPath == "" || targetPath == "" {
+		return false
+	}
+	for _, path := range sourceGraphPaths(rootPath) {
+		if samePath(path, targetPath) {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceGraphPaths(rootPath string) []string {
+	seen := map[string]bool{}
+	var out []string
+	var walk func(string)
+	walk = func(path string) {
+		if path == "" {
+			return
+		}
+		abs, err := filepath.Abs(path)
+		if err == nil {
+			path = abs
+		}
+		clean := filepath.Clean(path)
+		if seen[clean] {
+			return
+		}
+		seen[clean] = true
+		out = append(out, clean)
+		doc, err := bcl.ParsePath(clean)
+		if err != nil {
+			return
+		}
+		for _, imported := range importedPaths(doc.Items, filepath.Dir(clean)) {
+			walk(imported)
+		}
+		for _, dir := range moduleSourceDirs(doc.Items, filepath.Dir(clean)) {
+			if entries, err := os.ReadDir(dir); err == nil {
+				for _, entry := range entries {
+					if !entry.IsDir() && isBCLSourceFile(entry.Name()) {
+						walk(filepath.Join(dir, entry.Name()))
+					}
+				}
+			}
+		}
+	}
+	walk(rootPath)
 	return out
 }
 

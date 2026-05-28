@@ -19,6 +19,8 @@ go run ./examples/procurement-approval
 go run ./examples/support-routing
 go run ./examples/api-traffic-control
 go run ./examples/http-auth-guard
+go run ./examples/request-lifecycle
+go run ./examples/complete-platform
 go run ./examples/manufacturing-iot
 go run ./examples/hr-leave-approval
 go run ./examples/education-scholarship
@@ -60,6 +62,8 @@ Production server configuration examples live in `production-server`. They are n
 * `support-routing`: SLA handling, security escalation, enterprise support, and self-service routing.
 * `api-traffic-control`: bot blocking, tenant quotas, throttling, and gateway routing.
 * `http-auth-guard`: global HTTP middleware, authentication guardrails, and RBAC/ABAC/ACL endpoint authorization.
+* `request-lifecycle`: native route catalogs, pre/post lifecycle evaluation, request/response envelopes, 5xx escalation, expected 400/401/403 handling, route coverage, action history, and incident history.
+* `complete-platform`: GoFiber reference app covering package metadata, contracts, action catalogs, overlays, routes, lifecycle phases, chains, analytics watches, response classification, lifecycle scenarios, curlable use cases, action history, incidents, readiness, and route coverage.
 * `manufacturing-iot`: sensor thresholds, machine shutdown, maintenance review, and production continuity.
 * `hr-leave-approval`: leave balances, staffing coverage, blackout periods, and manager review.
 * `education-scholarship`: student eligibility, committee review, and merit/need scholarship awards.

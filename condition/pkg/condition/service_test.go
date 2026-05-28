@@ -1055,6 +1055,94 @@ func TestServiceEvaluateLifecyclePreAndPostEscalation(t *testing.T) {
 	}
 }
 
+func TestServiceEvaluateLifecycleInjectsChainStateIntoPreDecision(t *testing.T) {
+	ctx := context.Background()
+	source := `module "lifecycle-state-pre" {
+  routes "http" {
+    route "login" { method "POST" pattern "/login" }
+  }
+
+  decision_table "pre_guard" {
+    default allow
+    hit_policy first
+    row "active-limit" {
+      when { chain_state.failed_login.step == "limit" }
+      then { outcome { decision require_review reason "active limit" attributes { action "rate_limit" blocking true status 429 retry_after_seconds 120 chain "auth_chain" watch "failed_login" step "limit" body_code "rate_limit" body_message "try later" } metadata { severity "medium" } } }
+      reason "active limit"
+      reason_code "ACTIVE_LIMIT"
+    }
+  }
+
+  decision_table "observe_login" {
+    default allow
+    hit_policy first
+    row "failed" {
+      when { response.status >= 400 }
+      then { outcome { decision require_review reason "failed login" attributes { action "failed_login" } metadata { severity "medium" } } }
+      reason "failed login"
+      reason_code "FAILED_LOGIN"
+    }
+  }
+
+  chain "auth_chain" {
+    entity "request.actor_key"
+    watch "failed_login" {
+      event "failed_login"
+      window "10m"
+      step "limit" { threshold 1 action "rate_limit" severity "medium" ttl "5m" blocking true status 429 retry_after_seconds 120 body_code "rate_limit" body_message "try later" }
+    }
+  }
+
+  lifecycle "http_request" {
+    entity "request.actor_key"
+    routes "http"
+    phase "pre" { decision "pre_guard" }
+    phase "post" { decision "observe_login" chain "auth_chain" }
+  }
+}`
+	store := storage.NewMemoryStore()
+	svc := NewService(store, Config{})
+	if resp, err := svc.Publish(ctx, PublishRequest{Name: "lifecycle-state-pre", Source: source}); err != nil {
+		t.Fatalf("%v: %#v", err, resp)
+	}
+	post, err := svc.EvaluateLifecycle(ctx, "lifecycle-state-pre", "http_request", LifecycleEvaluateRequest{
+		Phase:    "post",
+		Method:   "POST",
+		Path:     "/login",
+		Input:    map[string]any{"request": map[string]any{"actor_key": "u-state"}},
+		Response: map[string]any{"status": 401},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if post.Evaluation.FinalAction != "rate_limit" || post.Evaluation.Enforcement == nil || !post.Evaluation.Enforcement.Blocking {
+		t.Fatalf("post enforcement = %#v", post.Evaluation)
+	}
+	before, err := store.QueryChainEvents(ctx, storage.ChainEventQuery{Definition: "lifecycle-state-pre", Chain: "auth_chain", EntityKey: "u-state", IncludeExpired: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre, err := svc.EvaluateLifecycle(ctx, "lifecycle-state-pre", "http_request", LifecycleEvaluateRequest{
+		Phase:  "pre",
+		Method: "POST",
+		Path:   "/login",
+		Input:  map[string]any{"request": map[string]any{"actor_key": "u-state"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pre.Evaluation.FinalAction != "rate_limit" || pre.Evaluation.Enforcement == nil || pre.Evaluation.Enforcement.Status != 429 || pre.Evaluation.Enforcement.Step != "limit" {
+		t.Fatalf("pre did not enforce injected state: %#v", pre.Evaluation)
+	}
+	after, err := store.QueryChainEvents(ctx, storage.ChainEventQuery{Definition: "lifecycle-state-pre", Chain: "auth_chain", EntityKey: "u-state", IncludeExpired: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("pre decision should not re-trigger chain events: before=%d after=%d", len(before), len(after))
+	}
+}
+
 func TestServiceEvaluateLifecycleTenantIsolationAndWebhookAllowlist(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(storage.NewMemoryStore(), Config{Runtime: RuntimePolicy{AllowedActionSinks: []string{"webhook"}, AllowedWebhookHosts: []string{"example.invalid"}, AllowedWebhookMethods: []string{"POST"}}})
