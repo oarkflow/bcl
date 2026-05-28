@@ -1,0 +1,51 @@
+decision_table "project_endpoint_guard" {
+  default allow
+  hit_policy first
+
+  row "soft-warn-project-export-endpoint" {
+    priority 55
+    when {
+      all {
+        endpoint.pattern == "/projects/{tenant}/export"
+        request.requests_per_minute >= 5
+      }
+    }
+    then { outcome { decision allow reason "data export endpoint should emit a soft warning" attributes { action "soft_warning" route "project-export" status 200 warning "near_rate_limit" } metadata { severity "medium" category "abuse" endpoint "project-export" } } advice add_export_guard_warning { header "X-Guard-Warning" } }
+    reason "data export endpoint should emit a soft warning"
+    reason_code "API_GUARD_SOFT_WARNING"
+    tags ["api-guard", "soft-warning", "project-export"]
+  }
+}
+
+decision_table "project_auth_guard" {
+  default allow
+  hit_policy first
+
+  row "allow-project-abac" {
+    priority 70
+    when {
+      all {
+        endpoint.policy_type == "abac"
+        endpoint.match_kind == "dynamic"
+        endpoint.tenant_param != ""
+        principal.same_tenant == true
+        principal.department_matches == true
+        principal.device_trusted == true
+        request.business_hours == true
+      }
+    }
+    then { outcome { decision allow reason "request attributes satisfy project policy" attributes { action "project_allowed" route "project-handler" policy "abac" status 200 } metadata { severity "low" category "authorization" endpoint "project-export" } } }
+    reason "request attributes satisfy project policy"
+    reason_code "ABAC_PROJECT"
+    tags ["abac", "project-export"]
+  }
+
+  row "deny-project-abac" {
+    priority 69
+    when { endpoint.policy_type == "abac" }
+    then { outcome { decision deny reason "project endpoint policy denied request" attributes { action "project_denied" route "global-middleware" policy "abac" status 403 } metadata { severity "medium" category "authorization" endpoint "project-export" } } obligation emit_project_denial_audit { type "project_denied" } }
+    reason "project endpoint policy denied request"
+    reason_code "POLICY_DENY"
+    tags ["abac", "project-export", "deny"]
+  }
+}

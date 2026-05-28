@@ -2,9 +2,9 @@ package server
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/oarkflow/authz"
+	"github.com/oarkflow/condition/pkg/routing"
 )
 
 type routeSpec struct {
@@ -29,10 +29,14 @@ func (s *Server) routes() []routeSpec {
 		{http.MethodPost, "/v1/definitions/{name}/enable", s.enable},
 		{http.MethodPost, "/v1/definitions/{name}/rollback", s.rollback},
 		{http.MethodPost, "/v1/definitions/{name}/evaluate", s.evaluate},
+		{http.MethodPost, "/v1/definitions/{name}/chains/{chain}/evaluate", s.evaluateChain},
+		{http.MethodPost, "/v1/definitions/{name}/lifecycles/{lifecycle}/evaluate", s.evaluateLifecycle},
 		{http.MethodPost, "/v1/definitions/{name}/tests", s.test},
 		{http.MethodPost, "/v1/definitions/{name}/gates", s.gates},
 		{http.MethodPost, "/v1/definitions/{name}/simulate", s.simulate},
 		{http.MethodPost, "/v1/definitions/{name}/compare", s.compare},
+		{http.MethodPost, "/v1/definitions/{name}/explain", s.explainPackage},
+		{http.MethodGet, "/v1/definitions/{name}/route-coverage", s.routeCoverage},
 		{http.MethodPost, "/v1/definitions/{name}/canary", s.canary},
 		{http.MethodPost, "/v1/definitions/{name}/workflows/{workflow}/start", s.startWorkflow},
 		{http.MethodPost, "/v1/workflows/{id}/advance", s.advanceWorkflow},
@@ -41,6 +45,9 @@ func (s *Server) routes() []routeSpec {
 		{http.MethodGet, "/v1/audits", s.listAudits},
 		{http.MethodGet, "/v1/audits/{id}", s.getAudit},
 		{http.MethodPost, "/v1/audits/verify", s.verifyAudits},
+		{http.MethodGet, "/v1/actions", s.listActions},
+		{http.MethodGet, "/v1/incidents", s.listIncidents},
+		{http.MethodPost, "/v1/state/compact", s.compactState},
 		{http.MethodGet, "/v1/reports", s.listReports},
 		{http.MethodGet, "/v1/metrics", s.metricsEndpoint},
 		{http.MethodPost, "/v1/reload", s.reload},
@@ -48,7 +55,8 @@ func (s *Server) routes() []routeSpec {
 }
 
 func (s *Server) routeResourceFromRequest(r *http.Request) *authz.Resource {
-	pattern, params := matchRoutePattern(s.routes(), r.Method, r.URL.Path)
+	match := s.matchRoute(r.Method, r.URL.Path)
+	pattern := match.NormalizedPattern
 	if pattern == "" {
 		pattern = r.URL.Path
 	}
@@ -56,14 +64,14 @@ func (s *Server) routeResourceFromRequest(r *http.Request) *authz.Resource {
 		"method":         r.Method,
 		"path":           r.URL.Path,
 		"route_template": pattern,
-		"route_pattern":  fiberRoutePattern(pattern),
-		"params":         params,
+		"route_pattern":  firstNonEmpty(match.FiberPattern, routing.FiberPattern(pattern)),
+		"params":         match.Params,
 	}
-	for key, value := range params {
+	for key, value := range match.Params {
 		attrs[key] = value
 	}
 	return &authz.Resource{
-		ID:       r.Method + ":" + fiberRoutePattern(pattern),
+		ID:       r.Method + ":" + firstNonEmpty(match.FiberPattern, routing.FiberPattern(pattern)),
 		Type:     "route",
 		TenantID: r.Header.Get("X-Tenant-ID"),
 		Attrs:    attrs,
@@ -71,84 +79,41 @@ func (s *Server) routeResourceFromRequest(r *http.Request) *authz.Resource {
 }
 
 func matchRoutePattern(routes []routeSpec, method, path string) (string, map[string]string) {
-	for _, route := range routes {
-		if route.method != method {
-			continue
-		}
-		params, ok := matchPathPattern(route.pattern, path)
-		if ok {
-			return route.pattern, params
-		}
+	matcher, err := routing.Compile(serverRoutesForMatcher(routes))
+	if err != nil {
+		return "", nil
 	}
-	return "", nil
+	match := matcher.Match(method, path)
+	if !match.Matched {
+		return "", nil
+	}
+	return match.NormalizedPattern, match.Params
 }
 
 func matchPathPattern(pattern, path string) (map[string]string, bool) {
-	patternParts := splitPath(pattern)
-	pathParts := splitPath(path)
-	params := map[string]string{}
-	for i, part := range patternParts {
-		if isCatchAll(part) {
-			name := paramName(part)
-			if name != "" {
-				params[name] = strings.Join(pathParts[i:], "/")
-			}
-			return params, true
-		}
-		if i >= len(pathParts) {
-			return nil, false
-		}
-		if isParam(part) {
-			params[paramName(part)] = pathParts[i]
-			continue
-		}
-		if part == "*" {
-			continue
-		}
-		if part != pathParts[i] {
-			return nil, false
-		}
-	}
-	if len(patternParts) != len(pathParts) {
+	matcher, err := routing.Compile([]routing.Route{{Method: http.MethodGet, Pattern: pattern}})
+	if err != nil {
 		return nil, false
 	}
-	return params, true
+	match := matcher.Match(http.MethodGet, path)
+	return match.Params, match.Matched
 }
 
-func splitPath(path string) []string {
-	path = strings.Trim(path, "/")
-	if path == "" {
-		return nil
+func (s *Server) matchRoute(method, path string) routing.Match {
+	if s != nil && s.routeMatcher != nil {
+		return s.routeMatcher.Match(method, path)
 	}
-	return strings.Split(path, "/")
+	return routing.Match{}
+}
+
+func serverRoutesForMatcher(routes []routeSpec) []routing.Route {
+	out := make([]routing.Route, 0, len(routes))
+	for _, route := range routes {
+		out = append(out, routing.Route{Method: route.method, Pattern: route.pattern})
+	}
+	return out
 }
 
 func fiberRoutePattern(pattern string) string {
-	parts := splitPath(pattern)
-	for i, part := range parts {
-		if isParam(part) {
-			parts[i] = ":" + paramName(part)
-		}
-	}
-	if len(parts) == 0 {
-		return "/"
-	}
-	return "/" + strings.Join(parts, "/")
-}
-
-func isParam(part string) bool {
-	return strings.HasPrefix(part, ":") || (strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}"))
-}
-
-func isCatchAll(part string) bool {
-	return strings.HasPrefix(part, "*") || (strings.HasPrefix(part, "{") && strings.HasSuffix(part, "...}"))
-}
-
-func paramName(part string) string {
-	part = strings.TrimPrefix(part, ":")
-	part = strings.TrimPrefix(part, "*")
-	part = strings.TrimPrefix(part, "{")
-	part = strings.TrimSuffix(part, "}")
-	part = strings.TrimSuffix(part, "...")
-	return part
+	return routing.FiberPattern(pattern)
 }

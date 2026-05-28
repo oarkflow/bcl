@@ -52,6 +52,38 @@ func (s *Service) Config() Config {
 	return s.cfg
 }
 
+func (s *Service) ListActionDeliveries(ctx context.Context, query storage.ActionDeliveryQuery) ([]storage.ActionDeliveryRecord, error) {
+	ctx = s.requestContext(ctx, query.TenantID)
+	return s.store.ListActionDeliveries(ctx, query)
+}
+
+func (s *Service) ListIncidents(ctx context.Context, query storage.IncidentQuery) ([]storage.IncidentRecord, error) {
+	ctx = s.requestContext(ctx, query.TenantID)
+	return s.store.ListIncidents(ctx, query)
+}
+
+func (s *Service) Compact(ctx context.Context, req storage.RetentionRequest) (storage.RetentionResult, error) {
+	ctx = s.requestContext(ctx, req.TenantID)
+	if req.Before.IsZero() {
+		req.Before = s.now()
+	}
+	return s.store.Compact(ctx, req)
+}
+
+func (s *Service) now() time.Time {
+	if s != nil {
+		if s.cfg.Clock != nil {
+			return s.cfg.Clock().UTC()
+		}
+		if fixed := strings.TrimSpace(s.cfg.Runtime.FixedTime); fixed != "" {
+			if t, err := time.Parse(time.RFC3339Nano, fixed); err == nil {
+				return t.UTC()
+			}
+		}
+	}
+	return time.Now().UTC()
+}
+
 func (s *Service) Publish(ctx context.Context, req PublishRequest) (*PublishResponse, error) {
 	ctx = s.requestContext(ctx, req.TenantID)
 	resp, err := s.PublishVersion(ctx, req)
@@ -342,6 +374,263 @@ func (s *Service) Evaluate(ctx context.Context, definition string, req EvaluateR
 	return &EvaluateResponse{Report: report, Shadow: shadow, Workflow: workflow, Audit: envelope}, nil
 }
 
+func (s *Service) EvaluateChain(ctx context.Context, definition, chainID string, req ChainEvaluateRequest) (*ChainEvaluateResponse, error) {
+	ctx = s.requestContext(ctx, req.TenantID)
+	start := time.Now()
+	record, err := s.store.GetActiveDefinition(ctx, definition, s.cfg.Environment)
+	if err != nil {
+		return nil, err
+	}
+	chain, err := chainDefinition(record.Program, chainID)
+	if err != nil {
+		envelope, auditErr := s.audit(ctx, "chain_evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
+		return &ChainEvaluateResponse{Audit: envelope}, err
+	}
+	if err := s.validateExternalPolicy(record.Program); err != nil {
+		envelope, auditErr := s.audit(ctx, "chain_evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
+		return &ChainEvaluateResponse{Audit: envelope}, err
+	}
+	input, runtimeContext, runtimeSession := runtimeInputFromContext(ctx, req.Input)
+	entityKey := strings.TrimSpace(req.EntityKey)
+	if entityKey == "" {
+		entityKey = strings.TrimSpace(fmt.Sprint(lookupInputPath(input, chain.EntityKeyPath)))
+	}
+	if entityKey == "" || entityKey == "<nil>" {
+		err := fmt.Errorf("chain %q could not resolve entity_key %q", chain.ID, chain.EntityKeyPath)
+		envelope, auditErr := s.audit(ctx, "chain_evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
+		return &ChainEvaluateResponse{Audit: envelope}, err
+	}
+	now := s.now()
+	_ = s.store.DeleteExpiredChainStates(ctx, now)
+	statesBefore := s.loadChainStates(ctx, chain, entityKey)
+	allEvents, err := s.store.QueryChainEvents(ctx, storage.ChainEventQuery{Definition: definition, Environment: record.Environment, Chain: chain.ID, EntityKey: entityKey, IncludeExpired: true})
+	if err != nil {
+		return nil, err
+	}
+	evaluation := ChainEvaluation{Chain: chain.ID, EntityKey: entityKey, StateBefore: cloneChainStates(statesBefore)}
+	pendingEvents := []storage.ChainEventRecord(nil)
+	if req.Event != "" {
+		pendingEvents = append(pendingEvents, s.newChainEvent(record, chain.ID, "", entityKey, req.Event, "", "", "", nil, nil, nil))
+	}
+	opts := s.bclOptions(ctx, s.strictEvaluation(req.Strict))
+	opts.Context = runtimeContext
+	opts.Session = runtimeSession
+	workingInput := mergeMaps(input, map[string]any{
+		"chain_state":  chainStateFacts(statesBefore),
+		"chain_events": chainEventFacts(allEvents),
+	})
+	for _, decisionID := range chain.Decisions {
+		report, evalErr := bcl.EvaluateDecisionPlatform(record.Program, bcl.DecisionPlatformRequest{
+			Decision: decisionID,
+			Input:    workingInput,
+			Strict:   s.strictEvaluation(req.Strict),
+		}, opts)
+		evaluation.Decisions = append(evaluation.Decisions, ChainDecisionResult{Decision: decisionID, Report: report})
+		if evalErr != nil {
+			evaluation.Diagnostics = append(evaluation.Diagnostics, bcl.Diagnostic{Severity: "error", Message: evalErr.Error()})
+			continue
+		}
+		if report != nil && report.Decision != nil {
+			pendingEvents = append(pendingEvents, s.eventsFromDecision(record, chain.ID, entityKey, report.Decision)...)
+			evaluation.FinalDecision = chooseFinalDecision(evaluation.FinalDecision, report.Decision)
+		}
+	}
+	stateByWatch := chainStateMap(statesBefore)
+	for _, event := range pendingEvents {
+		if event.ID == "" {
+			event.ID = newID("watch-event")
+		}
+		if err := s.store.AppendChainEvent(ctx, event); err != nil {
+			return nil, err
+		}
+		evaluation.Events = append(evaluation.Events, event)
+		allEvents = append(allEvents, event)
+	}
+	for _, watch := range chain.Watches {
+		state, generated := s.applyWatch(ctx, record, chain.ID, entityKey, watch, allEvents, stateByWatch[watch.ID], now)
+		if state.Watch != "" {
+			if err := s.store.UpsertChainState(ctx, state); err != nil {
+				return nil, err
+			}
+			stateByWatch[watch.ID] = state
+			if state.Action != "" && state.Step != "" {
+				evaluation.FinalAction, evaluation.FinalEffect, evaluation.FinalReason, evaluation.FinalSeverity = chooseFinalAction(evaluation.FinalAction, evaluation.FinalEffect, evaluation.FinalReason, evaluation.FinalSeverity, state.Action, actionEffect(state.Action), fmt.Sprintf("%s triggered %s", watch.ID, state.Step), state.Severity)
+			}
+		}
+		for _, event := range generated {
+			if err := s.store.AppendChainEvent(ctx, event); err != nil {
+				return nil, err
+			}
+			evaluation.Events = append(evaluation.Events, event)
+			allEvents = append(allEvents, event)
+		}
+	}
+	evaluation.StateAfter = chainStateSlice(stateByWatch)
+	if evaluation.FinalEffect == "" && evaluation.FinalDecision != nil {
+		evaluation.FinalEffect = evaluation.FinalDecision.Effect
+		evaluation.FinalReason = evaluation.FinalDecision.Reason
+		evaluation.FinalAction = fmt.Sprint(evaluation.FinalDecision.Attributes["action"])
+		if evaluation.FinalAction == "<nil>" {
+			evaluation.FinalAction = ""
+		}
+		evaluation.FinalSeverity = fmt.Sprint(evaluation.FinalDecision.Metadata["severity"])
+		if evaluation.FinalSeverity == "<nil>" {
+			evaluation.FinalSeverity = ""
+		}
+	}
+	envelope, err := s.audit(ctx, "chain_evaluate", definition, record.Version, record.Environment, record.Digest, req, evaluation, start, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &ChainEvaluateResponse{Evaluation: evaluation, Audit: envelope}, nil
+}
+
+func (s *Service) EvaluateLifecycle(ctx context.Context, definition, lifecycleID string, req LifecycleEvaluateRequest) (*LifecycleEvaluateResponse, error) {
+	ctx = s.requestContext(ctx, req.TenantID)
+	start := time.Now()
+	record, err := s.store.GetActiveDefinition(ctx, definition, s.cfg.Environment)
+	if err != nil {
+		return nil, err
+	}
+	lifecycle, err := lifecycleDefinition(record.Program, lifecycleID)
+	if err != nil {
+		envelope, auditErr := s.audit(ctx, "lifecycle_evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
+		return &LifecycleEvaluateResponse{Audit: envelope}, err
+	}
+	phase := lifecyclePhase(lifecycle, req.Phase)
+	if phase == nil {
+		err := fmt.Errorf("unknown lifecycle phase %q", req.Phase)
+		envelope, auditErr := s.audit(ctx, "lifecycle_evaluate_failed", definition, record.Version, record.Environment, record.Digest, req, map[string]any{"error": err.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
+		return &LifecycleEvaluateResponse{Audit: envelope}, err
+	}
+	if err := s.validateExternalPolicy(record.Program); err != nil {
+		return nil, err
+	}
+	match := s.matchLifecycleRoute(record.Program, lifecycle, req.Method, req.Path)
+	input, runtimeContext, runtimeSession := runtimeInputFromContext(ctx, req.Input)
+	match, overlayFacts := applyPolicyOverlays(record.Program, match, TenantFromContext(ctx), record.Environment, req.Path)
+	routeFacts := lifecycleRouteFacts(match, req.Method, req.Path)
+	responseFacts := lifecycleResponseFacts(record.Program, req.Response)
+	requestFacts := lifecycleRequestFacts(mergeMaps(mapFromAny(input["request"]), req.Request), req.Method, req.Path)
+	augmented := mergeMaps(input, map[string]any{
+		"phase":           phase.ID,
+		"route":           routeFacts,
+		"endpoint":        mergeMaps(routeFacts, mapFromAny(input["endpoint"])),
+		"response":        responseFacts,
+		"policy_overlays": overlayFacts,
+	})
+	if len(requestFacts) > 0 || req.Method != "" || req.Path != "" {
+		augmented["request"] = requestFacts
+	}
+	entityKey := strings.TrimSpace(req.EntityKey)
+	if entityKey == "" {
+		entityKey = strings.TrimSpace(fmt.Sprint(lookupInputPath(augmented, lifecycle.EntityKeyPath)))
+	}
+	if entityKey == "" || entityKey == "<nil>" {
+		entityKey = first(req.Path, req.Method, "lifecycle")
+	}
+	evaluation := LifecycleEvaluation{Lifecycle: lifecycle.ID, Phase: phase.ID, TraceID: lifecycleTraceID(ctx), EntityKey: entityKey, Route: match}
+	opts := s.bclOptions(ctx, s.strictEvaluation(req.Strict))
+	opts.Context = runtimeContext
+	opts.Session = runtimeSession
+	for _, decisionID := range phase.Decisions {
+		report, evalErr := bcl.EvaluateDecisionPlatform(record.Program, bcl.DecisionPlatformRequest{
+			Decision: decisionID,
+			Input:    augmented,
+			Strict:   s.strictEvaluation(req.Strict),
+		}, opts)
+		evaluation.Decisions = append(evaluation.Decisions, ChainDecisionResult{Decision: decisionID, Report: report})
+		if evalErr != nil {
+			evaluation.Diagnostics = append(evaluation.Diagnostics, bcl.Diagnostic{Severity: "error", Message: evalErr.Error()})
+			continue
+		}
+		if report != nil && report.Decision != nil {
+			evaluation.FinalDecision(report.Decision)
+			evaluation.Actions = append(evaluation.Actions, s.lifecycleActionsFromDecision(ctx, record, lifecycle.ID, entityKey, report.Decision, req.DryRun)...)
+		}
+	}
+	chainEvent := req.Event
+	if chainEvent == "" {
+		chainEvent = evaluation.FinalAction
+	}
+	if chainEvent == "" {
+		for _, action := range evaluation.Actions {
+			if action.Name != "" {
+				chainEvent = action.Name
+				break
+			}
+		}
+	}
+	finalSeverity := ""
+	for _, chainID := range phase.Chains {
+		chainEntityKey := ""
+		if req.EntityKey != "" {
+			chainEntityKey = entityKey
+		}
+		resp, err := s.EvaluateChain(ctx, definition, chainID, ChainEvaluateRequest{Input: augmented, Event: chainEvent, EntityKey: chainEntityKey, Strict: req.Strict})
+		if err != nil {
+			evaluation.Diagnostics = append(evaluation.Diagnostics, bcl.Diagnostic{Severity: "error", Message: err.Error()})
+			continue
+		}
+		evaluation.Chains = append(evaluation.Chains, resp.Evaluation)
+		evaluation.FinalAction, evaluation.FinalEffect, evaluation.FinalReason, finalSeverity = chooseFinalAction(evaluation.FinalAction, evaluation.FinalEffect, evaluation.FinalReason, finalSeverity, resp.Evaluation.FinalAction, resp.Evaluation.FinalEffect, resp.Evaluation.FinalReason, resp.Evaluation.FinalSeverity)
+		for _, event := range resp.Evaluation.Events {
+			action := LifecycleAction{Name: event.EventType, ReasonCode: event.ReasonCode, Severity: event.Severity, Attributes: cloneMap(event.Attributes), Metadata: cloneMap(event.Metadata)}
+			handled, result := false, &ActionResult{Handled: false, Status: "dry_run"}
+			if !req.DryRun {
+				handled, result = s.dispatchLifecycleAction(ctx, record, action)
+			}
+			action.Handled = handled
+			action.Result = result
+			delivery := s.actionDeliveryRecord(record, lifecycle.ID, entityKey, action)
+			if delivery.Status == "" {
+				delivery.Status = "event_persisted"
+			}
+			if err := s.store.SaveActionDelivery(ctx, delivery); err == nil {
+				action.DeliveryID = delivery.ID
+			}
+			if incident, ok := s.incidentFromAction(ctx, record, lifecycle.ID, entityKey, action); ok {
+				if err := s.store.UpsertIncident(ctx, incident); err == nil {
+					action.IncidentID = incident.ID
+				}
+			}
+			evaluation.Actions = append(evaluation.Actions, action)
+		}
+	}
+	envelope, err := s.audit(ctx, "lifecycle_evaluate", definition, record.Version, record.Environment, record.Digest, req, evaluation, start, nil)
+	if err != nil {
+		return nil, err
+	}
+	evaluation.AuditID = envelope.ID
+	return &LifecycleEvaluateResponse{Evaluation: evaluation, Audit: envelope}, nil
+}
+
+func lifecycleTraceID(ctx context.Context) string {
+	if facts := ContextFactsFromContext(ctx); facts != nil {
+		if request, ok := facts["request"].(map[string]any); ok {
+			if id := strings.TrimSpace(fmt.Sprint(request["id"])); id != "" && id != "<nil>" {
+				return id
+			}
+		}
+	}
+	return newID("trace")
+}
+
 func (s *Service) Test(ctx context.Context, definition, bundle string) (*TestReport, error) {
 	ctx = s.requestContext(ctx, "")
 	start := time.Now()
@@ -349,7 +638,7 @@ func (s *Service) Test(ctx context.Context, definition, bundle string) (*TestRep
 	if err != nil {
 		return nil, err
 	}
-	report := s.runTests(record.Program, firstDecision(record.Program), bundle, false)
+	report := s.runTests(record.Program, firstDecision(record.Program), bundle, false, record.Name, record.Version, record.Environment)
 	envelope, err := s.audit(ctx, "test", definition, record.Version, record.Environment, record.Digest, map[string]any{"bundle": bundle}, report, start, nil)
 	if err != nil {
 		return nil, err
@@ -384,6 +673,32 @@ func (s *Service) Simulate(ctx context.Context, definition string, req Simulatio
 
 func (s *Service) Compare(ctx context.Context, definition string, req SimulationRequest) (*SimulationResponse, error) {
 	return s.comparePrograms(ctx, "compare", definition, req)
+}
+
+func (s *Service) ExplainPackage(ctx context.Context, definition string, req PackageExplainRequest) (*PackageExplainResponse, error) {
+	ctx = s.requestContext(ctx, req.TenantID)
+	start := time.Now()
+	base, err := s.store.GetActiveDefinition(ctx, definition, s.cfg.Environment)
+	if err != nil {
+		return nil, err
+	}
+	candidate, err := s.candidateProgram(SimulationRequest{CandidateSource: req.CandidateSource, CandidatePath: req.CandidatePath, CandidateBaseDir: req.CandidateBaseDir})
+	if err != nil {
+		envelope, auditErr := s.audit(ctx, "package_explain_failed", definition, base.Version, base.Environment, base.Digest, req, map[string]any{"error": err.Error()}, start, nil)
+		if auditErr != nil {
+			return nil, auditErr
+		}
+		return &PackageExplainResponse{Audit: envelope}, err
+	}
+	report := packageExplain(definition, base.Version, base.Program, candidate)
+	envelope, err := s.audit(ctx, "package_explain", definition, base.Version, base.Environment, base.Digest, req, report, start, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.SaveReport(ctx, storage.ReportRecord{ID: envelope.ID, Kind: "package_explain", Definition: definition, CreatedAt: time.Now(), Payload: map[string]any{"report": report}}); err != nil {
+		return nil, err
+	}
+	return &PackageExplainResponse{Report: report, Audit: envelope}, nil
 }
 
 func (s *Service) Canary(ctx context.Context, definition string, req CanaryRequest) (*CanaryResponse, error) {
@@ -581,13 +896,37 @@ func (s *Service) ProductionReadiness(ctx context.Context) ProductionReadinessRe
 			"tenant_isolation_enabled":     true,
 			"deterministic_runtime":        true,
 			"external_policy_restricted":   len(s.cfg.Runtime.AllowedDatasetAdapters) == 0 || s.cfg.Runtime.ExternalTimeout > 0,
+			"failed_actions_clear":         false,
+			"open_incidents_clear":         false,
+			"state_cardinality_ok":         false,
 		},
+		Counts: map[string]int{},
 	}
 	if _, err := s.store.ListDefinitions(ctx); err == nil {
 		report.Checks["store_available"] = true
 	}
 	if err := s.VerifyAudits(ctx); err == nil {
 		report.Checks["audit_chain_valid"] = true
+	}
+	if records, err := s.store.ListActionDeliveries(ctx, storage.ActionDeliveryQuery{Status: "dead_letter"}); err == nil {
+		report.Counts["dead_letter_actions"] = len(records)
+		report.Checks["failed_actions_clear"] = len(records) == 0
+	}
+	if records, err := s.store.ListIncidents(ctx, storage.IncidentQuery{Status: "open"}); err == nil {
+		report.Counts["open_incidents"] = len(records)
+		report.Checks["open_incidents_clear"] = len(records) == 0
+	}
+	if stats, err := s.store.Stats(ctx); err == nil {
+		report.Counts["definitions"] = stats.Definitions
+		report.Counts["chain_events"] = stats.ChainEvents
+		report.Counts["chain_states"] = stats.ChainStates
+		report.Counts["action_deliveries"] = stats.ActionDeliveries
+		report.Counts["incidents"] = stats.Incidents
+		limit := s.cfg.Runtime.MaxStateRecords
+		if limit <= 0 {
+			limit = 100000
+		}
+		report.Checks["state_cardinality_ok"] = stats.ChainEvents+stats.ChainStates+stats.ActionDeliveries+stats.Incidents <= limit
 	}
 	for name, ok := range report.Checks {
 		if !ok {
@@ -683,12 +1022,20 @@ func (s *Service) ListWorkflowRuns(ctx context.Context, opts storage.ListOptions
 	return s.store.ListWorkflowRuns(ctx, opts)
 }
 
-func (s *Service) runTests(program *bcl.DecisionProgram, defaultDecision, bundle string, requireTests bool) *TestReport {
+func (s *Service) runTests(program *bcl.DecisionProgram, defaultDecision, bundle string, requireTests bool, definition, version, environment string) *TestReport {
 	report := &TestReport{Passed: true}
-	if requireTests && len(program.Tests) == 0 && bundle == "" {
+	lifecycleResults := s.runLifecycleScenarios(program, definition, version, environment)
+	if requireTests && len(program.Tests) == 0 && len(lifecycleResults) == 0 && bundle == "" {
 		report.Passed = false
 		report.Diagnostics = append(report.Diagnostics, bcl.Diagnostic{Severity: "error", Message: "definition requires at least one test or decision gate"})
 		return report
+	}
+	for _, result := range lifecycleResults {
+		if !result.Passed {
+			report.Passed = false
+			report.Diagnostics = append(report.Diagnostics, result.Diagnostics...)
+		}
+		report.LifecycleScenarios = append(report.LifecycleScenarios, result)
 	}
 	for _, test := range program.Tests {
 		decision := first(test.Decision, defaultDecision)
@@ -749,6 +1096,9 @@ func (s *Service) validatePublish(ctx context.Context, req ValidationRequest) (*
 		}
 		sort.Strings(report.Decisions)
 		report.Diagnostics = append(report.Diagnostics, program.Diagnostics...)
+		report.Diagnostics = append(report.Diagnostics, validateChains(program)...)
+		report.Diagnostics = append(report.Diagnostics, validateRoutesAndLifecycles(program)...)
+		report.Diagnostics = append(report.Diagnostics, validatePolicyContracts(program)...)
 	}
 	if strict {
 		requireVersionDeclaration(&report.Diagnostics)
@@ -757,7 +1107,7 @@ func (s *Service) validatePublish(ctx context.Context, req ValidationRequest) (*
 		report.Diagnostics = append(report.Diagnostics, bcl.Diagnostic{Severity: "error", Message: "definition does not contain any decisions"})
 	}
 	if (req.RunTests || requireTests) && program != nil {
-		report.Tests = s.runTests(program, firstDecision(program), req.Bundle, requireTests)
+		report.Tests = s.runTests(program, firstDecision(program), req.Bundle, requireTests, report.Name, report.Version, report.Environment)
 		report.Diagnostics = append(report.Diagnostics, report.Tests.Diagnostics...)
 		report.Gates = report.Tests.Gates
 	}
@@ -1119,8 +1469,17 @@ func compileSource(source, path, baseDir string, opts *bcl.Options) (*bcl.Decisi
 		opts.BaseDir = filepath.Dir(path)
 		opts.ResolveImports = true
 		opts.ResolveModules = true
-		program, err := bcl.CompileDecisionDocument(doc, opts)
-		attachWorkflowBlocks(program, doc)
+		resolveOpts := *opts
+		resolveOpts.ResolveModules = false
+		resolved, resolveDiags := bcl.ResolveDocument(doc, &resolveOpts)
+		program, err := bcl.CompileDecisionDocument(resolved, opts)
+		if program != nil {
+			program.Diagnostics = append(resolveDiags, program.Diagnostics...)
+		}
+		attachWorkflowBlocks(program, resolved)
+		attachChainBlocks(program, resolved)
+		attachRouteAndLifecycleBlocks(program, resolved)
+		attachPolicyContractBlocks(program, resolved)
 		return program, err
 	}
 	doc, err := bcl.Parse([]byte(source))
@@ -1130,8 +1489,17 @@ func compileSource(source, path, baseDir string, opts *bcl.Options) (*bcl.Decisi
 	opts.BaseDir = baseDir
 	opts.ResolveImports = true
 	opts.ResolveModules = true
-	program, err := bcl.CompileDecisionDocument(doc, opts)
-	attachWorkflowBlocks(program, doc)
+	resolveOpts := *opts
+	resolveOpts.ResolveModules = false
+	resolved, resolveDiags := bcl.ResolveDocument(doc, &resolveOpts)
+	program, err := bcl.CompileDecisionDocument(resolved, opts)
+	if program != nil {
+		program.Diagnostics = append(resolveDiags, program.Diagnostics...)
+	}
+	attachWorkflowBlocks(program, resolved)
+	attachChainBlocks(program, resolved)
+	attachRouteAndLifecycleBlocks(program, resolved)
+	attachPolicyContractBlocks(program, resolved)
 	return program, err
 }
 
@@ -1156,6 +1524,91 @@ func attachWorkflowBlocks(program *bcl.DecisionProgram, doc *bcl.Document) {
 		program.Governance = map[string]any{}
 	}
 	program.Governance["_condition_workflows"] = workflows
+}
+
+func attachChainBlocks(program *bcl.DecisionProgram, doc *bcl.Document) {
+	if program == nil || doc == nil {
+		return
+	}
+	payload, err := json.Marshal(doc.Items)
+	if err != nil {
+		return
+	}
+	var items []any
+	if err := json.Unmarshal(payload, &items); err != nil {
+		return
+	}
+	var chains []map[string]any
+	collectBlocks(items, "chain", &chains)
+	if len(chains) == 0 {
+		return
+	}
+	if program.Governance == nil {
+		program.Governance = map[string]any{}
+	}
+	program.Governance["_condition_chains"] = chains
+}
+
+func attachRouteAndLifecycleBlocks(program *bcl.DecisionProgram, doc *bcl.Document) {
+	if program == nil || doc == nil {
+		return
+	}
+	payload, err := json.Marshal(doc.Items)
+	if err != nil {
+		return
+	}
+	var items []any
+	if err := json.Unmarshal(payload, &items); err != nil {
+		return
+	}
+	if program.Governance == nil {
+		program.Governance = map[string]any{}
+	}
+	var routes []map[string]any
+	collectBlocks(items, "routes", &routes)
+	if len(routes) > 0 {
+		program.Governance["_condition_routes"] = routes
+	}
+	var lifecycles []map[string]any
+	collectBlocks(items, "lifecycle", &lifecycles)
+	if len(lifecycles) > 0 {
+		program.Governance["_condition_lifecycles"] = lifecycles
+	}
+}
+
+func attachPolicyContractBlocks(program *bcl.DecisionProgram, doc *bcl.Document) {
+	if program == nil || doc == nil {
+		return
+	}
+	payload, err := json.Marshal(doc.Items)
+	if err != nil {
+		return
+	}
+	var items []any
+	if err := json.Unmarshal(payload, &items); err != nil {
+		return
+	}
+	if program.Governance == nil {
+		program.Governance = map[string]any{}
+	}
+	for _, spec := range []struct {
+		block string
+		key   string
+	}{
+		{"policy_package", "_condition_policy_packages"},
+		{"action_catalog", "_condition_action_catalogs"},
+		{"output_contract", "_condition_output_contracts"},
+		{"standard_facts", "_condition_standard_facts"},
+		{"response_classifier", "_condition_response_classifiers"},
+		{"policy_overlay", "_condition_policy_overlays"},
+		{"lifecycle_test", "_condition_lifecycle_tests"},
+	} {
+		var blocks []map[string]any
+		collectBlocks(items, spec.block, &blocks)
+		if len(blocks) > 0 {
+			program.Governance[spec.key] = blocks
+		}
+	}
 }
 
 func first(values ...string) string {

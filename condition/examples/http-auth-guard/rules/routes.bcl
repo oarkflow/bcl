@@ -1,0 +1,85 @@
+routes "http" {
+  route "rules" {
+    method "GET"
+    pattern "/_rules"
+    metadata { policy_type "public" category "ops" }
+  }
+
+  route "coverage" {
+    method "GET"
+    pattern "/_coverage"
+    metadata { policy_type "public" category "ops" }
+  }
+
+  route "actions" {
+    method "GET"
+    pattern "/_actions"
+    metadata { policy_type "public" category "ops" }
+  }
+
+  route "incidents" {
+    method "GET"
+    pattern "/_incidents"
+    metadata { policy_type "public" category "ops" }
+  }
+
+  route "readiness" {
+    method "GET"
+    pattern "/_readiness"
+    metadata { policy_type "public" category "ops" }
+  }
+
+  route "public_status" {
+    method "GET"
+    pattern "/public/status"
+    metadata { policy_type "public" category "public" }
+  }
+
+  route "admin" {
+    method "GET"
+    pattern "/admin/{path...}"
+    metadata { policy_type "rbac" category "admin" }
+  }
+
+  route "project_export" {
+    method "GET"
+    pattern "/projects/{tenant}/export"
+    metadata { policy_type "abac" category "project-export" }
+  }
+
+  route "document" {
+    method "GET"
+    pattern "/documents/{document_id}"
+    metadata { policy_type "acl" category "document" }
+  }
+
+  route "document_write" {
+    method "POST"
+    pattern "/documents/{document_id}"
+    metadata { policy_type "acl" category "document" }
+  }
+
+  route "tenant_user_api" {
+    method "GET"
+    pattern "/api/v1/tenants/{tenant}/users/{user_id}"
+    metadata { policy_type "api_endpoint" api_scope "tenant-user" category "tenant-users-api" }
+  }
+
+  route "tenant_user_api_write" {
+    method "PATCH"
+    pattern "/api/v1/tenants/{tenant}/users/{user_id}"
+    metadata { policy_type "api_endpoint" api_scope "tenant-user" category "tenant-users-api" }
+  }
+
+  route "endpoint_failure" {
+    method "GET"
+    pattern "/fail/endpoint"
+    metadata { policy_type "public" category "endpoint-failure" }
+  }
+
+  route "app_failure" {
+    method "GET"
+    pattern "/fail/app/{path...}"
+    metadata { policy_type "public" category "app-failure" }
+  }
+}

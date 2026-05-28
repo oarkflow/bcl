@@ -150,6 +150,42 @@ transaction_review "sectioned-schema-example" {
 	}
 }
 
+func TestAnalyzeLifecycleRouteAndReferenceDiagnostics(t *testing.T) {
+	src := []byte(`bcl { version "1.0" }
+
+decision_table "access" {
+  default allow
+  row "ok" {
+    when { true == true }
+    then { decision allow reason "ok" }
+  }
+}
+
+routes "http" {
+  route "users" { method "GET" pattern "/users/{id}" }
+  route "users" { method "GET" pattern "/users/:name" }
+}
+
+lifecycle "http_request" {
+  entity "request.actor_key"
+  routes "missing"
+  phase "pre" {
+    decision "missing_decision"
+    chain "missing_chain"
+  }
+}`)
+	analysis, diags := AnalyzeFile("lifecycle.bcl", src, nil)
+	if analysis == nil {
+		t.Fatal("missing analysis")
+	}
+	text := FormatDiagnostics(diags)
+	for _, want := range []string{"duplicate route id", "duplicate route GET /users", "unknown routes", "unknown decision", "unknown chain"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q diagnostic in %s", want, text)
+		}
+	}
+}
+
 func TestAnalyzeFileIndexesSymbolsReferencesAndCompletions(t *testing.T) {
 	src := []byte(`bcl {
   version "1.0"
@@ -351,6 +387,78 @@ decision_table "fraud_aml" {
 	comps, ctx = CompletionsAt(a, src, 8, len("    phase ")+1)
 	if ctx.AssignmentName != "phase" || !completionLabelsContain(comps, "validate", "guard", "score", "decide", "notify") {
 		t.Fatalf("missing phase completions ctx=%+v comps=%+v", ctx, comps)
+	}
+}
+
+func TestConditionCompletionsIncludeLocalRouteLifecycleChainAndActionIDs(t *testing.T) {
+	src := []byte(`bcl { version "1.0" }
+
+module "condition-dx" {
+  action_catalog "default" {
+    action "notify" { sink "event" }
+  }
+  routes "http" {
+    route "documents" { method "GET" pattern "/documents/{id}" }
+  }
+  decision_table "document_guard" {
+    default allow
+  }
+  chain "document_chain" {
+    entity "request.actor_key"
+    watch "document_errors" {
+      event "error"
+      step "notify" { threshold 1 action "notify" }
+    }
+  }
+  lifecycle "http_request" {
+    entity "request.actor_key"
+    routes "http"
+    phase "post" {
+      decision "document_guard"
+      chain "document_chain"
+    }
+  }
+}`)
+	a, diags := AnalyzeFile("condition-dx.bcl", src, nil)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if !completionLabelsContain(a.Completions, "http", "documents", "http_request", "post", "document_chain", "document_guard", "notify") {
+		t.Fatalf("missing condition completions: %+v", a.Completions)
+	}
+}
+
+func TestConditionHoverExplainsRouteAndLifecycleFlow(t *testing.T) {
+	src := []byte(`bcl { version "1.0" }
+
+module "condition-hover" {
+  routes "http" {
+    route "documents" { method "GET" pattern "/documents/{id}" }
+  }
+  decision_table "document_guard" {
+    default allow
+  }
+  lifecycle "http_request" {
+    entity "request.actor_key"
+    routes "http"
+    phase "post" {
+      decision "document_guard"
+    }
+  }
+}`)
+	a, diags := AnalyzeFile("condition-hover.bcl", src, nil)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	route := a.Declarations["route.documents"]
+	routeHover := RichHoverMarkdown(a, route, src)
+	if !strings.Contains(routeHover, "Normalized: `/documents/:id`") || !strings.Contains(routeHover, "Params: `id`") {
+		t.Fatalf("route hover = %s", routeHover)
+	}
+	lifecycle := a.Declarations["lifecycle.http_request"]
+	lifecycleHover := RichHoverMarkdown(a, lifecycle, src)
+	if !strings.Contains(lifecycleHover, "Lifecycle flow") || !strings.Contains(lifecycleHover, "`post`") {
+		t.Fatalf("lifecycle hover = %s", lifecycleHover)
 	}
 }
 

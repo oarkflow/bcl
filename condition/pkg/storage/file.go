@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/oarkflow/condition/pkg/audit"
 )
@@ -345,6 +346,421 @@ func (s *FileStore) ListWorkflowRuns(ctx context.Context, opts ListOptions) ([]W
 	return ApplyListOptions(out, opts, nil), nil
 }
 
+func (s *FileStore) AppendChainEvent(ctx context.Context, event ChainEventRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	event.TenantID = firstTenant(firstNonEmpty(event.TenantID, TenantFromContext(ctx)))
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = nowUTC()
+	}
+	f, err := os.OpenFile(s.chainEventsPath(event.TenantID), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		if mkErr := os.MkdirAll(filepath.Dir(s.chainEventsPath(event.TenantID)), 0o755); mkErr != nil {
+			return mkErr
+		}
+		f, err = os.OpenFile(s.chainEventsPath(event.TenantID), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+	}
+	defer f.Close()
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(append(payload, '\n')); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *FileStore) QueryChainEvents(ctx context.Context, query ChainEventQuery) ([]ChainEventRecord, error) {
+	tenant := firstTenant(firstNonEmpty(query.TenantID, TenantFromContext(ctx)))
+	f, err := os.Open(s.chainEventsPath(tenant))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	now := nowUTC()
+	var out []ChainEventRecord
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var event ChainEventRecord
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			return nil, err
+		}
+		if firstTenant(event.TenantID) != tenant ||
+			(query.Definition != "" && event.Definition != query.Definition) ||
+			(query.Environment != "" && event.Environment != query.Environment) ||
+			(query.Chain != "" && event.Chain != query.Chain) ||
+			(query.Watch != "" && event.Watch != query.Watch) ||
+			(query.EntityKey != "" && event.EntityKey != query.EntityKey) ||
+			(query.EventType != "" && event.EventType != query.EventType) ||
+			(query.Since != nil && event.CreatedAt.Before(*query.Since)) ||
+			(query.Until != nil && event.CreatedAt.After(*query.Until)) ||
+			(!query.IncludeExpired && event.ExpiresAt != nil && !event.ExpiresAt.After(now)) {
+			continue
+		}
+		out = append(out, event)
+	}
+	if scanner.Err() != nil {
+		return nil, scanner.Err()
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	if query.Limit > 0 && len(out) > query.Limit {
+		out = out[len(out)-query.Limit:]
+	}
+	return out, nil
+}
+
+func (s *FileStore) GetChainState(ctx context.Context, chain, watch, entityKey string) (ChainStateRecord, error) {
+	var state ChainStateRecord
+	tenant := TenantFromContext(ctx)
+	if err := readJSONFile(s.chainStatePath(tenant, chain, watch, entityKey), &state); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ChainStateRecord{}, fmt.Errorf("unknown watch state %q/%q/%q", chain, watch, entityKey)
+		}
+		return ChainStateRecord{}, err
+	}
+	if state.ExpiresAt != nil && !state.ExpiresAt.After(nowUTC()) {
+		return ChainStateRecord{}, fmt.Errorf("unknown watch state %q/%q/%q", chain, watch, entityKey)
+	}
+	return state, nil
+}
+
+func (s *FileStore) UpsertChainState(ctx context.Context, state ChainStateRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state.TenantID = firstTenant(firstNonEmpty(state.TenantID, TenantFromContext(ctx)))
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = nowUTC()
+	}
+	return writeJSONFile(s.chainStatePath(state.TenantID, state.Chain, state.Watch, state.EntityKey), state)
+}
+
+func (s *FileStore) DeleteExpiredChainStates(ctx context.Context, now time.Time) error {
+	tenant := TenantFromContext(ctx)
+	root := s.chainStatesDir(tenant)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		var state ChainStateRecord
+		if err := readJSONFile(path, &state); err != nil {
+			return err
+		}
+		if state.ExpiresAt != nil && !state.ExpiresAt.After(now) {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *FileStore) SaveActionDelivery(ctx context.Context, record ActionDeliveryRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record.TenantID = firstTenant(firstNonEmpty(record.TenantID, TenantFromContext(ctx)))
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = nowUTC()
+	}
+	if record.UpdatedAt.IsZero() {
+		record.UpdatedAt = record.CreatedAt
+	}
+	return writeJSONFile(filepath.Join(s.actionsDir(record.TenantID), safeName(record.ID)+".json"), record)
+}
+
+func (s *FileStore) ListActionDeliveries(ctx context.Context, query ActionDeliveryQuery) ([]ActionDeliveryRecord, error) {
+	tenant := firstTenant(firstNonEmpty(query.TenantID, TenantFromContext(ctx)))
+	entries, err := os.ReadDir(s.actionsDir(tenant))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []ActionDeliveryRecord
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		var record ActionDeliveryRecord
+		if err := readJSONFile(filepath.Join(s.actionsDir(tenant), entry.Name()), &record); err != nil {
+			return nil, err
+		}
+		if firstTenant(record.TenantID) == tenant &&
+			(query.Definition == "" || record.Definition == query.Definition) &&
+			(query.Environment == "" || record.Environment == query.Environment) &&
+			(query.Action == "" || record.Action == query.Action) &&
+			(query.Status == "" || record.Status == query.Status) {
+			out = append(out, record)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	if query.Limit > 0 && len(out) > query.Limit {
+		out = out[len(out)-query.Limit:]
+	}
+	return out, nil
+}
+
+func (s *FileStore) UpsertIncident(ctx context.Context, record IncidentRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record.TenantID = firstTenant(firstNonEmpty(record.TenantID, TenantFromContext(ctx)))
+	if record.Status == "" {
+		record.Status = "open"
+	}
+	if record.FirstSeen.IsZero() {
+		record.FirstSeen = nowUTC()
+	}
+	if record.LastSeen.IsZero() {
+		record.LastSeen = record.FirstSeen
+	}
+	if record.Count == 0 {
+		record.Count = 1
+	}
+	return writeJSONFile(filepath.Join(s.incidentsDir(record.TenantID), safeName(record.ID)+".json"), record)
+}
+
+func (s *FileStore) ListIncidents(ctx context.Context, query IncidentQuery) ([]IncidentRecord, error) {
+	tenant := firstTenant(firstNonEmpty(query.TenantID, TenantFromContext(ctx)))
+	entries, err := os.ReadDir(s.incidentsDir(tenant))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []IncidentRecord
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		var record IncidentRecord
+		if err := readJSONFile(filepath.Join(s.incidentsDir(tenant), entry.Name()), &record); err != nil {
+			return nil, err
+		}
+		if firstTenant(record.TenantID) == tenant &&
+			(query.Definition == "" || record.Definition == query.Definition) &&
+			(query.Environment == "" || record.Environment == query.Environment) &&
+			(query.Status == "" || record.Status == query.Status) &&
+			(query.Action == "" || record.Action == query.Action) {
+			out = append(out, record)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.Before(out[j].LastSeen) })
+	if query.Limit > 0 && len(out) > query.Limit {
+		out = out[len(out)-query.Limit:]
+	}
+	return out, nil
+}
+
+func (s *FileStore) Compact(ctx context.Context, req RetentionRequest) (RetentionResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tenant := firstTenant(firstNonEmpty(req.TenantID, TenantFromContext(ctx)))
+	before := req.Before.UTC()
+	result := RetentionResult{}
+	stateEntries, err := os.ReadDir(s.chainStatesDir(tenant))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return result, err
+	}
+	for _, entry := range stateEntries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(s.chainStatesDir(tenant), entry.Name())
+		var state ChainStateRecord
+		if err := readJSONFile(path, &state); err != nil {
+			return result, err
+		}
+		if firstTenant(state.TenantID) != tenant ||
+			(req.Definition != "" && state.Definition != req.Definition) ||
+			(req.Environment != "" && state.Environment != req.Environment) ||
+			state.ExpiresAt == nil || state.ExpiresAt.After(before) {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return result, err
+		}
+		result.ChainStates++
+	}
+	events, err := s.readAllChainEvents(tenant)
+	if err != nil {
+		return result, err
+	}
+	keptEvents := events[:0]
+	for _, event := range events {
+		if firstTenant(event.TenantID) == tenant &&
+			(req.Definition == "" || event.Definition == req.Definition) &&
+			(req.Environment == "" || event.Environment == req.Environment) &&
+			!event.CreatedAt.After(before) {
+			result.ChainEvents++
+			continue
+		}
+		keptEvents = append(keptEvents, event)
+	}
+	if result.ChainEvents > 0 {
+		if err := s.writeAllChainEvents(tenant, keptEvents); err != nil {
+			return result, err
+		}
+	}
+	if count, err := s.compactJSONRecords(s.actionsDir(tenant), func(path string) (bool, error) {
+		var record ActionDeliveryRecord
+		if err := readJSONFile(path, &record); err != nil {
+			return false, err
+		}
+		if firstTenant(record.TenantID) != tenant ||
+			(req.Definition != "" && record.Definition != req.Definition) ||
+			(req.Environment != "" && record.Environment != req.Environment) ||
+			record.CreatedAt.After(before) {
+			return false, nil
+		}
+		if !req.DeleteActiveDeliveries && (record.Status == "retry_scheduled" || record.Status == "pending") {
+			return false, nil
+		}
+		return true, nil
+	}); err != nil {
+		return result, err
+	} else {
+		result.ActionDeliveries = count
+	}
+	if count, err := s.compactJSONRecords(s.incidentsDir(tenant), func(path string) (bool, error) {
+		var record IncidentRecord
+		if err := readJSONFile(path, &record); err != nil {
+			return false, err
+		}
+		if firstTenant(record.TenantID) != tenant ||
+			(req.Definition != "" && record.Definition != req.Definition) ||
+			(req.Environment != "" && record.Environment != req.Environment) ||
+			record.LastSeen.After(before) {
+			return false, nil
+		}
+		if !req.DeleteOpenIncidents && record.Status == "open" {
+			return false, nil
+		}
+		return true, nil
+	}); err != nil {
+		return result, err
+	} else {
+		result.Incidents = count
+	}
+	return result, nil
+}
+
+func (s *FileStore) readAllChainEvents(tenant string) ([]ChainEventRecord, error) {
+	f, err := os.Open(s.chainEventsPath(tenant))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	var out []ChainEventRecord
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var event ChainEventRecord
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			return nil, err
+		}
+		out = append(out, event)
+	}
+	return out, scanner.Err()
+}
+
+func (s *FileStore) writeAllChainEvents(tenant string, events []ChainEventRecord) error {
+	path := s.chainEventsPath(tenant)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	for _, event := range events {
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(append(payload, '\n')); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *FileStore) compactJSONRecords(dir string, remove func(path string) (bool, error)) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		ok, err := remove(path)
+		if err != nil {
+			return count, err
+		}
+		if !ok {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+func (s *FileStore) Stats(ctx context.Context) (StatsRecord, error) {
+	tenant := TenantFromContext(ctx)
+	stats := StatsRecord{}
+	stats.Definitions = countJSONFiles(s.definitionsDir(tenant))
+	events, err := s.readAllChainEvents(tenant)
+	if err != nil {
+		return stats, err
+	}
+	stats.ChainEvents = len(events)
+	stats.ChainStates = countJSONFiles(s.chainStatesDir(tenant))
+	stats.ActionDeliveries = countJSONFiles(s.actionsDir(tenant))
+	stats.Incidents = countJSONFiles(s.incidentsDir(tenant))
+	return stats, nil
+}
+
+func countJSONFiles(dir string) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".json" {
+			count++
+		}
+	}
+	return count
+}
+
 func (s *FileStore) legacyDefinitionsDir() string { return filepath.Join(s.root, "definitions") }
 func (s *FileStore) definitionsDir(tenant string) string {
 	return filepath.Join(s.root, "definitions", safeName(firstTenant(tenant)))
@@ -357,6 +773,21 @@ func (s *FileStore) auditPath(tenant string) string {
 }
 func (s *FileStore) workflowsDir(tenant string) string {
 	return filepath.Join(s.root, "workflows", safeName(firstTenant(tenant)))
+}
+func (s *FileStore) chainEventsPath(tenant string) string {
+	return filepath.Join(s.root, "chain-events", safeName(firstTenant(tenant))+".jsonl")
+}
+func (s *FileStore) chainStatesDir(tenant string) string {
+	return filepath.Join(s.root, "chain-states", safeName(firstTenant(tenant)))
+}
+func (s *FileStore) chainStatePath(tenant, chain, watch, entityKey string) string {
+	return filepath.Join(s.chainStatesDir(tenant), safeName(chain+"-"+watch+"-"+entityKey)+".json")
+}
+func (s *FileStore) actionsDir(tenant string) string {
+	return filepath.Join(s.root, "actions", safeName(firstTenant(tenant)))
+}
+func (s *FileStore) incidentsDir(tenant string) string {
+	return filepath.Join(s.root, "incidents", safeName(firstTenant(tenant)))
 }
 func (s *FileStore) definitionPath(tenant, name string) string {
 	return filepath.Join(s.definitionsDir(tenant), safeName(name)+".json")

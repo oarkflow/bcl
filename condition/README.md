@@ -138,6 +138,21 @@ curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' \
   -d '{"decision":"payment_risk","input":{"card":{"stolen":false},"payment":{"risk_score":12,"cross_border":false},"customer":{"trusted":true}}}' \
   http://localhost:8080/v1/definitions/payment-risk/evaluate
 
+curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' \
+  -d '{"event":"failed_login","input":{"principal":{"id":"user-1"}}}' \
+  http://localhost:8080/v1/definitions/http-auth-guard/chains/http_request_chain/evaluate
+
+curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' \
+  -d '{"phase":"post","method":"GET","path":"/endpoint-error","input":{"request":{"actor_key":"/endpoint-error","application_key":"request-lifecycle-demo"}},"response":{"status":500}}' \
+  http://localhost:8080/v1/definitions/request-lifecycle/lifecycles/http_request/evaluate
+
+curl -H 'X-Roles: condition-admin' http://localhost:8080/v1/definitions/request-lifecycle/route-coverage
+curl -H 'X-Roles: condition-admin' 'http://localhost:8080/v1/actions?action=notify&limit=20'
+curl -H 'X-Roles: condition-admin' 'http://localhost:8080/v1/incidents?status=open&limit=20'
+curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' \
+  -d '{"definition":"request-lifecycle","before":"2026-05-28T00:00:00Z"}' \
+  http://localhost:8080/v1/state/compact
+
 curl -H 'X-Roles: condition-admin' -X POST http://localhost:8080/v1/definitions/payment-risk/tests
 curl -H 'X-Roles: condition-admin' -H 'Content-Type: application/json' -d '{"candidate_path":"./candidate.bcl","cases":[]}' \
   http://localhost:8080/v1/definitions/payment-risk/simulate

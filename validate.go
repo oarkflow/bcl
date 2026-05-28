@@ -352,6 +352,258 @@ func blockAssignments(b *Block) map[string]Value {
 	return out
 }
 
+func routeCatalogDiagnostics(doc *Document) []Diagnostic {
+	if doc == nil {
+		return nil
+	}
+	var diags []Diagnostic
+	var walk func([]Node)
+	walk = func(nodes []Node) {
+		for _, n := range nodes {
+			b, ok := n.(*Block)
+			if !ok {
+				continue
+			}
+			if b.Type == "routes" {
+				diags = append(diags, lintRouteCatalog(b)...)
+			}
+			walk(b.Body)
+		}
+	}
+	walk(doc.Items)
+	return diags
+}
+
+func lintRouteCatalog(catalog *Block) []Diagnostic {
+	var diags []Diagnostic
+	ids := map[string]Span{}
+	patterns := map[string]Span{}
+	shapes := map[string]Span{}
+	for _, n := range catalog.Body {
+		route, ok := n.(*Block)
+		if !ok || route.Type != "route" {
+			continue
+		}
+		if route.ID == "" {
+			diags = append(diags, Diagnostic{Severity: "error", Message: "route is missing id", Span: route.Span})
+		} else if first, ok := ids[route.ID]; ok {
+			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("duplicate route id %q", route.ID), Span: first})
+			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("duplicate route id %q", route.ID), Span: route.Span})
+		} else {
+			ids[route.ID] = route.Span
+		}
+		fields := blockAssignments(route)
+		method := strings.ToUpper(strings.TrimSpace(literalString(fields["method"])))
+		if method == "" {
+			method = "GET"
+		}
+		pattern := literalString(fields["pattern"])
+		parts, err := lintRoutePatternParts(pattern)
+		if err != nil {
+			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("route %q has invalid pattern %q: %v", route.ID, pattern, err), Span: route.Span})
+			continue
+		}
+		normalized := method + " " + lintRoutePatternRender(parts)
+		if first, ok := patterns[normalized]; ok {
+			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("duplicate route %s", normalized), Span: first})
+			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("duplicate route %s", normalized), Span: route.Span})
+		} else {
+			patterns[normalized] = route.Span
+		}
+		shape := method + " " + lintRoutePatternShape(parts)
+		if first, ok := shapes[shape]; ok {
+			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("duplicate route %s %s", method, lintRoutePatternConflictTemplate(parts)), Span: first})
+			diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("duplicate route %s %s", method, lintRoutePatternConflictTemplate(parts)), Span: route.Span})
+			diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("ambiguous route shape %s", shape), Span: first})
+			diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("ambiguous route shape %s", shape), Span: route.Span})
+		} else {
+			shapes[shape] = route.Span
+		}
+	}
+	return diags
+}
+
+func lifecycleReferenceDiagnostics(doc *Document) []Diagnostic {
+	if doc == nil {
+		return nil
+	}
+	decisions := map[string]Span{}
+	chains := map[string]Span{}
+	routes := map[string]Span{}
+	var lifecycles []*Block
+	var walk func([]Node)
+	walk = func(nodes []Node) {
+		for _, n := range nodes {
+			b, ok := n.(*Block)
+			if !ok {
+				continue
+			}
+			switch b.Type {
+			case "decision", "decision_table":
+				if b.ID != "" {
+					decisions[b.ID] = b.Span
+				}
+			case "chain":
+				if b.ID != "" {
+					chains[b.ID] = b.Span
+				}
+			case "routes":
+				if b.ID != "" {
+					routes[b.ID] = b.Span
+				}
+			case "lifecycle":
+				lifecycles = append(lifecycles, b)
+			}
+			walk(b.Body)
+		}
+	}
+	walk(doc.Items)
+	var diags []Diagnostic
+	for _, lifecycle := range lifecycles {
+		if ref := blockString(lifecycle, "routes"); ref != "" {
+			if _, ok := routes[ref]; !ok {
+				diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("lifecycle %q references unknown routes %q", lifecycle.ID, ref), Span: lifecycle.Span})
+			}
+		}
+		for _, n := range lifecycle.Body {
+			phase, ok := n.(*Block)
+			if !ok || phase.Type != "phase" {
+				continue
+			}
+			for _, item := range phase.Body {
+				a, ok := item.(*Assignment)
+				if !ok {
+					continue
+				}
+				ref := literalString(a.Value)
+				switch a.Name {
+				case "decision":
+					if ref != "" {
+						if _, ok := decisions[ref]; !ok {
+							diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("lifecycle %q phase %q references unknown decision %q", lifecycle.ID, phase.ID, ref), Span: a.Span})
+						}
+					}
+				case "chain":
+					if ref != "" {
+						if _, ok := chains[ref]; !ok {
+							diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("lifecycle %q phase %q references unknown chain %q", lifecycle.ID, phase.ID, ref), Span: a.Span})
+						}
+					}
+				}
+			}
+		}
+	}
+	return diags
+}
+
+type lintRouteSegment struct {
+	kind string
+	name string
+	raw  string
+}
+
+func lintRoutePatternParts(pattern string) ([]lintRouteSegment, error) {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return nil, fmt.Errorf("empty pattern")
+	}
+	if pattern == "/" {
+		return nil, nil
+	}
+	raw := strings.Split(strings.Trim(pattern, "/"), "/")
+	out := make([]lintRouteSegment, 0, len(raw))
+	for i, part := range raw {
+		if part == "" {
+			continue
+		}
+		seg := lintRouteSegment{kind: "static", raw: part}
+		switch {
+		case part == "*":
+			seg.kind = "wildcard"
+		case strings.HasPrefix(part, "*"):
+			seg.kind = "catchall"
+			seg.name = strings.TrimPrefix(part, "*")
+		case strings.HasPrefix(part, ":"):
+			seg.kind = "param"
+			seg.name = strings.TrimPrefix(part, ":")
+		case strings.HasPrefix(part, "{") && strings.HasSuffix(part, "...}"):
+			seg.kind = "catchall"
+			seg.name = strings.TrimSuffix(strings.TrimPrefix(part, "{"), "...}")
+		case strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}"):
+			seg.kind = "param"
+			seg.name = strings.TrimSuffix(strings.TrimPrefix(part, "{"), "}")
+		}
+		if (seg.kind == "param" || seg.kind == "catchall") && seg.name == "" {
+			return nil, fmt.Errorf("empty parameter")
+		}
+		if seg.kind == "catchall" && i != len(raw)-1 {
+			return nil, fmt.Errorf("catch-all must be the final segment")
+		}
+		out = append(out, seg)
+	}
+	return out, nil
+}
+
+func lintRoutePatternRender(parts []lintRouteSegment) string {
+	if len(parts) == 0 {
+		return "/"
+	}
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part.kind {
+		case "param":
+			out = append(out, "{"+part.name+"}")
+		case "wildcard":
+			out = append(out, "*")
+		case "catchall":
+			out = append(out, "{"+part.name+"...}")
+		default:
+			out = append(out, part.raw)
+		}
+	}
+	return "/" + strings.Join(out, "/")
+}
+
+func lintRoutePatternShape(parts []lintRouteSegment) string {
+	if len(parts) == 0 {
+		return "/"
+	}
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part.kind {
+		case "param":
+			out = append(out, ":")
+		case "wildcard":
+			out = append(out, "*")
+		case "catchall":
+			out = append(out, "**")
+		default:
+			out = append(out, "="+part.raw)
+		}
+	}
+	return "/" + strings.Join(out, "/")
+}
+
+func lintRoutePatternConflictTemplate(parts []lintRouteSegment) string {
+	if len(parts) == 0 {
+		return "/"
+	}
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part.kind {
+		case "param":
+			out = append(out, "{param}")
+		case "wildcard":
+			out = append(out, "*")
+		case "catchall":
+			out = append(out, "{rest...}")
+		default:
+			out = append(out, part.raw)
+		}
+	}
+	return "/" + strings.Join(out, "/")
+}
+
 func literalString(v Value) string {
 	if lit, ok := v.(*Literal); ok {
 		if s, ok := lit.Data.(string); ok {
@@ -376,6 +628,8 @@ func literalScalar(v Value) string {
 
 func Lint(doc *Document, opts *Options) []Diagnostic {
 	diags := Validate(doc, opts)
+	diags = append(diags, routeCatalogDiagnostics(doc)...)
+	diags = append(diags, lifecycleReferenceDiagnostics(doc)...)
 	var hasVersion bool
 	for _, n := range doc.Items {
 		if b, ok := n.(*Block); ok && b.Type == "bcl" {
@@ -1440,7 +1694,7 @@ func validateIntegrations(nodes []Node, diags *[]Diagnostic) {
 			validateHTTPBlock(b, diags)
 			validateProxyRedirect(b, diags)
 		case "connector", "source", "action":
-			if blockString(b, "type") == "" {
+			if blockString(b, "type") == "" && !isActionCatalogEntry(b) {
 				*diags = append(*diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("%s %q requires type", b.Type, b.ID), Span: b.Span})
 			}
 			validateRequestResponseBlocks(b, diags)
@@ -1455,6 +1709,18 @@ func validateIntegrations(nodes []Node, diags *[]Diagnostic) {
 		}
 		validateIntegrations(b.Body, diags)
 	}
+}
+
+func isActionCatalogEntry(b *Block) bool {
+	if b == nil || b.Type != "action" {
+		return false
+	}
+	for _, key := range []string{"sink", "sinks", "severity", "approval", "retries", "payload_schema"} {
+		if blockString(b, key) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func validateHTTPBlock(b *Block, diags *[]Diagnostic) {

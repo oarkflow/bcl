@@ -58,6 +58,159 @@ func TestServerPublishEvaluateAndAudit(t *testing.T) {
 	}
 }
 
+func TestServerEvaluateChain(t *testing.T) {
+	svc := condition.NewService(storage.NewMemoryStore(), condition.Config{})
+	handler := New(svc).Handler()
+	source := `module "chain-demo" {
+  decision_table "access" {
+    default allow
+    hit_policy first
+    row "allow" {
+      when { principal.id != "" }
+      then { outcome { decision allow reason "ok" attributes { action "allow" } metadata { severity "low" } } }
+      reason "ok"
+      reason_code "OK"
+    }
+  }
+  chain "auth_guard" {
+    entity "principal.id"
+    decision "access"
+    watch "failed_login" {
+      event "failed_login"
+      window "10m"
+      step "rate_limit" { threshold 1 action "rate_limit" severity "medium" ttl "5m" }
+    }
+  }
+}`
+	if _, err := svc.Publish(context.Background(), condition.PublishRequest{Name: "chain-demo", Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"event": "failed_login",
+		"input": map[string]any{"principal": map[string]any{"id": "user-1"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/definitions/chain-demo/chains/auth_guard/evaluate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Roles", "condition-admin")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chain evaluate status %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp condition.ChainEvaluateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Evaluation.FinalAction != "rate_limit" || len(resp.Evaluation.Events) == 0 || resp.Audit.Operation != "chain_evaluate" {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
+func TestServerEvaluateLifecycle(t *testing.T) {
+	svc := condition.NewService(storage.NewMemoryStore(), condition.Config{})
+	handler := New(svc).Handler()
+	source := `module "lifecycle-demo" {
+  routes "http" {
+    route "api" { method "GET" pattern "/api/{id}" metadata { category "api" } }
+  }
+  decision_table "observe" {
+    default allow
+    hit_policy first
+    row "server-error" {
+      when { response.status >= 500 }
+      then { outcome { decision require_review reason "server error" attributes { action "server_error" } metadata { severity "high" } } }
+      reason "server error"
+      reason_code "SERVER_ERROR"
+    }
+  }
+  chain "errors" {
+    entity "request.actor_key"
+    watch "endpoint_errors" {
+      event "server_error"
+      window "10m"
+      step "notify" { threshold 1 action "notify" severity "high" ttl "5m" }
+    }
+  }
+  lifecycle "http_request" {
+    entity "request.actor_key"
+    routes "http"
+    phase "post" {
+      decision "observe"
+      chain "errors"
+    }
+  }
+}`
+	if _, err := svc.Publish(context.Background(), condition.PublishRequest{Name: "lifecycle-demo", Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"phase":    "post",
+		"method":   "GET",
+		"path":     "/api/123",
+		"input":    map[string]any{"request": map[string]any{"actor_key": "app"}},
+		"response": map[string]any{"status": 500},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/definitions/lifecycle-demo/lifecycles/http_request/evaluate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Roles", "condition-admin")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("lifecycle evaluate status %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp condition.LifecycleEvaluateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Evaluation.Route.Matched || resp.Evaluation.Route.Params["id"] != "123" || resp.Evaluation.FinalAction != "notify" || resp.Audit.Operation != "lifecycle_evaluate" {
+		t.Fatalf("response = %#v", resp)
+	}
+	actionsReq := httptest.NewRequest(http.MethodGet, "/v1/actions?action=notify", nil)
+	actionsReq.Header.Set("X-Roles", "condition-admin")
+	actionsRec := httptest.NewRecorder()
+	handler.ServeHTTP(actionsRec, actionsReq)
+	if actionsRec.Code != http.StatusOK {
+		t.Fatalf("actions status %d: %s", actionsRec.Code, actionsRec.Body.String())
+	}
+	var actions []storage.ActionDeliveryRecord
+	if err := json.Unmarshal(actionsRec.Body.Bytes(), &actions); err != nil {
+		t.Fatal(err)
+	}
+	if len(actions) == 0 || actions[len(actions)-1].Action != "notify" {
+		t.Fatalf("actions = %#v", actions)
+	}
+	compactBody, _ := json.Marshal(storage.RetentionRequest{Definition: "lifecycle-demo", Before: time.Now().Add(time.Hour)})
+	compactReq := httptest.NewRequest(http.MethodPost, "/v1/state/compact", bytes.NewReader(compactBody))
+	compactReq.Header.Set("Content-Type", "application/json")
+	compactReq.Header.Set("X-Roles", "condition-admin")
+	compactRec := httptest.NewRecorder()
+	handler.ServeHTTP(compactRec, compactReq)
+	if compactRec.Code != http.StatusOK {
+		t.Fatalf("compact status %d: %s", compactRec.Code, compactRec.Body.String())
+	}
+	var compact storage.RetentionResult
+	if err := json.Unmarshal(compactRec.Body.Bytes(), &compact); err != nil {
+		t.Fatal(err)
+	}
+	if compact.ActionDeliveries == 0 {
+		t.Fatalf("compact = %#v", compact)
+	}
+	coverageReq := httptest.NewRequest(http.MethodGet, "/v1/definitions/lifecycle-demo/route-coverage", nil)
+	coverageReq.Header.Set("X-Roles", "condition-admin")
+	coverageRec := httptest.NewRecorder()
+	handler.ServeHTTP(coverageRec, coverageReq)
+	if coverageRec.Code != http.StatusOK {
+		t.Fatalf("coverage status %d: %s", coverageRec.Code, coverageRec.Body.String())
+	}
+	var coverage condition.RouteCoverageReport
+	if err := json.Unmarshal(coverageRec.Body.Bytes(), &coverage); err != nil {
+		t.Fatal(err)
+	}
+	if !coverage.Passed || len(coverage.Routes) == 0 {
+		t.Fatalf("coverage = %#v", coverage)
+	}
+}
+
 func TestServerEvaluatePopulatesRuntimeContextFromHeaders(t *testing.T) {
 	svc := condition.NewService(storage.NewMemoryStore(), condition.Config{})
 	handler := New(svc).Handler()

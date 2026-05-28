@@ -1,0 +1,315 @@
+bcl { version "1.0" strict true }
+
+version "1"
+environment "example"
+metadata { owner "platform-ops" domain "request-lifecycle" }
+
+policy_package "request_lifecycle" {
+  owner "platform-ops"
+  domain "observability"
+  version "1.0.0"
+  capabilities ["routes", "lifecycle", "state", "actions"]
+  routes ["http"]
+  actions ["allow", "healthy", "endpoint_5xx", "app_5xx", "unexpected_4xx", "log", "notify", "escalate"]
+  state true
+  external false
+}
+
+action_catalog "default" {
+  action "allow" { sink "event" severity "low" }
+  action "healthy" { sink "event" severity "low" }
+  action "endpoint_5xx" { sink "event" severity "high" }
+  action "app_5xx" { sink "event" severity "high" }
+  action "unexpected_4xx" { sink "event" severity "medium" }
+  action "log" { sink "log" severity "medium" retries 1 }
+  action "notify" { sink "event" severity "high" approval "required" retries 3 }
+  action "escalate" { sink "event" severity "critical" approval "required" retries 3 }
+}
+
+output_contract "response_actions" {
+  actions ["allow", "healthy", "endpoint_5xx", "app_5xx", "unexpected_4xx", "log", "notify", "escalate"]
+  severities ["low", "medium", "high", "critical"]
+}
+
+standard_facts "http" {
+  fact "request" { schema "http_request" }
+  fact "response" { schema "http_response" }
+  fact "route" { schema "route_fact" }
+  fact "tenant" { schema "tenant_fact" }
+  fact "risk" { schema "risk_fact" }
+  fact "state" { schema "state_fact" }
+}
+
+response_classifier "http" {
+  healthy_below 400
+  unhealthy_at_or_above 500
+  expected_client_statuses [400, 401, 403]
+}
+
+reason_code_catalog "response_observability" {
+  code "ENDPOINT_5XX" { description "A specific endpoint is returning 5xx responses" }
+  code "APP_5XX" { description "The application is returning 5xx responses" }
+  code "UNEXPECTED_4XX" { description "The response returned an unexpected 4xx status" }
+  code "RESPONSE_HEALTHY" { description "The response is healthy" }
+}
+
+decision_schema "response_observability" {
+  effects [allow, deny, require_review]
+  default allow
+  strategy first_match
+}
+
+routes "http" {
+  route "coverage" { method "GET" pattern "/_coverage" metadata { category "ops" } }
+  route "actions" { method "GET" pattern "/_actions" metadata { category "ops" } }
+  route "incidents" { method "GET" pattern "/_incidents" metadata { category "ops" } }
+  route "readiness" { method "GET" pattern "/_readiness" metadata { category "ops" } }
+  route "ok" { method "GET" pattern "/ok" metadata { category "health" } }
+  route "bad_request" { method "GET" pattern "/bad-request" metadata { category "expected-client-error" } }
+  route "unauthorized" { method "GET" pattern "/unauthorized" metadata { category "expected-client-error" } }
+  route "forbidden" { method "GET" pattern "/forbidden" metadata { category "expected-client-error" } }
+  route "teapot" { method "GET" pattern "/teapot" metadata { category "unexpected-client-error" } }
+  route "endpoint_error" { method "GET" pattern "/endpoint-error" metadata { category "endpoint" } }
+  route "app_error" { method "GET" pattern "/app-error/{component}" metadata { category "application" } }
+}
+
+policy_overlay "example_environment" {
+  layer "environment"
+  environment "example"
+  metadata { owner "platform-ops" lifecycle_profile "request" }
+}
+
+policy_overlay "endpoint_error_owner" {
+  layer "route"
+  route "endpoint_error"
+  metadata { owner "endpoint-team" escalation_path "endpoint-oncall" }
+}
+
+decision_table "response_observability" {
+  contract "response_actions"
+  default allow
+  hit_policy first
+
+  row "endpoint-server-error" {
+    priority 90
+    when {
+      all {
+        response.class == "server_error"
+        route.id == "endpoint_error"
+      }
+    }
+    then { outcome { decision require_review reason "endpoint error rate is rising" attributes { action "endpoint_5xx" sink "event" } metadata { severity "high" category "observability" scope "endpoint" } } obligation notify_endpoint_owner { channel "pager" } }
+    reason "endpoint error rate is rising"
+    reason_code "ENDPOINT_5XX"
+  }
+
+  row "app-server-error" {
+    priority 80
+    when { response.class == "server_error" }
+    then { outcome { decision require_review reason "application error rate is rising" attributes { action "app_5xx" sink "event" } metadata { severity "high" category "observability" scope "application" } } obligation notify_app_owner { channel "pager" } }
+    reason "application error rate is rising"
+    reason_code "APP_5XX"
+  }
+
+  row "unexpected-client-error" {
+    priority 70
+    when {
+      all {
+        response.class == "unexpected_client_error"
+      }
+    }
+    then { outcome { decision require_review reason "unexpected client error" attributes { action "unexpected_4xx" sink "event" } metadata { severity "medium" category "observability" scope "client_error" } } obligation log_unexpected_4xx { channel "logs" } }
+    reason "unexpected client error"
+    reason_code "UNEXPECTED_4XX"
+  }
+
+  row "healthy" {
+    priority 1
+    when {
+      any {
+        response.healthy == true
+      }
+    }
+    then { outcome { decision allow reason "healthy response" attributes { action "healthy" } metadata { severity "low" category "observability" } } }
+    reason "healthy response"
+    reason_code "RESPONSE_HEALTHY"
+  }
+}
+
+chain "endpoint_response_error_chain" {
+  entity "route.id"
+
+  watch "endpoint_5xx_errors" {
+    event "endpoint_5xx"
+    window "10m"
+    metadata { category "observability" scope "endpoint" }
+    step "endpoint_log" { threshold 1 action "log" severity "medium" ttl "5m" }
+    step "endpoint_notify" { threshold 3 action "notify" severity "high" ttl "15m" }
+    step "endpoint_escalate" { threshold 5 action "escalate" severity "critical" ttl "30m" }
+  }
+}
+
+chain "app_response_error_chain" {
+  entity "request.application_key"
+
+  watch "app_5xx_errors" {
+    event "app_5xx"
+    window "10m"
+    metadata { category "observability" scope "application" }
+    step "app_log" { threshold 1 action "log" severity "medium" ttl "5m" }
+    step "app_notify" { threshold 3 action "notify" severity "high" ttl "15m" }
+    step "app_escalate" { threshold 5 action "escalate" severity "critical" ttl "30m" }
+  }
+
+  watch "unexpected_4xx_errors" {
+    event "unexpected_4xx"
+    window "10m"
+    metadata { category "observability" scope "client_error" }
+    step "unexpected_4xx_log" { threshold 1 action "log" severity "medium" ttl "5m" }
+    step "unexpected_4xx_notify" { threshold 5 action "notify" severity "high" ttl "15m" }
+  }
+}
+
+lifecycle "http_request" {
+  entity "request.actor_key"
+  routes "http"
+
+  phase "post" {
+    decision "response_observability"
+    chain "endpoint_response_error_chain"
+    chain "app_response_error_chain"
+  }
+}
+
+test "endpoint 5xx" {
+  decision "response_observability"
+  input {
+    route.id "endpoint_error"
+    response.status 500
+    response.class "server_error"
+  }
+  expect { effect "require_review" reason_code "ENDPOINT_5XX" }
+}
+
+test "healthy response" {
+  decision "response_observability"
+  input {
+    route.id "ok"
+    response.status 200
+    response.healthy true
+  }
+  expect { effect "allow" reason_code "RESPONSE_HEALTHY" }
+}
+
+test "unexpected 404 response" {
+  decision "response_observability"
+  input {
+    route.id "ok"
+    response.status 404
+    response.class "unexpected_client_error"
+  }
+  expect { effect "require_review" reason_code "UNEXPECTED_4XX" }
+}
+
+test "expected 401 response" {
+  decision "response_observability"
+  input {
+    route.id "ok"
+    response.status 401
+    response.healthy true
+  }
+  expect { effect "allow" reason_code "RESPONSE_HEALTHY" }
+}
+
+lifecycle_test "post endpoint server error" {
+  lifecycle "http_request"
+  phase "post"
+  method "GET"
+  path "/endpoint-error"
+  input { request.actor_key "/endpoint-error" }
+  request {
+    headers { accept "application/json" x_request_id "req-endpoint-500" }
+    body { path "/endpoint-error" }
+    format "json"
+  }
+  response {
+    status 500
+    headers { content_type "text/plain" }
+    body { error "endpoint failed" }
+    format "text"
+  }
+  expect {
+    final_action "log"
+    route "endpoint_error"
+  }
+}
+
+lifecycle_test "post unexpected client error" {
+  lifecycle "http_request"
+  phase "post"
+  method "GET"
+  path "/teapot"
+  input { request.actor_key "/teapot" }
+  request {
+    headers { accept "application/json" x_request_id "req-teapot" }
+    body { path "/teapot" }
+    format "json"
+  }
+  response {
+    status 418
+    headers { content_type "text/plain" }
+    body { error "unexpected client error" }
+    format "text"
+  }
+  expect {
+    final_action "unexpected_4xx"
+    final_reason "unexpected client error"
+    route "teapot"
+  }
+}
+
+lifecycle_test "post expected forbidden response" {
+  lifecycle "http_request"
+  phase "post"
+  method "GET"
+  path "/forbidden"
+  input { request.actor_key "/forbidden" }
+  request {
+    headers { accept "application/json" x_request_id "req-forbidden" }
+    body { path "/forbidden" }
+    format "json"
+  }
+  response {
+    status 403
+    headers { content_type "text/plain" }
+    body { error "forbidden is expected" }
+    format "text"
+  }
+  expect {
+    final_action "healthy"
+    route "forbidden"
+  }
+}
+
+lifecycle_test "post form request body" {
+  lifecycle "http_request"
+  phase "post"
+  method "GET"
+  path "/ok"
+  input { request.actor_key "/ok-form" }
+  request {
+    headers { content_type "application/x-www-form-urlencoded" }
+    body { search "policy" page "1" }
+    format "form"
+  }
+  response {
+    status 200
+    headers { content_type "text/plain" }
+    body "ok"
+    format "text"
+  }
+  expect {
+    final_action "healthy"
+    route "ok"
+  }
+}

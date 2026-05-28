@@ -214,5 +214,165 @@
       "}"
     ],
     "description": "Reusable decision row template"
+  },
+  "Chain": {
+    "prefix": "chain",
+    "body": [
+      "chain \"${1:name}\" {",
+      "  entity \"${2:request.actor_key}\"",
+      "  decision \"${3:decision_name}\"",
+      "",
+      "  watch \"${4:event_watch}\" {",
+      "    event \"${5:event_type}\"",
+      "    window \"${6:10m}\"",
+      "    distinct \"${7:attributes.user_id}\"",
+      "    field \"${8:attributes.duration_ms}\"",
+      "    metrics [\"count\", \"rate\", \"min\", \"max\", \"avg\", \"p95\", \"p99\"]",
+      "    decay \"${9:1h}\"",
+      "    cooldown \"${10:10m}\"",
+      "    reset \"${11:remediated}\"",
+      "    step \"${12:notify}\" { threshold ${13:3} action \"${14:notify}\" severity \"${15:high}\" ttl \"${16:15m}\" }",
+      "  }",
+      "}"
+    ],
+    "description": "Stateful policy chain with watch and threshold step"
+  },
+  "Route catalog": {
+    "prefix": "routes",
+    "body": [
+      "routes \"${1:http}\" {",
+      "  route \"${2:route_id}\" {",
+      "    method \"${3|GET,POST,PUT,PATCH,DELETE|}\"",
+      "    pattern \"${4:/items/{id}}\"",
+      "    metadata { category \"${5:api}\" }",
+      "  }",
+      "}"
+    ],
+    "description": "HTTP route catalog for lifecycle evaluation"
+  },
+  "Lifecycle": {
+    "prefix": "lifecycle",
+    "body": [
+      "lifecycle \"${1:http_request}\" {",
+      "  entity \"${2:request.actor_key}\"",
+      "  routes \"${3:http}\"",
+      "",
+      "  phase \"${4:pre}\" {",
+      "    decision \"${5:guard_decision}\"",
+      "  }",
+      "",
+      "  phase \"${6:post}\" {",
+      "    decision \"${7:response_observability}\"",
+      "    chain \"${8:response_error_chain}\"",
+      "  }",
+      "}"
+    ],
+    "description": "Generic request lifecycle with pre/post phases"
+  },
+  "Policy package": {
+    "prefix": "policy_package",
+    "body": [
+      "policy_package \"${1:security}\" {",
+      "  owner \"${2:platform-security}\"",
+      "  domain \"${3:auth}\"",
+      "  version \"${4:1.0.0}\"",
+      "  capabilities [\"${5:state}\", \"${6:routes}\", \"${7:actions}\"]",
+      "  routes [\"${8:http}\"]",
+      "  actions [\"allow\", \"deny\", \"notify\"]",
+      "  state true",
+      "  external false",
+      "}"
+    ],
+    "description": "Condition policy package manifest"
+  },
+  "Policy overlay": {
+    "prefix": "policy_overlay",
+    "body": [
+      "policy_overlay \"${1:tenant_strict}\" {",
+      "  layer \"${2:tenant}\"",
+      "  tenant \"${3:tenant-a}\"",
+      "  environment \"${4:production}\"",
+      "  metadata {",
+      "    ${5:risk_tier} \"${6:strict}\"",
+      "  }",
+      "}"
+    ],
+    "description": "Deterministic global/environment/tenant/endpoint/route metadata overlay"
+  },
+  "Action catalog": {
+    "prefix": "action_catalog",
+    "body": [
+      "action_catalog \"${1:default}\" {",
+      "  action \"${2:allow}\" { sink \"event\" severity \"low\" }",
+      "  action \"${3:deny}\" { sink \"event\" severity \"high\" approval \"required\" retries 1 }",
+      "  action \"${4:notify}\" { sinks [\"event\", \"webhook\"] severity \"high\" approval \"required\" retries 3 }",
+      "}"
+    ],
+    "description": "Allowed action names, sinks, severities, retry and approval metadata"
+  },
+  "Output contract": {
+    "prefix": "output_contract",
+    "body": [
+      "output_contract \"${1:guard_output}\" {",
+      "  actions [\"${2:allow}\", \"${3:deny}\", \"${4:notify}\"]",
+      "  severities [\"${5:low}\", \"${6:medium}\", \"${7:high}\", \"${8:critical}\"]",
+      "}"
+    ],
+    "description": "Allowed actions and severities for decisions, chains, and lifecycles"
+  },
+  "Standard facts": {
+    "prefix": "standard_facts",
+    "body": [
+      "standard_facts \"${1:http}\" {",
+      "  fact \"request\" { schema \"${2:http_request}\" }",
+      "  fact \"response\" { schema \"${3:http_response}\" }",
+      "  fact \"principal\" { schema \"${4:principal}\" }",
+      "  fact \"route\" { schema \"${5:route_fact}\" }",
+      "  fact \"tenant\" { schema \"${6:tenant_fact}\" }",
+      "  fact \"resource\" { schema \"${7:resource_fact}\" }",
+      "  fact \"risk\" { schema \"${8:risk_fact}\" }",
+      "  fact \"state\" { schema \"${9:state_fact}\" }",
+      "}"
+    ],
+    "description": "Typed standard fact contracts for lifecycle and decision inputs"
+  },
+  "Response classifier": {
+    "prefix": "response_classifier",
+    "body": [
+      "response_classifier \"${1:http}\" {",
+      "  healthy_below ${2:400}",
+      "  unhealthy_at_or_above ${3:500}",
+      "  expected_client_statuses [400, 401, 403]",
+      "}"
+    ],
+    "description": "HTTP response classification defaults for lifecycle post-response policies"
+  },
+  "Lifecycle test": {
+    "prefix": "lifecycle_test",
+    "body": [
+      "lifecycle_test \"${1:post server error}\" {",
+      "  lifecycle \"${2:http_request}\"",
+      "  phase \"${3:post}\"",
+      "  method \"${4:GET}\"",
+      "  path \"${5:/items/123}\"",
+      "  input { request.actor_key \"${6:user-1}\" }",
+      "  request {",
+      "    headers { content_type \"application/json\" x_request_id \"${7:req-123}\" }",
+      "    body { id \"${8:item-123}\" }",
+      "    format \"json\"",
+      "  }",
+      "  response {",
+      "    status ${9:500}",
+      "    headers { content_type \"application/json\" }",
+      "    body { error \"${10:upstream timeout}\" }",
+      "    format \"json\"",
+      "  }",
+      "  expect {",
+      "    final_action \"${11:notify}\"",
+      "    route \"${12:items}\"",
+      "  }",
+      "}"
+    ],
+    "description": "Executable lifecycle scenario test"
   }
 }

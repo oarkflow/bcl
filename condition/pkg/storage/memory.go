@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/oarkflow/condition/pkg/audit"
 )
@@ -17,10 +18,14 @@ type MemoryStore struct {
 	reports     []ReportRecord
 	audits      []audit.Envelope
 	workflows   map[string]WorkflowRunRecord
+	chainEvents []ChainEventRecord
+	chainStates map[string]ChainStateRecord
+	actions     map[string]ActionDeliveryRecord
+	incidents   map[string]IncidentRecord
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{definitions: map[string]DefinitionRecord{}, versions: map[string]DefinitionRecord{}, active: map[string]ActiveDefinition{}, workflows: map[string]WorkflowRunRecord{}}
+	return &MemoryStore{definitions: map[string]DefinitionRecord{}, versions: map[string]DefinitionRecord{}, active: map[string]ActiveDefinition{}, workflows: map[string]WorkflowRunRecord{}, chainStates: map[string]ChainStateRecord{}, actions: map[string]ActionDeliveryRecord{}, incidents: map[string]IncidentRecord{}}
 }
 
 func (s *MemoryStore) SaveDefinition(ctx context.Context, record DefinitionRecord) error {
@@ -254,4 +259,249 @@ func (s *MemoryStore) ListWorkflowRuns(ctx context.Context, opts ListOptions) ([
 			(opts.Environment == "" || run.Environment == opts.Environment) &&
 			inRange(run.UpdatedAt, opts)
 	}), nil
+}
+
+func (s *MemoryStore) AppendChainEvent(ctx context.Context, event ChainEventRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	event.TenantID = firstTenant(firstNonEmpty(event.TenantID, TenantFromContext(ctx)))
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = nowUTC()
+	}
+	s.chainEvents = append(s.chainEvents, event)
+	return nil
+}
+
+func (s *MemoryStore) QueryChainEvents(ctx context.Context, query ChainEventQuery) ([]ChainEventRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tenant := firstTenant(firstNonEmpty(query.TenantID, TenantFromContext(ctx)))
+	now := nowUTC()
+	var out []ChainEventRecord
+	for _, event := range s.chainEvents {
+		if firstTenant(event.TenantID) != tenant ||
+			(query.Definition != "" && event.Definition != query.Definition) ||
+			(query.Environment != "" && event.Environment != query.Environment) ||
+			(query.Chain != "" && event.Chain != query.Chain) ||
+			(query.Watch != "" && event.Watch != query.Watch) ||
+			(query.EntityKey != "" && event.EntityKey != query.EntityKey) ||
+			(query.EventType != "" && event.EventType != query.EventType) ||
+			(query.Since != nil && event.CreatedAt.Before(*query.Since)) ||
+			(query.Until != nil && event.CreatedAt.After(*query.Until)) {
+			continue
+		}
+		if !query.IncludeExpired && event.ExpiresAt != nil && !event.ExpiresAt.After(now) {
+			continue
+		}
+		out = append(out, event)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	if query.Limit > 0 && len(out) > query.Limit {
+		out = out[len(out)-query.Limit:]
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) GetChainState(ctx context.Context, chain, watch, entityKey string) (ChainStateRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tenant := TenantFromContext(ctx)
+	state, ok := s.chainStates[chainStateKey(tenant, chain, watch, entityKey)]
+	if !ok || firstTenant(state.TenantID) != tenant {
+		return ChainStateRecord{}, fmt.Errorf("unknown watch state %q/%q/%q", chain, watch, entityKey)
+	}
+	if state.ExpiresAt != nil && !state.ExpiresAt.After(nowUTC()) {
+		return ChainStateRecord{}, fmt.Errorf("unknown watch state %q/%q/%q", chain, watch, entityKey)
+	}
+	return state, nil
+}
+
+func (s *MemoryStore) UpsertChainState(ctx context.Context, state ChainStateRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state.TenantID = firstTenant(firstNonEmpty(state.TenantID, TenantFromContext(ctx)))
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = nowUTC()
+	}
+	s.chainStates[chainStateKey(state.TenantID, state.Chain, state.Watch, state.EntityKey)] = state
+	return nil
+}
+
+func (s *MemoryStore) DeleteExpiredChainStates(ctx context.Context, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tenant := TenantFromContext(ctx)
+	for key, state := range s.chainStates {
+		if firstTenant(state.TenantID) == tenant && state.ExpiresAt != nil && !state.ExpiresAt.After(now) {
+			delete(s.chainStates, key)
+		}
+	}
+	return nil
+}
+
+func (s *MemoryStore) SaveActionDelivery(ctx context.Context, record ActionDeliveryRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record.TenantID = firstTenant(firstNonEmpty(record.TenantID, TenantFromContext(ctx)))
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = nowUTC()
+	}
+	if record.UpdatedAt.IsZero() {
+		record.UpdatedAt = record.CreatedAt
+	}
+	s.actions[record.ID] = record
+	return nil
+}
+
+func (s *MemoryStore) ListActionDeliveries(ctx context.Context, query ActionDeliveryQuery) ([]ActionDeliveryRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tenant := firstTenant(firstNonEmpty(query.TenantID, TenantFromContext(ctx)))
+	out := make([]ActionDeliveryRecord, 0, len(s.actions))
+	for _, record := range s.actions {
+		if firstTenant(record.TenantID) == tenant &&
+			(query.Definition == "" || record.Definition == query.Definition) &&
+			(query.Environment == "" || record.Environment == query.Environment) &&
+			(query.Action == "" || record.Action == query.Action) &&
+			(query.Status == "" || record.Status == query.Status) {
+			out = append(out, record)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	if query.Limit > 0 && len(out) > query.Limit {
+		out = out[len(out)-query.Limit:]
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) UpsertIncident(ctx context.Context, record IncidentRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record.TenantID = firstTenant(firstNonEmpty(record.TenantID, TenantFromContext(ctx)))
+	if record.Status == "" {
+		record.Status = "open"
+	}
+	if record.FirstSeen.IsZero() {
+		record.FirstSeen = nowUTC()
+	}
+	if record.LastSeen.IsZero() {
+		record.LastSeen = record.FirstSeen
+	}
+	if record.Count == 0 {
+		record.Count = 1
+	}
+	s.incidents[record.ID] = record
+	return nil
+}
+
+func (s *MemoryStore) ListIncidents(ctx context.Context, query IncidentQuery) ([]IncidentRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tenant := firstTenant(firstNonEmpty(query.TenantID, TenantFromContext(ctx)))
+	out := make([]IncidentRecord, 0, len(s.incidents))
+	for _, record := range s.incidents {
+		if firstTenant(record.TenantID) == tenant &&
+			(query.Definition == "" || record.Definition == query.Definition) &&
+			(query.Environment == "" || record.Environment == query.Environment) &&
+			(query.Status == "" || record.Status == query.Status) &&
+			(query.Action == "" || record.Action == query.Action) {
+			out = append(out, record)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.Before(out[j].LastSeen) })
+	if query.Limit > 0 && len(out) > query.Limit {
+		out = out[len(out)-query.Limit:]
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) Compact(ctx context.Context, req RetentionRequest) (RetentionResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tenant := firstTenant(firstNonEmpty(req.TenantID, TenantFromContext(ctx)))
+	before := req.Before.UTC()
+	result := RetentionResult{}
+	for key, state := range s.chainStates {
+		if firstTenant(state.TenantID) != tenant ||
+			(req.Definition != "" && state.Definition != req.Definition) ||
+			(req.Environment != "" && state.Environment != req.Environment) {
+			continue
+		}
+		if state.ExpiresAt != nil && !state.ExpiresAt.After(before) {
+			delete(s.chainStates, key)
+			result.ChainStates++
+		}
+	}
+	events := s.chainEvents[:0]
+	for _, event := range s.chainEvents {
+		if firstTenant(event.TenantID) == tenant &&
+			(req.Definition == "" || event.Definition == req.Definition) &&
+			(req.Environment == "" || event.Environment == req.Environment) &&
+			!event.CreatedAt.After(before) {
+			result.ChainEvents++
+			continue
+		}
+		events = append(events, event)
+	}
+	s.chainEvents = events
+	for key, record := range s.actions {
+		if firstTenant(record.TenantID) != tenant ||
+			(req.Definition != "" && record.Definition != req.Definition) ||
+			(req.Environment != "" && record.Environment != req.Environment) ||
+			record.CreatedAt.After(before) {
+			continue
+		}
+		if !req.DeleteActiveDeliveries && (record.Status == "retry_scheduled" || record.Status == "pending") {
+			continue
+		}
+		delete(s.actions, key)
+		result.ActionDeliveries++
+	}
+	for key, record := range s.incidents {
+		if firstTenant(record.TenantID) != tenant ||
+			(req.Definition != "" && record.Definition != req.Definition) ||
+			(req.Environment != "" && record.Environment != req.Environment) ||
+			record.LastSeen.After(before) {
+			continue
+		}
+		if !req.DeleteOpenIncidents && record.Status == "open" {
+			continue
+		}
+		delete(s.incidents, key)
+		result.Incidents++
+	}
+	return result, nil
+}
+
+func (s *MemoryStore) Stats(ctx context.Context) (StatsRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tenant := TenantFromContext(ctx)
+	stats := StatsRecord{}
+	for _, record := range s.definitions {
+		if firstTenant(record.TenantID) == tenant {
+			stats.Definitions++
+		}
+	}
+	for _, event := range s.chainEvents {
+		if firstTenant(event.TenantID) == tenant {
+			stats.ChainEvents++
+		}
+	}
+	for _, state := range s.chainStates {
+		if firstTenant(state.TenantID) == tenant {
+			stats.ChainStates++
+		}
+	}
+	for _, action := range s.actions {
+		if firstTenant(action.TenantID) == tenant {
+			stats.ActionDeliveries++
+		}
+	}
+	for _, incident := range s.incidents {
+		if firstTenant(incident.TenantID) == tenant {
+			stats.Incidents++
+		}
+	}
+	return stats, nil
 }

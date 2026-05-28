@@ -1,0 +1,84 @@
+chain "http_request_chain" {
+  entity "request.actor_key"
+  decision "global_endpoint_guard"
+  decision "admin_endpoint_guard"
+  decision "project_endpoint_guard"
+  decision "document_endpoint_guard"
+  decision "tenant_user_endpoint_guard"
+  decision "global_auth_guard"
+  decision "admin_auth_guard"
+  decision "project_auth_guard"
+  decision "document_auth_guard"
+  decision "tenant_user_auth_guard"
+
+  watch "rate_limit_abuse" {
+    event "rate_limit"
+    window "10m"
+    cooldown "2m"
+    metadata { category "abuse" kind "traffic" }
+    step "throttle" { threshold 2 action "rate_limit" severity "high" ttl "5m" status 429 retry_after_seconds 60 }
+    step "rate_limit_block" { threshold 3 action "ban" severity "critical" ttl "30m" status 403 retry_after_seconds 300 }
+  }
+
+  watch "admin_route_abuse" {
+    event "admin_denied"
+    window "30m"
+    decay "1h"
+    cooldown "5m"
+    reset "admin_reviewed"
+    metadata { category "abuse" kind "authorization" }
+    step "warn" { threshold 2 action "warning" severity "medium" ttl "10m" status 200 }
+    step "admin_block" { threshold 3 action "ban" severity "critical" ttl "30m" status 403 retry_after_seconds 300 }
+  }
+
+  watch "authn_failures" {
+    event "auth_required"
+    window "15m"
+    decay "30m"
+    cooldown "2m"
+    reset "successful_login"
+    metadata { category "account_risk" kind "authentication" }
+    step "slow_down" { threshold 2 action "rate_limit" severity "medium" ttl "5m" status 429 retry_after_seconds 30 }
+  }
+
+  watch "repeat_blocks" {
+    event "ban"
+    window "1h"
+    cooldown "15m"
+    metadata { category "account_risk" kind "escalation" }
+    step "suspend_session" { threshold 2 action "suspend" severity "critical" ttl "1h" status 403 retry_after_seconds 900 }
+  }
+}
+
+chain "response_error_chain" {
+  entity "request.actor_key"
+
+  watch "endpoint_5xx_errors" {
+    event "endpoint_5xx"
+    window "10m"
+    cooldown "2m"
+    metadata { category "observability" scope "endpoint" }
+    step "log_endpoint_error" { threshold 1 action "log" severity "medium" ttl "5m" status 200 }
+    step "notify_endpoint_owner" { threshold 3 action "notify" severity "high" ttl "15m" status 200 channel "pager" }
+    step "escalate_endpoint" { threshold 5 action "escalate" severity "critical" ttl "30m" status 200 channel "incident" }
+  }
+
+  watch "app_5xx_errors" {
+    event "app_5xx"
+    window "10m"
+    cooldown "2m"
+    metadata { category "observability" scope "application" }
+    step "log_app_error" { threshold 1 action "log" severity "medium" ttl "5m" status 200 }
+    step "notify_app_owner" { threshold 3 action "notify" severity "high" ttl "15m" status 200 channel "pager" }
+    step "escalate_app" { threshold 5 action "escalate" severity "critical" ttl "30m" status 200 channel "incident" }
+  }
+
+  watch "unexpected_4xx_errors" {
+    event "unexpected_4xx"
+    window "10m"
+    cooldown "2m"
+    metadata { category "observability" scope "client_error" }
+    step "log_unexpected_4xx" { threshold 1 action "log" severity "medium" ttl "5m" status 200 channel "logs" }
+    step "notify_unexpected_4xx" { threshold 5 action "notify" severity "high" ttl "15m" status 200 channel "pager" }
+  }
+}

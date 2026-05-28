@@ -17,6 +17,7 @@ import (
 	authzmw "github.com/oarkflow/authz/middleware"
 	authzstores "github.com/oarkflow/authz/stores"
 	condition "github.com/oarkflow/condition/pkg/condition"
+	"github.com/oarkflow/condition/pkg/routing"
 	"github.com/oarkflow/condition/pkg/storage"
 )
 
@@ -29,6 +30,7 @@ type Server struct {
 	limiter        *rateLimiter
 	trustedProxies []*net.IPNet
 	logf           func(format string, args ...any)
+	routeMatcher   *routing.Matcher
 }
 
 type Option func(*Server)
@@ -95,6 +97,7 @@ func New(service *condition.Service, opts ...Option) *Server {
 	if s.authz == nil {
 		s.authz = DefaultAuthzEngine()
 	}
+	s.routeMatcher = routing.MustCompile(serverRoutesForMatcher(s.routes()))
 	return s
 }
 
@@ -142,9 +145,9 @@ func defaultRoles() []*authz.Role {
 	return []*authz.Role{
 		{ID: "condition-admin", Name: "Condition Admin", Permissions: perms([]string{"GET", "POST", "PUT", "DELETE"}, "route:*")},
 		{ID: "condition-publisher", Name: "Condition Publisher", Permissions: perms([]string{"GET", "POST"}, "route:POST:/v1/definitions", "route:POST:/v1/definitions/validate", "route:GET:/v1/definitions/:name/versions", "route:POST:/v1/definitions/:name/versions/:version/approve", "route:POST:/v1/definitions/:name/versions/:version/activate", "route:POST:/v1/definitions/:name/disable", "route:POST:/v1/definitions/:name/enable", "route:POST:/v1/definitions/:name/rollback", "route:POST:/v1/reload")},
-		{ID: "condition-operator", Name: "Condition Operator", Permissions: perms([]string{"GET", "POST"}, "route:GET:/v1/definitions", "route:GET:/v1/definitions/:name", "route:POST:/v1/definitions/:name/evaluate", "route:POST:/v1/definitions/:name/tests", "route:POST:/v1/definitions/:name/gates", "route:POST:/v1/definitions/:name/workflows/:workflow/start", "route:POST:/v1/workflows/:id/advance", "route:GET:/v1/workflows", "route:GET:/v1/workflows/:id")},
-		{ID: "condition-simulator", Name: "Condition Simulator", Permissions: perms([]string{"POST"}, "route:POST:/v1/definitions/:name/simulate", "route:POST:/v1/definitions/:name/compare", "route:POST:/v1/definitions/:name/canary")},
-		{ID: "condition-auditor", Name: "Condition Auditor", Permissions: perms([]string{"GET", "POST"}, "route:GET:/v1/readiness", "route:GET:/v1/audits", "route:GET:/v1/audits/:id", "route:POST:/v1/audits/verify", "route:GET:/v1/reports", "route:GET:/v1/metrics")},
+		{ID: "condition-operator", Name: "Condition Operator", Permissions: perms([]string{"GET", "POST"}, "route:GET:/v1/definitions", "route:GET:/v1/definitions/:name", "route:POST:/v1/definitions/:name/evaluate", "route:POST:/v1/definitions/:name/chains/:chain/evaluate", "route:POST:/v1/definitions/:name/lifecycles/:lifecycle/evaluate", "route:POST:/v1/definitions/:name/tests", "route:POST:/v1/definitions/:name/gates", "route:POST:/v1/definitions/:name/workflows/:workflow/start", "route:POST:/v1/workflows/:id/advance", "route:GET:/v1/workflows", "route:GET:/v1/workflows/:id")},
+		{ID: "condition-simulator", Name: "Condition Simulator", Permissions: perms([]string{"POST"}, "route:POST:/v1/definitions/:name/simulate", "route:POST:/v1/definitions/:name/compare", "route:POST:/v1/definitions/:name/explain", "route:POST:/v1/definitions/:name/canary")},
+		{ID: "condition-auditor", Name: "Condition Auditor", Permissions: perms([]string{"GET", "POST"}, "route:GET:/v1/readiness", "route:GET:/v1/audits", "route:GET:/v1/audits/:id", "route:POST:/v1/audits/verify", "route:GET:/v1/actions", "route:GET:/v1/incidents", "route:GET:/v1/reports", "route:GET:/v1/metrics")},
 	}
 }
 
@@ -303,6 +306,32 @@ func (s *Server) evaluate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *Server) evaluateChain(w http.ResponseWriter, r *http.Request) {
+	var req condition.ChainEvaluateRequest
+	if !decodeJSON(w, r, s.maxBody, &req) {
+		return
+	}
+	resp, err := s.service.EvaluateChain(r.Context(), r.PathValue("name"), r.PathValue("chain"), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "chain_evaluate_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) evaluateLifecycle(w http.ResponseWriter, r *http.Request) {
+	var req condition.LifecycleEvaluateRequest
+	if !decodeJSON(w, r, s.maxBody, &req) {
+		return
+	}
+	resp, err := s.service.EvaluateLifecycle(r.Context(), r.PathValue("name"), r.PathValue("lifecycle"), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "lifecycle_evaluate_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) test(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Bundle string `json:"bundle,omitempty"`
@@ -354,6 +383,28 @@ func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.service.Compare(r.Context(), r.PathValue("name"), req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "compare_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) explainPackage(w http.ResponseWriter, r *http.Request) {
+	var req condition.PackageExplainRequest
+	if !decodeJSON(w, r, s.maxBody, &req) {
+		return
+	}
+	resp, err := s.service.ExplainPackage(r.Context(), r.PathValue("name"), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "explain_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) routeCoverage(w http.ResponseWriter, r *http.Request) {
+	resp, err := s.service.RouteCoverage(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "route_coverage_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -442,6 +493,57 @@ func (s *Server) verifyAudits(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"verified": true})
 }
 
+func (s *Server) listActions(w http.ResponseWriter, r *http.Request) {
+	query := storage.ActionDeliveryQuery{
+		TenantID:    r.URL.Query().Get("tenant_id"),
+		Definition:  r.URL.Query().Get("definition"),
+		Environment: r.URL.Query().Get("environment"),
+		Action:      r.URL.Query().Get("action"),
+		Status:      r.URL.Query().Get("status"),
+	}
+	if limit, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
+		query.Limit = limit
+	}
+	records, err := s.service.ListActionDeliveries(r.Context(), query)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "actions_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, records)
+}
+
+func (s *Server) listIncidents(w http.ResponseWriter, r *http.Request) {
+	query := storage.IncidentQuery{
+		TenantID:    r.URL.Query().Get("tenant_id"),
+		Definition:  r.URL.Query().Get("definition"),
+		Environment: r.URL.Query().Get("environment"),
+		Status:      r.URL.Query().Get("status"),
+		Action:      r.URL.Query().Get("action"),
+	}
+	if limit, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
+		query.Limit = limit
+	}
+	records, err := s.service.ListIncidents(r.Context(), query)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "incidents_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, records)
+}
+
+func (s *Server) compactState(w http.ResponseWriter, r *http.Request) {
+	var req storage.RetentionRequest
+	if !decodeJSON(w, r, s.maxBody, &req) {
+		return
+	}
+	resp, err := s.service.Compact(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "compaction_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) listReports(w http.ResponseWriter, r *http.Request) {
 	reports, err := s.service.QueryReports(r.Context(), listOptionsFromRequest(r))
 	if err != nil {
@@ -521,10 +623,12 @@ func (s *Server) withSubject(next http.Handler) http.Handler {
 		ctx = condition.WithRequestValue(ctx, "path", r.URL.Path)
 		ctx = condition.WithRequestValue(ctx, "remote_ip", s.remoteIP(r))
 		ctx = condition.WithRequestValue(ctx, "headers", requestHeaders(r.Header))
-		if pattern, params := matchRoutePattern(s.routes(), r.Method, r.URL.Path); pattern != "" {
-			ctx = condition.WithRequestValue(ctx, "route_template", pattern)
-			ctx = condition.WithRequestValue(ctx, "route_pattern", fiberRoutePattern(pattern))
-			ctx = condition.WithRequestValue(ctx, "params", params)
+		if match := s.matchRoute(r.Method, r.URL.Path); match.Matched {
+			ctx = condition.WithRequestValue(ctx, "route_template", match.NormalizedPattern)
+			ctx = condition.WithRequestValue(ctx, "route_pattern", match.FiberPattern)
+			ctx = condition.WithRequestValue(ctx, "route_id", match.ID)
+			ctx = condition.WithRequestValue(ctx, "route_metadata", match.Metadata)
+			ctx = condition.WithRequestValue(ctx, "params", match.Params)
 		}
 		if sessionID := r.Header.Get("X-Session-ID"); sessionID != "" {
 			ctx = condition.WithSessionValue(ctx, "id", sessionID)

@@ -312,6 +312,8 @@ func RichHoverMarkdown(a *Analysis, s LanguageSymbol, src []byte) string {
 			return richStepHover(a, s, src)
 		case "http":
 			return richHTTPHover(a, s, src)
+		case "routes", "route", "lifecycle", "phase", "chain", "watch", "action", "action_catalog", "policy_overlay":
+			return richConditionHover(a, s, src)
 		default:
 			return richGenericBlockHover(a, s, src)
 		}
@@ -632,6 +634,38 @@ func analysisCompletions(a *Analysis) []Completion {
 	for name, s := range a.Types {
 		add(name, "type", s.Detail)
 	}
+	for _, s := range flattenSymbols(a.Symbols) {
+		label := localSymbolName(s)
+		if label == "" || label == s.Detail || strings.Contains(label, ".") {
+			continue
+		}
+		switch s.Detail {
+		case "decision_table":
+			add(label, "decision", "Decision table ID")
+		case "chain":
+			add(label, "chain", "Chain ID")
+		case "watch":
+			add(label, "watch", "Watch ID")
+		case "routes":
+			add(label, "routes", "Route catalog ID")
+		case "route":
+			add(label, "route", "Route ID")
+		case "lifecycle":
+			add(label, "lifecycle", "Lifecycle ID")
+		case "phase":
+			add(label, "phase", "Lifecycle phase ID")
+		case "action":
+			add(label, "action", "Action catalog item")
+		case "action_catalog":
+			add(label, "action_catalog", "Action catalog ID")
+		case "output_contract":
+			add(label, "contract", "Output contract ID")
+		case "policy_package":
+			add(label, "package", "Policy package ID")
+		case "policy_overlay":
+			add(label, "overlay", "Policy overlay ID")
+		}
+	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Label < out[j].Label })
 	return dedupeCompletions(out)
 }
@@ -936,6 +970,19 @@ var keywordHints = []hintInfo{
 	{Name: "test", Signature: `test "name" { input { ... } expect { ... } }`, Description: "Defines an executable BCL test fixture."},
 	{Name: "pipeline", Signature: `pipeline "name" { step "id" { ... } }`, Description: "Defines a workflow graph made of steps and connections."},
 	{Name: "step", Signature: `step "id" { kind task }`, Description: "Defines a workflow state such as task, decision, action, or terminal."},
+	{Name: "chain", Signature: `chain "name" { entity "request.actor_key" decision "access" watch "event" { ... } }`, Description: "Defines stateful policy evaluation across decisions, watched events, and threshold steps."},
+	{Name: "watch", Signature: `watch "name" { event "event_type" window "10m" step "notify" { threshold 3 action "notify" } }`, Description: "Tracks durable events in a window and activates matching steps."},
+	{Name: "routes", Signature: `routes "http" { route "name" { method "GET" pattern "/items/{id}" } }`, Description: "Declares route patterns and metadata for lifecycle evaluation."},
+	{Name: "route", Signature: `route "name" { method "GET" pattern "/items/{id}" metadata { ... } }`, Description: "Declares one route pattern in a route catalog."},
+	{Name: "lifecycle", Signature: `lifecycle "http_request" { phase "pre" { decision "guard" } phase "post" { chain "errors" } }`, Description: "Defines generic pre/post or custom phases that evaluate decisions and chains."},
+	{Name: "phase", Signature: `phase "post" { decision "observe" chain "errors" }`, Description: "Defines an ordered lifecycle phase for decisions and chains."},
+	{Name: "policy_package", Signature: `policy_package "name" { owner "team" domain "security" capabilities ["state"] }`, Description: "Declares package ownership, domain, capabilities, routes, actions, and external requirements."},
+	{Name: "policy_overlay", Signature: `policy_overlay "name" { layer "tenant" tenant "acme" metadata { tier "strict" } }`, Description: "Applies deterministic metadata overrides for global, environment, tenant, endpoint, and route layers."},
+	{Name: "action_catalog", Signature: `action_catalog "default" { action "notify" { sinks ["event"] severity "high" } }`, Description: "Declares allowed action names, sinks, severities, retries, and approval requirements."},
+	{Name: "output_contract", Signature: `output_contract "name" { actions ["allow", "deny"] severities ["low", "high"] }`, Description: "Constrains actions and severities emitted by decisions, chains, and lifecycles."},
+	{Name: "standard_facts", Signature: `standard_facts "http" { fact "request" { schema "http_request" } }`, Description: "Declares typed standard facts such as request, response, principal, route, tenant, resource, risk, and state."},
+	{Name: "response_classifier", Signature: `response_classifier "http" { expected_client_statuses [400, 401, 403] }`, Description: "Classifies lifecycle response facts into healthy, server error, expected client error, or unexpected client error."},
+	{Name: "lifecycle_test", Signature: `lifecycle_test "name" { lifecycle "http_request" phase "post" request { headers { ... } body { ... } } response { status 500 body { ... } } expect { final_action "notify" } }`, Description: "Runs an executable lifecycle request/response scenario during Condition tests, including headers, bodies, and format fields."},
 	{Name: "connection", Signature: `connection "id" { from step.a to step.b }`, Description: "Connects workflow steps with transition metadata."},
 	{Name: "http", Signature: `http "name" { base_url "https://..." }`, Description: "Defines an HTTP integration configuration."},
 	{Name: "connector", Signature: `connector "name" { type http }`, Description: "Defines an external connector surface."},
@@ -956,6 +1003,9 @@ var decisionBlockNames = []string{
 	"decision_schema", "decision_table", "rule_set", "ranking", "dataset", "reason_code_catalog",
 	"decision_bundle", "decision_release", "gate", "test_matrix", "rule_template", "row", "record",
 	"case", "outcome", "obligation", "advice", "event", "approval", "governance",
+	"chain", "watch", "routes", "route", "lifecycle", "phase", "step",
+	"policy_package", "policy_overlay", "action_catalog", "output_contract", "standard_facts",
+	"response_classifier", "lifecycle_test",
 }
 
 var decisionFieldNames = []string{
@@ -964,6 +1014,9 @@ var decisionFieldNames = []string{
 	"attributes", "metadata", "bundle", "bundles", "decision", "decisions", "dataset", "datasets",
 	"tests", "release", "stage", "min_pass_rate", "max_diagnostics", "no_default_only", "required_rules",
 	"approved_by", "approved_at", "approved", "allowed", "matched_rules", "selected_rules",
+	"entity", "entity_key", "routes", "route", "method", "pattern", "window", "threshold", "ttl", "sink", "distinct", "field", "metric", "metrics", "decay", "cooldown", "reset", "headers", "body", "format",
+	"owner", "domain", "capabilities", "actions", "state", "external", "contract", "severity", "severities", "sinks", "retries", "approval", "schema",
+	"healthy_statuses", "unhealthy_statuses", "expected_client_statuses", "healthy_below", "unhealthy_at_or_above",
 }
 
 var patternHelperNames = []string{"match", "case", "MISSING", "NULL", "EXISTS", "ANY"}
@@ -1518,6 +1571,88 @@ func richHTTPHover(a *Analysis, s LanguageSymbol, src []byte) string {
 	b.WriteString("\n")
 	writeHoverCommands(&b)
 	return b.String()
+}
+
+func richConditionHover(a *Analysis, s LanguageSymbol, src []byte) string {
+	assigns := blockChildAssignments(s)
+	var b strings.Builder
+	writeHoverHeader(&b, string(s.Detail), s, src)
+	switch s.Detail {
+	case "route":
+		method := emptyDefault(assigns["method"].Value, "GET")
+		pattern := emptyDefault(assigns["pattern"].Value, "(missing)")
+		normalized, params := conditionRoutePatternInfo(pattern)
+		fmt.Fprintf(&b, "**Route match**\n\n- Method: `%s`\n- Pattern: `%s`\n- Normalized: `%s`\n", method, pattern, normalized)
+		if len(params) > 0 {
+			fmt.Fprintf(&b, "- Params: `%s`\n", strings.Join(params, "`, `"))
+		}
+		b.WriteString("\n")
+	case "routes":
+		b.WriteString("**Route catalog**\n\n")
+		b.WriteString("- Compiled into method-specific route matchers.\n- Specificity favors static segments, then params, wildcards, and catch-alls.\n\n")
+		if children := childBlockSummary(s); children != "" {
+			b.WriteString("**Routes**\n\n")
+			b.WriteString(children)
+			b.WriteString("\n\n")
+		}
+	case "lifecycle":
+		fmt.Fprintf(&b, "**Lifecycle flow**\n\n- Entity key: `%s`\n- Routes catalog: `%s`\n- Evaluates phases in the order requested by the host, commonly `pre` before request handling and `post` after response facts exist.\n\n", emptyDefault(assigns["entity"].Value, emptyDefault(assigns["entity_key"].Value, "(missing)")), emptyDefault(assigns["routes"].Value, "(none)"))
+		if children := childBlockSummary(s); children != "" {
+			b.WriteString("**Phases**\n\n")
+			b.WriteString(children)
+			b.WriteString("\n\n")
+		}
+	case "phase":
+		b.WriteString("**Phase behavior**\n\n- Runs configured decisions first, then chains.\n- `pre` can deny, rate-limit, or emit obligations before a handler runs.\n- `post` can inspect response status, duration, and errors to log, notify, or escalate.\n\n")
+		if children := childBlockSummary(s); children != "" {
+			b.WriteString("**Operations**\n\n")
+			b.WriteString(children)
+			b.WriteString("\n\n")
+		}
+	case "chain":
+		fmt.Fprintf(&b, "**Stateful chain**\n\n- Entity key: `%s`\n- Decisions and watches share durable events and state for this entity.\n\n", emptyDefault(assigns["entity"].Value, emptyDefault(assigns["entity_key"].Value, "(missing)")))
+	case "watch":
+		fmt.Fprintf(&b, "**Watch trigger**\n\n- Event: `%s`\n- Window: `%s`\n- Supports thresholds, distinct counts, metrics, composite events, decay scoring, cooldowns, reset events, and suppression metadata.\n\n", emptyDefault(assigns["event"].Value, emptyDefault(assigns["events"].Value, "(missing)")), emptyDefault(assigns["window"].Value, "(missing)"))
+	case "action", "action_catalog":
+		b.WriteString("**Action contract**\n\n- Actions are always persisted as durable events.\n- External execution is runtime allowlisted by tenant/environment/sink.\n- Delivery records capture status, retries, and dead-letter state.\n\n")
+	case "policy_overlay":
+		fmt.Fprintf(&b, "**Overlay**\n\n- Layer: `%s`\n- Tenant: `%s`\n- Environment: `%s`\n- Route: `%s`\n- Endpoint: `%s`\n- Applied in deterministic order: global, environment, tenant, endpoint, route.\n\n", emptyDefault(assigns["layer"].Value, "global"), emptyDefault(assigns["tenant"].Value, "*"), emptyDefault(assigns["environment"].Value, "*"), emptyDefault(assigns["route"].Value, "*"), emptyDefault(assigns["endpoint"].Value, "*"))
+	}
+	b.WriteString("**Validation**\n\n")
+	writeDiagnosticsOrOK(&b, a, s.Span, "No diagnostics for this Condition block.")
+	b.WriteString("\n")
+	writeHoverCommands(&b)
+	return b.String()
+}
+
+func conditionRoutePatternInfo(pattern string) (string, []string) {
+	pattern = strings.Trim(pattern, `"`)
+	if pattern == "" || pattern == "(missing)" {
+		return pattern, nil
+	}
+	parts := strings.Split(pattern, "/")
+	params := []string(nil)
+	for i, part := range parts {
+		switch {
+		case strings.HasPrefix(part, "{") && strings.HasSuffix(part, "...}"):
+			name := strings.TrimSuffix(strings.TrimPrefix(part, "{"), "...}")
+			params = append(params, name)
+			parts[i] = "*" + name
+		case strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}"):
+			name := strings.TrimSuffix(strings.TrimPrefix(part, "{"), "}")
+			params = append(params, name)
+			parts[i] = ":" + name
+		case strings.HasPrefix(part, ":"):
+			params = append(params, strings.TrimPrefix(part, ":"))
+		case strings.HasPrefix(part, "*") && len(part) > 1:
+			params = append(params, strings.TrimPrefix(part, "*"))
+		}
+	}
+	normalized := strings.Join(parts, "/")
+	if normalized == "" {
+		normalized = "/"
+	}
+	return normalized, params
 }
 
 func richGenericBlockHover(a *Analysis, s LanguageSymbol, src []byte) string {

@@ -33,6 +33,10 @@ func definitionActiveKey(tenant, name, environment string) string {
 	return firstTenant(tenant) + "\x00" + strings.TrimSpace(name) + "\x00" + firstEnv(environment)
 }
 
+func chainStateKey(tenant, chain, watch, entityKey string) string {
+	return firstTenant(tenant) + "\x00" + strings.TrimSpace(chain) + "\x00" + strings.TrimSpace(watch) + "\x00" + strings.TrimSpace(entityKey)
+}
+
 func firstEnv(environment string) string {
 	if strings.TrimSpace(environment) == "" {
 		return "development"

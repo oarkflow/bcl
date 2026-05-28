@@ -393,14 +393,94 @@ CREATE TABLE IF NOT EXISTS condition_workflow_runs (
 	events_json TEXT,
 	created_at TEXT,
 	updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS condition_chain_events (
+	id TEXT PRIMARY KEY,
+	tenant_id TEXT NOT NULL DEFAULT 'default',
+	definition TEXT,
+	version TEXT,
+	environment TEXT,
+	chain TEXT NOT NULL,
+	watch TEXT,
+	entity_key TEXT NOT NULL,
+	event_type TEXT NOT NULL,
+	source_decision TEXT,
+	reason_code TEXT,
+	severity TEXT,
+	attributes_json TEXT,
+	metadata_json TEXT,
+	created_at TEXT NOT NULL,
+	expires_at TEXT
+);
+CREATE TABLE IF NOT EXISTS condition_chain_states (
+	tenant_id TEXT NOT NULL DEFAULT 'default',
+	chain TEXT NOT NULL,
+	watch TEXT NOT NULL,
+	entity_key TEXT NOT NULL,
+	definition TEXT,
+	version TEXT,
+	environment TEXT,
+	counters_json TEXT,
+	step TEXT,
+	action TEXT,
+	severity TEXT,
+	attributes_json TEXT,
+	metadata_json TEXT,
+	updated_at TEXT NOT NULL,
+	expires_at TEXT,
+	PRIMARY KEY(tenant_id, chain, watch, entity_key)
+);
+CREATE TABLE IF NOT EXISTS condition_action_deliveries (
+	id TEXT PRIMARY KEY,
+	tenant_id TEXT NOT NULL DEFAULT 'default',
+	definition TEXT,
+	version TEXT,
+	environment TEXT,
+	lifecycle TEXT,
+	entity_key TEXT,
+	action TEXT NOT NULL,
+	sink TEXT,
+	status TEXT,
+	handled INTEGER,
+	attempts INTEGER,
+	max_attempts INTEGER,
+	next_attempt TEXT,
+	error TEXT,
+	reason_code TEXT,
+	severity TEXT,
+	attributes_json TEXT,
+	metadata_json TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS condition_incidents (
+	id TEXT PRIMARY KEY,
+	tenant_id TEXT NOT NULL DEFAULT 'default',
+	definition TEXT,
+	environment TEXT,
+	group_key TEXT NOT NULL,
+	status TEXT,
+	action TEXT,
+	severity TEXT,
+	reason_code TEXT,
+	count INTEGER,
+	first_seen TEXT,
+	last_seen TEXT,
+	metadata_json TEXT
 );`)
 	if err != nil {
 		return err
 	}
-	for _, table := range []string{"condition_definitions", "condition_reports", "condition_audits", "condition_definition_versions", "condition_active_definitions", "condition_workflow_runs"} {
+	for _, table := range []string{"condition_definitions", "condition_reports", "condition_audits", "condition_definition_versions", "condition_active_definitions", "condition_workflow_runs", "condition_chain_events", "condition_chain_states", "condition_action_deliveries", "condition_incidents"} {
 		if err := s.ensureColumn(ctx, table, "tenant_id", "TEXT NOT NULL DEFAULT 'default'"); err != nil {
 			return err
 		}
+	}
+	if err := s.ensureColumn(ctx, "condition_chain_events", "metadata_json", "TEXT"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "condition_chain_states", "metadata_json", "TEXT"); err != nil {
+		return err
 	}
 	if err := s.ensureTenantPrimaryKeys(ctx); err != nil {
 		return err
@@ -608,6 +688,356 @@ func (s *SQLiteStore) ListWorkflowRuns(ctx context.Context, opts ListOptions) ([
 	return ApplyListOptions(out, opts, nil), rows.Err()
 }
 
+func (s *SQLiteStore) AppendChainEvent(ctx context.Context, event ChainEventRecord) error {
+	event.TenantID = firstTenant(firstNonEmpty(event.TenantID, TenantFromContext(ctx)))
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = nowUTC()
+	}
+	attributes, _ := json.Marshal(event.Attributes)
+	metadata, _ := json.Marshal(event.Metadata)
+	expiresAt := ""
+	if event.ExpiresAt != nil {
+		expiresAt = event.ExpiresAt.Format(time.RFC3339Nano)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO condition_chain_events
+(id, tenant_id, definition, version, environment, chain, watch, entity_key, event_type, source_decision, reason_code, severity, attributes_json, metadata_json, created_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.ID, event.TenantID, event.Definition, event.Version, event.Environment, event.Chain, event.Watch, event.EntityKey, event.EventType, event.SourceDecision, event.ReasonCode, event.Severity, string(attributes), string(metadata), event.CreatedAt.Format(time.RFC3339Nano), expiresAt)
+	return err
+}
+
+func (s *SQLiteStore) QueryChainEvents(ctx context.Context, query ChainEventQuery) ([]ChainEventRecord, error) {
+	sqlQuery := `SELECT id, tenant_id, definition, version, environment, chain, watch, entity_key, event_type, source_decision, reason_code, severity, attributes_json, metadata_json, created_at, expires_at FROM condition_chain_events`
+	var where []string
+	var args []any
+	where = append(where, `tenant_id = ?`)
+	args = append(args, firstTenant(firstNonEmpty(query.TenantID, TenantFromContext(ctx))))
+	if query.Definition != "" {
+		where = append(where, `definition = ?`)
+		args = append(args, query.Definition)
+	}
+	if query.Environment != "" {
+		where = append(where, `environment = ?`)
+		args = append(args, query.Environment)
+	}
+	if query.Chain != "" {
+		where = append(where, `chain = ?`)
+		args = append(args, query.Chain)
+	}
+	if query.Watch != "" {
+		where = append(where, `watch = ?`)
+		args = append(args, query.Watch)
+	}
+	if query.EntityKey != "" {
+		where = append(where, `entity_key = ?`)
+		args = append(args, query.EntityKey)
+	}
+	if query.EventType != "" {
+		where = append(where, `event_type = ?`)
+		args = append(args, query.EventType)
+	}
+	if len(where) > 0 {
+		sqlQuery += ` WHERE ` + strings.Join(where, ` AND `)
+	}
+	sqlQuery += ` ORDER BY created_at`
+	rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	now := nowUTC()
+	var out []ChainEventRecord
+	for rows.Next() {
+		event, err := scanChainEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		if (query.Since != nil && event.CreatedAt.Before(*query.Since)) ||
+			(query.Until != nil && event.CreatedAt.After(*query.Until)) ||
+			(!query.IncludeExpired && event.ExpiresAt != nil && !event.ExpiresAt.After(now)) {
+			continue
+		}
+		out = append(out, event)
+	}
+	if rows.Err() != nil {
+		return nil, rows.Err()
+	}
+	if query.Limit > 0 && len(out) > query.Limit {
+		out = out[len(out)-query.Limit:]
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) GetChainState(ctx context.Context, chain, watch, entityKey string) (ChainStateRecord, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT tenant_id, definition, version, environment, chain, watch, entity_key, counters_json, step, action, severity, attributes_json, metadata_json, updated_at, expires_at
+FROM condition_chain_states WHERE tenant_id = ? AND chain = ? AND watch = ? AND entity_key = ?`, TenantFromContext(ctx), chain, watch, entityKey)
+	state, err := scanChainState(row)
+	if err == sql.ErrNoRows {
+		return ChainStateRecord{}, fmt.Errorf("unknown watch state %q/%q/%q", chain, watch, entityKey)
+	}
+	if err != nil {
+		return ChainStateRecord{}, err
+	}
+	if state.ExpiresAt != nil && !state.ExpiresAt.After(nowUTC()) {
+		return ChainStateRecord{}, fmt.Errorf("unknown watch state %q/%q/%q", chain, watch, entityKey)
+	}
+	return state, nil
+}
+
+func (s *SQLiteStore) UpsertChainState(ctx context.Context, state ChainStateRecord) error {
+	state.TenantID = firstTenant(firstNonEmpty(state.TenantID, TenantFromContext(ctx)))
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = nowUTC()
+	}
+	counters, _ := json.Marshal(state.Counters)
+	attributes, _ := json.Marshal(state.Attributes)
+	metadata, _ := json.Marshal(state.Metadata)
+	expiresAt := ""
+	if state.ExpiresAt != nil {
+		expiresAt = state.ExpiresAt.Format(time.RFC3339Nano)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO condition_chain_states
+(tenant_id, definition, version, environment, chain, watch, entity_key, counters_json, step, action, severity, attributes_json, metadata_json, updated_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(tenant_id, chain, watch, entity_key) DO UPDATE SET definition=excluded.definition, version=excluded.version,
+environment=excluded.environment, counters_json=excluded.counters_json, step=excluded.step, action=excluded.action,
+severity=excluded.severity, attributes_json=excluded.attributes_json, metadata_json=excluded.metadata_json, updated_at=excluded.updated_at, expires_at=excluded.expires_at`,
+		state.TenantID, state.Definition, state.Version, state.Environment, state.Chain, state.Watch, state.EntityKey, string(counters), state.Step, state.Action, state.Severity, string(attributes), string(metadata), state.UpdatedAt.Format(time.RFC3339Nano), expiresAt)
+	return err
+}
+
+func (s *SQLiteStore) DeleteExpiredChainStates(ctx context.Context, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM condition_chain_states WHERE tenant_id = ? AND expires_at != '' AND expires_at <= ?`, TenantFromContext(ctx), now.Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *SQLiteStore) SaveActionDelivery(ctx context.Context, record ActionDeliveryRecord) error {
+	record.TenantID = firstTenant(firstNonEmpty(record.TenantID, TenantFromContext(ctx)))
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = nowUTC()
+	}
+	if record.UpdatedAt.IsZero() {
+		record.UpdatedAt = record.CreatedAt
+	}
+	attributes, _ := json.Marshal(record.Attributes)
+	metadata, _ := json.Marshal(record.Metadata)
+	nextAttempt := ""
+	if record.NextAttempt != nil {
+		nextAttempt = record.NextAttempt.Format(time.RFC3339Nano)
+	}
+	handled := 0
+	if record.Handled {
+		handled = 1
+	}
+	if err := s.ensureColumn(ctx, "condition_action_deliveries", "max_attempts", "INTEGER"); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO condition_action_deliveries
+(id, tenant_id, definition, version, environment, lifecycle, entity_key, action, sink, status, handled, attempts, max_attempts, next_attempt, error, reason_code, severity, attributes_json, metadata_json, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET status=excluded.status, handled=excluded.handled, attempts=excluded.attempts, max_attempts=excluded.max_attempts, next_attempt=excluded.next_attempt, error=excluded.error, updated_at=excluded.updated_at`,
+		record.ID, record.TenantID, record.Definition, record.Version, record.Environment, record.Lifecycle, record.EntityKey, record.Action, record.Sink, record.Status, handled, record.Attempts, record.MaxAttempts, nextAttempt, record.Error, record.ReasonCode, record.Severity, string(attributes), string(metadata), record.CreatedAt.Format(time.RFC3339Nano), record.UpdatedAt.Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *SQLiteStore) ListActionDeliveries(ctx context.Context, query ActionDeliveryQuery) ([]ActionDeliveryRecord, error) {
+	sqlQuery := `SELECT id, tenant_id, definition, version, environment, lifecycle, entity_key, action, sink, status, handled, attempts, max_attempts, next_attempt, error, reason_code, severity, attributes_json, metadata_json, created_at, updated_at FROM condition_action_deliveries`
+	var where []string
+	var args []any
+	where = append(where, "tenant_id = ?")
+	args = append(args, firstTenant(firstNonEmpty(query.TenantID, TenantFromContext(ctx))))
+	if query.Definition != "" {
+		where = append(where, "definition = ?")
+		args = append(args, query.Definition)
+	}
+	if query.Environment != "" {
+		where = append(where, "environment = ?")
+		args = append(args, query.Environment)
+	}
+	if query.Action != "" {
+		where = append(where, "action = ?")
+		args = append(args, query.Action)
+	}
+	if query.Status != "" {
+		where = append(where, "status = ?")
+		args = append(args, query.Status)
+	}
+	sqlQuery += " WHERE " + strings.Join(where, " AND ") + " ORDER BY created_at"
+	rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ActionDeliveryRecord
+	for rows.Next() {
+		record, err := scanActionDelivery(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, record)
+	}
+	if query.Limit > 0 && len(out) > query.Limit {
+		out = out[len(out)-query.Limit:]
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) UpsertIncident(ctx context.Context, record IncidentRecord) error {
+	record.TenantID = firstTenant(firstNonEmpty(record.TenantID, TenantFromContext(ctx)))
+	if record.Status == "" {
+		record.Status = "open"
+	}
+	if record.FirstSeen.IsZero() {
+		record.FirstSeen = nowUTC()
+	}
+	if record.LastSeen.IsZero() {
+		record.LastSeen = record.FirstSeen
+	}
+	if record.Count == 0 {
+		record.Count = 1
+	}
+	metadata, _ := json.Marshal(record.Metadata)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO condition_incidents
+(id, tenant_id, definition, environment, group_key, status, action, severity, reason_code, count, first_seen, last_seen, metadata_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET status=excluded.status, count=excluded.count, last_seen=excluded.last_seen, metadata_json=excluded.metadata_json`,
+		record.ID, record.TenantID, record.Definition, record.Environment, record.GroupKey, record.Status, record.Action, record.Severity, record.ReasonCode, record.Count, record.FirstSeen.Format(time.RFC3339Nano), record.LastSeen.Format(time.RFC3339Nano), string(metadata))
+	return err
+}
+
+func (s *SQLiteStore) ListIncidents(ctx context.Context, query IncidentQuery) ([]IncidentRecord, error) {
+	sqlQuery := `SELECT id, tenant_id, definition, environment, group_key, status, action, severity, reason_code, count, first_seen, last_seen, metadata_json FROM condition_incidents`
+	var where []string
+	var args []any
+	where = append(where, "tenant_id = ?")
+	args = append(args, firstTenant(firstNonEmpty(query.TenantID, TenantFromContext(ctx))))
+	if query.Definition != "" {
+		where = append(where, "definition = ?")
+		args = append(args, query.Definition)
+	}
+	if query.Environment != "" {
+		where = append(where, "environment = ?")
+		args = append(args, query.Environment)
+	}
+	if query.Status != "" {
+		where = append(where, "status = ?")
+		args = append(args, query.Status)
+	}
+	if query.Action != "" {
+		where = append(where, "action = ?")
+		args = append(args, query.Action)
+	}
+	sqlQuery += " WHERE " + strings.Join(where, " AND ") + " ORDER BY last_seen"
+	rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []IncidentRecord
+	for rows.Next() {
+		record, err := scanIncident(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, record)
+	}
+	if query.Limit > 0 && len(out) > query.Limit {
+		out = out[len(out)-query.Limit:]
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) Compact(ctx context.Context, req RetentionRequest) (RetentionResult, error) {
+	tenant := firstTenant(firstNonEmpty(req.TenantID, TenantFromContext(ctx)))
+	before := req.Before.UTC().Format(time.RFC3339Nano)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RetentionResult{}, err
+	}
+	defer tx.Rollback()
+	result := RetentionResult{}
+	var where []string
+	args := []any{tenant}
+	where = append(where, "tenant_id = ?")
+	if req.Definition != "" {
+		where = append(where, "definition = ?")
+		args = append(args, req.Definition)
+	}
+	if req.Environment != "" {
+		where = append(where, "environment = ?")
+		args = append(args, req.Environment)
+	}
+	stateWhere := append(append([]string(nil), where...), "expires_at != ''", "expires_at <= ?")
+	if count, err := sqliteDelete(ctx, tx, "condition_chain_states", stateWhere, append(append([]any(nil), args...), before)); err != nil {
+		return result, err
+	} else {
+		result.ChainStates = count
+	}
+	eventWhere := append(append([]string(nil), where...), "created_at <= ?")
+	if count, err := sqliteDelete(ctx, tx, "condition_chain_events", eventWhere, append(append([]any(nil), args...), before)); err != nil {
+		return result, err
+	} else {
+		result.ChainEvents = count
+	}
+	actionWhere := append(append([]string(nil), where...), "created_at <= ?")
+	actionArgs := append(append([]any(nil), args...), before)
+	if !req.DeleteActiveDeliveries {
+		actionWhere = append(actionWhere, "status NOT IN ('retry_scheduled', 'pending')")
+	}
+	if count, err := sqliteDelete(ctx, tx, "condition_action_deliveries", actionWhere, actionArgs); err != nil {
+		return result, err
+	} else {
+		result.ActionDeliveries = count
+	}
+	incidentWhere := append(append([]string(nil), where...), "last_seen <= ?")
+	incidentArgs := append(append([]any(nil), args...), before)
+	if !req.DeleteOpenIncidents {
+		incidentWhere = append(incidentWhere, "status != 'open'")
+	}
+	if count, err := sqliteDelete(ctx, tx, "condition_incidents", incidentWhere, incidentArgs); err != nil {
+		return result, err
+	} else {
+		result.Incidents = count
+	}
+	if err := tx.Commit(); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func sqliteDelete(ctx context.Context, tx *sql.Tx, table string, where []string, args []any) (int, error) {
+	res, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE "+strings.Join(where, " AND "), args...)
+	if err != nil {
+		return 0, err
+	}
+	count, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(count), nil
+}
+
+func (s *SQLiteStore) Stats(ctx context.Context) (StatsRecord, error) {
+	tenant := TenantFromContext(ctx)
+	stats := StatsRecord{}
+	counts := []struct {
+		table string
+		dst   *int
+	}{
+		{"condition_definitions", &stats.Definitions},
+		{"condition_chain_events", &stats.ChainEvents},
+		{"condition_chain_states", &stats.ChainStates},
+		{"condition_action_deliveries", &stats.ActionDeliveries},
+		{"condition_incidents", &stats.Incidents},
+	}
+	for _, item := range counts {
+		if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+item.table+" WHERE tenant_id = ?", tenant).Scan(item.dst); err != nil {
+			return stats, err
+		}
+	}
+	return stats, nil
+}
+
 type definitionScanner interface {
 	Scan(dest ...any) error
 }
@@ -643,6 +1073,70 @@ func scanWorkflowRun(scanner definitionScanner) (WorkflowRunRecord, error) {
 	run.CreatedAt = parseTime(createdAt)
 	run.UpdatedAt = parseTime(updatedAt)
 	return run, nil
+}
+
+func scanChainEvent(scanner definitionScanner) (ChainEventRecord, error) {
+	var event ChainEventRecord
+	var attributesJSON, metadataJSON, createdAt, expiresAt string
+	if err := scanner.Scan(&event.ID, &event.TenantID, &event.Definition, &event.Version, &event.Environment, &event.Chain, &event.Watch, &event.EntityKey, &event.EventType, &event.SourceDecision, &event.ReasonCode, &event.Severity, &attributesJSON, &metadataJSON, &createdAt, &expiresAt); err != nil {
+		return ChainEventRecord{}, err
+	}
+	_ = json.Unmarshal([]byte(attributesJSON), &event.Attributes)
+	_ = json.Unmarshal([]byte(metadataJSON), &event.Metadata)
+	event.CreatedAt = parseTime(createdAt)
+	if expiresAt != "" {
+		t := parseTime(expiresAt)
+		event.ExpiresAt = &t
+	}
+	return event, nil
+}
+
+func scanChainState(scanner definitionScanner) (ChainStateRecord, error) {
+	var state ChainStateRecord
+	var countersJSON, attributesJSON, metadataJSON, updatedAt, expiresAt string
+	if err := scanner.Scan(&state.TenantID, &state.Definition, &state.Version, &state.Environment, &state.Chain, &state.Watch, &state.EntityKey, &countersJSON, &state.Step, &state.Action, &state.Severity, &attributesJSON, &metadataJSON, &updatedAt, &expiresAt); err != nil {
+		return ChainStateRecord{}, err
+	}
+	_ = json.Unmarshal([]byte(countersJSON), &state.Counters)
+	_ = json.Unmarshal([]byte(attributesJSON), &state.Attributes)
+	_ = json.Unmarshal([]byte(metadataJSON), &state.Metadata)
+	state.UpdatedAt = parseTime(updatedAt)
+	if expiresAt != "" {
+		t := parseTime(expiresAt)
+		state.ExpiresAt = &t
+	}
+	return state, nil
+}
+
+func scanActionDelivery(scanner definitionScanner) (ActionDeliveryRecord, error) {
+	var record ActionDeliveryRecord
+	var handled int
+	var nextAttempt, attributesJSON, metadataJSON, createdAt, updatedAt string
+	if err := scanner.Scan(&record.ID, &record.TenantID, &record.Definition, &record.Version, &record.Environment, &record.Lifecycle, &record.EntityKey, &record.Action, &record.Sink, &record.Status, &handled, &record.Attempts, &record.MaxAttempts, &nextAttempt, &record.Error, &record.ReasonCode, &record.Severity, &attributesJSON, &metadataJSON, &createdAt, &updatedAt); err != nil {
+		return ActionDeliveryRecord{}, err
+	}
+	record.Handled = handled == 1
+	_ = json.Unmarshal([]byte(attributesJSON), &record.Attributes)
+	_ = json.Unmarshal([]byte(metadataJSON), &record.Metadata)
+	record.CreatedAt = parseTime(createdAt)
+	record.UpdatedAt = parseTime(updatedAt)
+	if nextAttempt != "" {
+		t := parseTime(nextAttempt)
+		record.NextAttempt = &t
+	}
+	return record, nil
+}
+
+func scanIncident(scanner definitionScanner) (IncidentRecord, error) {
+	var record IncidentRecord
+	var metadataJSON, firstSeen, lastSeen string
+	if err := scanner.Scan(&record.ID, &record.TenantID, &record.Definition, &record.Environment, &record.GroupKey, &record.Status, &record.Action, &record.Severity, &record.ReasonCode, &record.Count, &firstSeen, &lastSeen, &metadataJSON); err != nil {
+		return IncidentRecord{}, err
+	}
+	_ = json.Unmarshal([]byte(metadataJSON), &record.Metadata)
+	record.FirstSeen = parseTime(firstSeen)
+	record.LastSeen = parseTime(lastSeen)
+	return record, nil
 }
 
 func parseTime(value string) time.Time {

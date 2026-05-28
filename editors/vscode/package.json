@@ -16,7 +16,12 @@
     "onCommand:bcl.showRecentSymbols",
     "onCommand:bcl.validateWorkspace",
     "onCommand:bcl.compileCurrentFile",
-    "onCommand:bcl.explainCurrentFile"
+    "onCommand:bcl.explainCurrentFile",
+    "onCommand:bcl.condition.routeCoverage",
+    "onCommand:bcl.condition.lifecyclePlayground",
+    "onCommand:bcl.condition.compactState",
+    "onCommand:bcl.condition.openRequestLifecycleExample",
+    "onCommand:bcl.condition.openHttpAuthGuardExample"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -72,6 +77,26 @@
       {
         "command": "bcl.explainCurrentFile",
         "title": "BCL: Explain Current File"
+      },
+      {
+        "command": "bcl.condition.routeCoverage",
+        "title": "Condition: Route Coverage"
+      },
+      {
+        "command": "bcl.condition.lifecyclePlayground",
+        "title": "Condition: Lifecycle Playground"
+      },
+      {
+        "command": "bcl.condition.compactState",
+        "title": "Condition: Compact State"
+      },
+      {
+        "command": "bcl.condition.openRequestLifecycleExample",
+        "title": "Condition: Open Request Lifecycle Example"
+      },
+      {
+        "command": "bcl.condition.openHttpAuthGuardExample",
+        "title": "Condition: Open HTTP Auth Guard Example"
       }
     ],
     "configuration": {
@@ -96,6 +121,21 @@
           ],
           "default": "off",
           "description": "Trace communication with the BCL language server."
+        },
+        "bcl.conditionServer.url": {
+          "type": "string",
+          "default": "http://127.0.0.1:8080",
+          "description": "Base URL for a running Condition HTTP server used by lifecycle, coverage, action, incident, and compaction commands."
+        },
+        "bcl.conditionServer.tenant": {
+          "type": "string",
+          "default": "default",
+          "description": "Tenant header used for Condition HTTP API commands."
+        },
+        "bcl.condition.defaultLifecycle": {
+          "type": "string",
+          "default": "http_request",
+          "description": "Default lifecycle ID for Condition lifecycle playground requests."
         }
       }
     }

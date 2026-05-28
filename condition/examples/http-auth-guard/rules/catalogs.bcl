@@ -1,0 +1,164 @@
+policy_package "http_auth_guard" {
+  owner "platform-security"
+  domain "http-authorization"
+  version "1.0.0"
+  capabilities ["routes", "lifecycle", "state", "actions"]
+  routes ["http"]
+  actions ["allow", "public_allow", "maintenance_block", "auth_required", "endpoint_5xx", "app_5xx", "unexpected_4xx", "healthy", "rate_limit", "tenant_user_read_allowed", "tenant_user_write_allowed", "tenant_user_denied", "soft_warning", "project_allowed", "project_denied", "document_allowed", "document_denied", "ban", "warning", "suspend", "log", "notify", "escalate", "admin_allowed", "admin_denied"]
+  state true
+  external false
+}
+
+action_catalog "default" {
+  action "allow" { sink "event" severity "low" }
+  action "public_allow" { sink "event" severity "low" }
+  action "maintenance_block" { sink "event" severity "medium" }
+  action "auth_required" { sink "event" severity "medium" }
+  action "endpoint_5xx" { sink "event" severity "high" }
+  action "app_5xx" { sink "event" severity "high" }
+  action "unexpected_4xx" { sink "event" severity "medium" }
+  action "healthy" { sink "event" severity "low" }
+  action "rate_limit" { sink "event" severity "medium" }
+  action "tenant_user_read_allowed" { sink "event" severity "low" }
+  action "tenant_user_write_allowed" { sink "event" severity "low" }
+  action "tenant_user_denied" { sink "event" severity "high" approval "required" }
+  action "soft_warning" { sink "event" severity "medium" }
+  action "project_allowed" { sink "event" severity "low" }
+  action "project_denied" { sink "event" severity "high" approval "required" }
+  action "document_allowed" { sink "event" severity "low" }
+  action "document_denied" { sink "event" severity "high" approval "required" }
+  action "ban" { sink "event" severity "critical" approval "required" retries 1 }
+  action "warning" { sink "event" severity "medium" }
+  action "suspend" { sink "event" severity "critical" approval "required" retries 1 }
+  action "log" { sink "log" severity "medium" retries 1 }
+  action "notify" { sinks ["event", "webhook"] severity "high" approval "required" retries 3 }
+  action "escalate" { sink "event" severity "critical" approval "required" retries 3 }
+  action "admin_allowed" { sink "event" severity "low" }
+  action "admin_denied" { sink "event" severity "high" approval "required" }
+}
+
+output_contract "http_guard_actions" {
+  actions ["allow", "public_allow", "maintenance_block", "auth_required", "endpoint_5xx", "app_5xx", "unexpected_4xx", "healthy", "rate_limit", "tenant_user_read_allowed", "tenant_user_write_allowed", "tenant_user_denied", "soft_warning", "project_allowed", "project_denied", "document_allowed", "document_denied", "ban", "warning", "suspend", "log", "notify", "escalate", "admin_allowed", "admin_denied"]
+  severities ["low", "medium", "high", "critical"]
+}
+
+standard_facts "http" {
+  fact "request" { schema "http_request" }
+  fact "response" { schema "http_response" }
+  fact "principal" { schema "principal" }
+  fact "route" { schema "route_fact" }
+  fact "tenant" { schema "tenant_fact" }
+  fact "resource" { schema "resource_fact" }
+  fact "risk" { schema "risk_fact" }
+  fact "state" { schema "state_fact" }
+}
+
+policy_overlay "example_environment" {
+  layer "environment"
+  environment "example"
+  metadata { lifecycle_profile "http_request" owner "platform-security" }
+}
+
+policy_overlay "admin_route_owner" {
+  layer "route"
+  route "admin"
+  metadata { owner "admin-platform" escalation_path "security-oncall" }
+}
+
+policy_overlay "tenant_user_route_owner" {
+  layer "route"
+  route "tenant_user_api"
+  metadata { owner "iam-platform" escalation_path "iam-oncall" }
+}
+
+reason_code_catalog "http_auth_guard" {
+  code "GLOBAL_MAINTENANCE" { description "Global middleware blocks unsafe writes during maintenance" }
+  code "AUTH_REQUIRED" { description "Request has no authenticated principal" }
+  code "RBAC_ADMIN" { description "Wildcard admin endpoint is allowed by role policy" }
+  code "ABAC_PROJECT" { description "Dynamic project endpoint is allowed by tenant, department, and device attributes" }
+  code "ACL_DOCUMENT" { description "Dynamic document endpoint is allowed by an explicit ACL grant" }
+  code "API_TENANT_READ" { description "Tenant-scoped API read endpoint is allowed" }
+  code "API_TENANT_WRITE" { description "Tenant-scoped API write endpoint is allowed for admins" }
+  code "PUBLIC_ALLOW" { description "Public endpoint is allowed without authentication" }
+  code "POLICY_DENY" { description "Request did not satisfy the endpoint policy" }
+}
+
+reason_code_catalog "api_endpoint_guard" {
+  code "API_GUARD_BAN" { description "Endpoint is temporarily banned before authorization" }
+  code "API_GUARD_RATE_LIMIT" { description "Endpoint request rate exceeds limits" }
+  code "API_GUARD_SOFT_WARNING" { description "Endpoint traffic is suspicious but still allowed with warning" }
+  code "API_GUARD_ALLOW" { description "Endpoint request is within guard thresholds" }
+}
+
+reason_code_catalog "response_observability" {
+  code "ENDPOINT_5XX" { description "A specific endpoint is returning 5xx responses" }
+  code "APP_5XX" { description "The application is returning 5xx responses" }
+  code "UNEXPECTED_4XX" { description "The response returned an unexpected 4xx status" }
+  code "RESPONSE_HEALTHY" { description "The response completed without server error" }
+}
+
+decision_schema "global_endpoint_guard" {
+  effects [allow, deny, require_review]
+  default allow
+  strategy first_match
+}
+
+decision_schema "admin_endpoint_guard" {
+  effects [allow, deny, require_review]
+  default allow
+  strategy first_match
+}
+
+decision_schema "project_endpoint_guard" {
+  effects [allow, deny, require_review]
+  default allow
+  strategy first_match
+}
+
+decision_schema "document_endpoint_guard" {
+  effects [allow, deny, require_review]
+  default allow
+  strategy first_match
+}
+
+decision_schema "tenant_user_endpoint_guard" {
+  effects [allow, deny, require_review]
+  default allow
+  strategy first_match
+}
+
+decision_schema "global_auth_guard" {
+  effects [allow, deny, require_review]
+  default allow
+  strategy first_match
+}
+
+decision_schema "admin_auth_guard" {
+  effects [allow, deny, require_review]
+  default allow
+  strategy first_match
+}
+
+decision_schema "project_auth_guard" {
+  effects [allow, deny, require_review]
+  default allow
+  strategy first_match
+}
+
+decision_schema "document_auth_guard" {
+  effects [allow, deny, require_review]
+  default allow
+  strategy first_match
+}
+
+decision_schema "tenant_user_auth_guard" {
+  effects [allow, deny, require_review]
+  default allow
+  strategy first_match
+}
+
+decision_schema "response_observability" {
+  effects [allow, deny, require_review]
+  default allow
+  strategy first_match
+}

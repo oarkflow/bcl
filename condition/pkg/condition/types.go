@@ -1,33 +1,51 @@
 package condition
 
 import (
+	"context"
 	"time"
 
 	"github.com/oarkflow/bcl"
 	"github.com/oarkflow/condition/pkg/audit"
+	"github.com/oarkflow/condition/pkg/routing"
 	"github.com/oarkflow/condition/pkg/storage"
 )
 
 type Config struct {
-	Environment               string        `json:"environment,omitempty"`
-	DefaultTenant             string        `json:"default_tenant,omitempty"`
-	RequestTimeout            time.Duration `json:"request_timeout,omitempty"`
-	MaxRequestBytes           int64         `json:"max_request_bytes,omitempty"`
-	StrictValidation          bool          `json:"strict_validation,omitempty"`
-	StrictEvaluation          bool          `json:"strict_evaluation,omitempty"`
-	RequireActivationApproval bool          `json:"require_activation_approval,omitempty"`
-	RequireTests              bool          `json:"require_tests,omitempty"`
-	Runtime                   RuntimePolicy `json:"runtime,omitempty"`
+	Environment               string                   `json:"environment,omitempty"`
+	DefaultTenant             string                   `json:"default_tenant,omitempty"`
+	RequestTimeout            time.Duration            `json:"request_timeout,omitempty"`
+	MaxRequestBytes           int64                    `json:"max_request_bytes,omitempty"`
+	StrictValidation          bool                     `json:"strict_validation,omitempty"`
+	StrictEvaluation          bool                     `json:"strict_evaluation,omitempty"`
+	RequireActivationApproval bool                     `json:"require_activation_approval,omitempty"`
+	RequireTests              bool                     `json:"require_tests,omitempty"`
+	Runtime                   RuntimePolicy            `json:"runtime,omitempty"`
+	Routes                    []routing.Route          `json:"routes,omitempty"`
+	ActionHandlers            map[string]ActionHandler `json:"-"`
+	Clock                     func() time.Time         `json:"-"`
 }
 
 type RuntimePolicy struct {
-	AllowTime              bool          `json:"allow_time,omitempty"`
-	FixedTime              string        `json:"fixed_time,omitempty"`
-	AllowEnv               bool          `json:"allow_env,omitempty"`
-	AllowedDatasetAdapters []string      `json:"allowed_dataset_adapters,omitempty"`
-	AllowedHTTPHosts       []string      `json:"allowed_http_hosts,omitempty"`
-	AllowedHTTPMethods     []string      `json:"allowed_http_methods,omitempty"`
-	ExternalTimeout        time.Duration `json:"external_timeout,omitempty"`
+	AllowTime              bool              `json:"allow_time,omitempty"`
+	FixedTime              string            `json:"fixed_time,omitempty"`
+	AllowEnv               bool              `json:"allow_env,omitempty"`
+	AllowedDatasetAdapters []string          `json:"allowed_dataset_adapters,omitempty"`
+	AllowedHTTPHosts       []string          `json:"allowed_http_hosts,omitempty"`
+	AllowedHTTPMethods     []string          `json:"allowed_http_methods,omitempty"`
+	AllowedActionSinks     []string          `json:"allowed_action_sinks,omitempty"`
+	AllowedWebhookHosts    []string          `json:"allowed_webhook_hosts,omitempty"`
+	AllowedWebhookMethods  []string          `json:"allowed_webhook_methods,omitempty"`
+	ActionAllowlists       []ActionAllowlist `json:"action_allowlists,omitempty"`
+	WebhookTimeout         time.Duration     `json:"webhook_timeout,omitempty"`
+	ExternalTimeout        time.Duration     `json:"external_timeout,omitempty"`
+	MaxStateRecords        int               `json:"max_state_records,omitempty"`
+}
+
+type ActionAllowlist struct {
+	TenantID    string   `json:"tenant_id,omitempty"`
+	Environment string   `json:"environment,omitempty"`
+	Actions     []string `json:"actions,omitempty"`
+	Sinks       []string `json:"sinks,omitempty"`
 }
 
 type PublishRequest struct {
@@ -74,12 +92,265 @@ type EvaluateResponse struct {
 	Audit    audit.Envelope              `json:"audit"`
 }
 
+type ChainEvaluateRequest struct {
+	TenantID  string         `json:"tenant_id,omitempty"`
+	Input     map[string]any `json:"input,omitempty"`
+	Event     string         `json:"event,omitempty"`
+	EntityKey string         `json:"entity_key,omitempty"`
+	Strict    bool           `json:"strict,omitempty"`
+}
+
+type ChainEvaluateResponse struct {
+	Evaluation ChainEvaluation `json:"evaluation"`
+	Audit      audit.Envelope  `json:"audit"`
+}
+
+type ChainEvaluation struct {
+	Chain         string                     `json:"chain"`
+	EntityKey     string                     `json:"entity_key"`
+	Decisions     []ChainDecisionResult      `json:"decisions,omitempty"`
+	StateBefore   []storage.ChainStateRecord `json:"state_before,omitempty"`
+	StateAfter    []storage.ChainStateRecord `json:"state_after,omitempty"`
+	Events        []storage.ChainEventRecord `json:"events,omitempty"`
+	FinalAction   string                     `json:"final_action,omitempty"`
+	FinalEffect   string                     `json:"final_effect,omitempty"`
+	FinalReason   string                     `json:"final_reason,omitempty"`
+	FinalSeverity string                     `json:"final_severity,omitempty"`
+	FinalDecision *bcl.DecisionResult        `json:"final_decision,omitempty"`
+	Diagnostics   []bcl.Diagnostic           `json:"diagnostics,omitempty"`
+}
+
+type ChainDecisionResult struct {
+	Decision string                      `json:"decision"`
+	Report   *bcl.DecisionPlatformReport `json:"report,omitempty"`
+}
+
+type LifecycleEvaluateRequest struct {
+	TenantID  string         `json:"tenant_id,omitempty"`
+	Phase     string         `json:"phase"`
+	Method    string         `json:"method,omitempty"`
+	Path      string         `json:"path,omitempty"`
+	Request   map[string]any `json:"request,omitempty"`
+	Input     map[string]any `json:"input,omitempty"`
+	Response  map[string]any `json:"response,omitempty"`
+	Event     string         `json:"event,omitempty"`
+	EntityKey string         `json:"entity_key,omitempty"`
+	Strict    bool           `json:"strict,omitempty"`
+	DryRun    bool           `json:"dry_run,omitempty"`
+}
+
+type LifecycleEvaluateResponse struct {
+	Evaluation LifecycleEvaluation `json:"evaluation"`
+	Audit      audit.Envelope      `json:"audit"`
+}
+
+type LifecycleEvaluation struct {
+	Lifecycle   string                `json:"lifecycle"`
+	Phase       string                `json:"phase"`
+	TraceID     string                `json:"trace_id,omitempty"`
+	AuditID     string                `json:"audit_id,omitempty"`
+	EntityKey   string                `json:"entity_key,omitempty"`
+	Route       routing.Match         `json:"route,omitempty"`
+	Decisions   []ChainDecisionResult `json:"decisions,omitempty"`
+	Chains      []ChainEvaluation     `json:"chains,omitempty"`
+	Actions     []LifecycleAction     `json:"actions,omitempty"`
+	FinalAction string                `json:"final_action,omitempty"`
+	FinalEffect string                `json:"final_effect,omitempty"`
+	FinalReason string                `json:"final_reason,omitempty"`
+	Diagnostics []bcl.Diagnostic      `json:"diagnostics,omitempty"`
+}
+
+type LifecycleAction struct {
+	Name       string         `json:"name"`
+	Sink       string         `json:"sink,omitempty"`
+	Handled    bool           `json:"handled,omitempty"`
+	DeliveryID string         `json:"delivery_id,omitempty"`
+	IncidentID string         `json:"incident_id,omitempty"`
+	Result     *ActionResult  `json:"result,omitempty"`
+	ReasonCode string         `json:"reason_code,omitempty"`
+	Severity   string         `json:"severity,omitempty"`
+	Attributes map[string]any `json:"attributes,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+}
+
+type ActionHandler func(context.Context, LifecycleAction) (ActionResult, error)
+
+type ActionResult struct {
+	Handled  bool           `json:"handled"`
+	Status   string         `json:"status,omitempty"`
+	Error    string         `json:"error,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+type LifecycleDefinition struct {
+	ID            string                     `json:"id"`
+	EntityKeyPath string                     `json:"entity_key_path,omitempty"`
+	Routes        string                     `json:"routes,omitempty"`
+	Phases        []LifecyclePhaseDefinition `json:"phases,omitempty"`
+}
+
+type LifecyclePhaseDefinition struct {
+	ID        string   `json:"id"`
+	Decisions []string `json:"decisions,omitempty"`
+	Chains    []string `json:"chains,omitempty"`
+}
+
+type ChainDefinition struct {
+	ID            string                 `json:"id"`
+	EntityKeyPath string                 `json:"entity_key_path,omitempty"`
+	Decisions     []string               `json:"decisions,omitempty"`
+	Watches       []ChainWatchDefinition `json:"watches,omitempty"`
+}
+
+type ChainWatchDefinition struct {
+	ID       string         `json:"id"`
+	Event    string         `json:"event"`
+	Events   []string       `json:"events,omitempty"`
+	Window   string         `json:"window,omitempty"`
+	Distinct string         `json:"distinct,omitempty"`
+	Field    string         `json:"field,omitempty"`
+	Metrics  []string       `json:"metrics,omitempty"`
+	Suppress bool           `json:"suppress,omitempty"`
+	Decay    string         `json:"decay,omitempty"`
+	Cooldown string         `json:"cooldown,omitempty"`
+	Reset    string         `json:"reset,omitempty"`
+	Steps    []ChainStep    `json:"steps,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+type ChainStep struct {
+	ID         string         `json:"id"`
+	Threshold  int            `json:"threshold"`
+	Action     string         `json:"action"`
+	Severity   string         `json:"severity,omitempty"`
+	TTL        string         `json:"ttl,omitempty"`
+	Attributes map[string]any `json:"attributes,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+}
+
+type PolicyPackageManifest struct {
+	ID           string         `json:"id"`
+	Owner        string         `json:"owner,omitempty"`
+	Domain       string         `json:"domain,omitempty"`
+	Version      string         `json:"version,omitempty"`
+	Capabilities []string       `json:"capabilities,omitempty"`
+	Routes       []string       `json:"routes,omitempty"`
+	Actions      []string       `json:"actions,omitempty"`
+	State        bool           `json:"state,omitempty"`
+	External     bool           `json:"external,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+}
+
+type ActionCatalogDefinition struct {
+	ID      string             `json:"id"`
+	Actions []ActionDefinition `json:"actions,omitempty"`
+}
+
+type ActionDefinition struct {
+	ID       string         `json:"id"`
+	Sinks    []string       `json:"sinks,omitempty"`
+	Severity string         `json:"severity,omitempty"`
+	Retries  int            `json:"retries,omitempty"`
+	Approval string         `json:"approval,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+type OutputContractDefinition struct {
+	ID         string   `json:"id"`
+	Actions    []string `json:"actions,omitempty"`
+	Severities []string `json:"severities,omitempty"`
+}
+
+type StandardFactContract struct {
+	ID       string            `json:"id"`
+	Facts    map[string]string `json:"facts,omitempty"`
+	Metadata map[string]any    `json:"metadata,omitempty"`
+}
+
+type PolicyOverlayDefinition struct {
+	ID          string         `json:"id"`
+	Layer       string         `json:"layer"`
+	TenantID    string         `json:"tenant_id,omitempty"`
+	Environment string         `json:"environment,omitempty"`
+	RouteID     string         `json:"route_id,omitempty"`
+	Endpoint    string         `json:"endpoint,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+}
+
+type ResponseClassifierDefinition struct {
+	ID                     string `json:"id"`
+	HealthyStatuses        []int  `json:"healthy_statuses,omitempty"`
+	UnhealthyStatuses      []int  `json:"unhealthy_statuses,omitempty"`
+	ExpectedClientStatuses []int  `json:"expected_client_statuses,omitempty"`
+	HealthyBelow           int    `json:"healthy_below,omitempty"`
+	UnhealthyAtOrAbove     int    `json:"unhealthy_at_or_above,omitempty"`
+}
+
+type PackageExplainRequest struct {
+	TenantID         string `json:"tenant_id,omitempty"`
+	CandidateSource  string `json:"candidate_source,omitempty"`
+	CandidatePath    string `json:"candidate_path,omitempty"`
+	CandidateBaseDir string `json:"candidate_base_dir,omitempty"`
+}
+
+type PackageExplainResponse struct {
+	Report PackageExplainReport `json:"report"`
+	Audit  audit.Envelope       `json:"audit"`
+}
+
+type PackageExplainReport struct {
+	Definition  string              `json:"definition"`
+	BaseVersion string              `json:"base_version,omitempty"`
+	Summary     []string            `json:"summary,omitempty"`
+	Decisions   PackageDiff[string] `json:"decisions"`
+	Chains      PackageDiff[string] `json:"chains"`
+	Routes      PackageDiff[string] `json:"routes"`
+	Lifecycles  PackageDiff[string] `json:"lifecycles"`
+	Actions     PackageDiff[string] `json:"actions"`
+	Diagnostics []bcl.Diagnostic    `json:"diagnostics,omitempty"`
+}
+
+type PackageDiff[T comparable] struct {
+	Added   []T `json:"added,omitempty"`
+	Removed []T `json:"removed,omitempty"`
+	Common  []T `json:"common,omitempty"`
+}
+
+type RouteCoverageReport struct {
+	Definition string              `json:"definition"`
+	Passed     bool                `json:"passed"`
+	Routes     []RouteCoverageItem `json:"routes,omitempty"`
+	Uncovered  []string            `json:"uncovered,omitempty"`
+	Audit      audit.Envelope      `json:"audit,omitempty"`
+}
+
+type RouteCoverageItem struct {
+	Catalog    string   `json:"catalog"`
+	RouteID    string   `json:"route_id"`
+	Method     string   `json:"method,omitempty"`
+	Pattern    string   `json:"pattern,omitempty"`
+	Covered    bool     `json:"covered"`
+	Lifecycles []string `json:"lifecycles,omitempty"`
+	Phases     []string `json:"phases,omitempty"`
+}
+
 type TestReport struct {
-	Passed      bool                         `json:"passed"`
-	Scenarios   []bcl.DecisionScenarioResult `json:"scenarios,omitempty"`
-	Gates       *bcl.DecisionGateReport      `json:"gates,omitempty"`
-	Diagnostics []bcl.Diagnostic             `json:"diagnostics,omitempty"`
-	Audit       *audit.Envelope              `json:"audit,omitempty"`
+	Passed             bool                         `json:"passed"`
+	Scenarios          []bcl.DecisionScenarioResult `json:"scenarios,omitempty"`
+	LifecycleScenarios []LifecycleScenarioResult    `json:"lifecycle_scenarios,omitempty"`
+	Gates              *bcl.DecisionGateReport      `json:"gates,omitempty"`
+	Diagnostics        []bcl.Diagnostic             `json:"diagnostics,omitempty"`
+	Audit              *audit.Envelope              `json:"audit,omitempty"`
+}
+
+type LifecycleScenarioResult struct {
+	Name        string           `json:"name"`
+	Lifecycle   string           `json:"lifecycle"`
+	Phase       string           `json:"phase"`
+	Passed      bool             `json:"passed"`
+	Expected    map[string]any   `json:"expected,omitempty"`
+	Actual      map[string]any   `json:"actual,omitempty"`
+	Diagnostics []bcl.Diagnostic `json:"diagnostics,omitempty"`
 }
 
 type ValidationRequest struct {
@@ -133,6 +404,7 @@ type ProductionReadinessReport struct {
 	Ready       bool            `json:"ready"`
 	Environment string          `json:"environment,omitempty"`
 	Checks      map[string]bool `json:"checks,omitempty"`
+	Counts      map[string]int  `json:"counts,omitempty"`
 	Missing     []string        `json:"missing,omitempty"`
 }
 
