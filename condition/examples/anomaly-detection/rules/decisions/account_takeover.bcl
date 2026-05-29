@@ -9,16 +9,16 @@ decision_table "account_takeover_detection" {
       all {
         route.id == "account_update_profile"
         any {
-          request.account.email_changed == true
-          request.account.phone_changed == true
-          request.account.password_changed == true
-          request.account.recovery_changed == true
-          request.account.mfa_disabled == true
+          session.account.email_changed == true
+          session.account.phone_changed == true
+          session.account.password_changed == true
+          session.account.recovery_changed == true
+          session.account.mfa_disabled == true
         }
         any {
-          request.device.trusted == false
-          request.device.changed == true
-          request.network.ip_reputation >= 70
+          context.device.trusted == false
+          context.device.changed == true
+          context.network.ip_reputation >= 70
         }
       }
     }
@@ -45,9 +45,9 @@ decision_table "account_takeover_detection" {
     when {
       all {
         route.id == "account_update_profile"
-        request.account.profile_country != ""
-        request.geo.country != ""
-        request.account.profile_country != request.geo.country
+        session.account.profile_country != ""
+        context.geo.country != ""
+        session.account.profile_country != context.geo.country
       }
     }
     then {

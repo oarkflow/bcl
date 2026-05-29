@@ -29,6 +29,24 @@ lifecycle_test "trusted session is healthy" {
   path "/session/continue"
   input {
     request.actor_key "alice"
+    session {
+      risk {
+        impossible_travel false
+        mfa_bypass_attempt false
+      }
+      token {
+        reuse_detected false
+      }
+    }
+    context {
+      device {
+        trusted true
+      }
+      network {
+        asn_changed false
+        ip_reputation 10
+      }
+    }
   }
   request {
     headers {
@@ -36,18 +54,6 @@ lifecycle_test "trusted session is healthy" {
     }
     body {
       actor "alice"
-    }
-    session {
-      impossible_travel false
-      token_reuse false
-      mfa_bypass_attempt false
-    }
-    device {
-      trusted true
-    }
-    network {
-      asn_changed false
-      ip_reputation 10
     }
     format "json"
   }
@@ -71,20 +77,14 @@ lifecycle_test "impossible travel triggers step up" {
   path "/session/continue"
   input {
     request.actor_key "alice"
+    session.risk.impossible_travel true
+    session.token.reuse_detected false
+    session.risk.mfa_bypass_attempt false
+    context.device.trusted true
+    context.network.asn_changed false
+    context.network.ip_reputation 15
   }
   request {
-    session {
-      impossible_travel true
-      token_reuse false
-      mfa_bypass_attempt false
-    }
-    network {
-      asn_changed false
-      ip_reputation 15
-    }
-    device {
-      trusted true
-    }
     format "json"
   }
   response {
@@ -107,21 +107,15 @@ lifecycle_test "device change triggers step up" {
   path "/session/continue"
   input {
     request.actor_key "alice-device"
+    session.risk.impossible_travel false
+    session.token.reuse_detected false
+    session.risk.mfa_bypass_attempt false
+    context.device.trusted true
+    context.device.changed true
+    context.network.asn_changed false
+    context.network.ip_reputation 10
   }
   request {
-    session {
-      impossible_travel false
-      token_reuse false
-      mfa_bypass_attempt false
-    }
-    network {
-      asn_changed false
-      ip_reputation 10
-    }
-    device {
-      trusted true
-      changed true
-    }
     format "json"
   }
   response {
@@ -144,18 +138,12 @@ lifecycle_test "account mfa disable from new device triggers step up" {
   path "/accounts/update-profile"
   input {
     request.actor_key "acct-1"
+    session.account.mfa_disabled true
+    context.device.trusted false
+    context.device.changed true
+    context.network.ip_reputation 75
   }
   request {
-    account {
-      mfa_disabled true
-    }
-    device {
-      trusted false
-      changed true
-    }
-    network {
-      ip_reputation 75
-    }
     format "json"
   }
   response {
@@ -179,6 +167,7 @@ lifecycle_test "registration request is observed" {
   input {
     request.actor_key "reg-1"
     request.application_key "anomaly-detection-demo"
+    context.network.ip "198.51.100.7"
   }
   request {
     actor {
@@ -186,9 +175,6 @@ lifecycle_test "registration request is observed" {
     }
     account {
       email_domain "example.com"
-    }
-    network {
-      ip "198.51.100.7"
     }
     format "json"
   }

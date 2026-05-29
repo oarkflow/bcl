@@ -134,7 +134,7 @@ func lifecycleObjectMap(v any) map[string]any {
 	for _, item := range blockList(v) {
 		name := stringAny(item["name"])
 		if name != "" {
-			out[name] = literalValue(item["value"])
+			setPathValue(out, name, literalValue(item["value"]))
 			continue
 		}
 		typ := stringAny(item["type"])
@@ -145,7 +145,7 @@ func lifecycleObjectMap(v any) map[string]any {
 		if id := strings.TrimSpace(stringAny(item["id"])); id != "" {
 			child["id"] = id
 		}
-		out[typ] = child
+		setPathValue(out, typ, child)
 	}
 	if len(out) > 0 {
 		return out

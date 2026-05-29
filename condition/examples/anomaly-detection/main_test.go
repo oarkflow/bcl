@@ -20,20 +20,33 @@ func TestAnomalySessionHijackingProgressesAndPreBlocks(t *testing.T) {
 	}
 	app := newApp(runtime)
 
-	resp, _ := doTestRequest(t, app, mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"},"session":{"impossible_travel":true},"device":{"trusted":true},"network":{"ip_reputation":10}}`, nil))
+	resp, _ := doTestRequest(t, app, mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"}}`, nil))
 	assertAnomalyEnforcement(t, resp, http.StatusUnauthorized, "step_up", "identity_session/step_up", "300")
 
 	now = now.Add(60 * time.Second)
-	resp, _ = doTestRequest(t, app, mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"},"session":{"impossible_travel":false},"device":{"trusted":true},"network":{"ip_reputation":10}}`, nil))
+	resp, _ = doTestRequest(t, app, mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"}}`, nil))
 	assertAnomalyEnforcement(t, resp, http.StatusUnauthorized, "step_up", "identity_session/step_up", "240")
 
 	now = now.Add(5*time.Minute + time.Second)
-	resp, _ = doTestRequest(t, app, mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"},"session":{"token_reuse":true},"device":{"trusted":true},"network":{"ip_reputation":10}}`, nil))
+	resp, _ = doTestRequest(t, app, mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"}}`, nil))
 	assertAnomalyEnforcement(t, resp, http.StatusUnauthorized, "step_up", "identity_session/step_up", "300")
 
 	now = now.Add(5*time.Minute + time.Second)
-	resp, _ = doTestRequest(t, app, mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"},"session":{"mfa_bypass_attempt":true},"device":{"trusted":true},"network":{"ip_reputation":10}}`, nil))
+	resp, _ = doTestRequest(t, app, mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"}}`, nil))
 	assertAnomalyEnforcement(t, resp, http.StatusUnauthorized, "terminate_session", "identity_session/terminate_session", "1800")
+}
+
+func TestAnomalySessionRiskIgnoresRequestBodySecurityClaims(t *testing.T) {
+	runtime, err := newRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := newApp(runtime)
+
+	resp, _ := doTestRequest(t, app, mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"body-only"},"session":{"impossible_travel":true,"token_reuse":true,"mfa_bypass_attempt":true},"device":{"changed":true,"trusted":false},"network":{"asn_changed":true,"ip_reputation":99}}`, nil))
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Condition-Action") != "healthy" {
+		t.Fatalf("body-owned session risk should not trigger: status=%d action=%q", resp.StatusCode, resp.Header.Get("X-Condition-Action"))
+	}
 }
 
 func TestAnomalyGeoCommerceBusinessDataAndAPI(t *testing.T) {
@@ -105,7 +118,7 @@ func TestAnomalySecondWaveDomains(t *testing.T) {
 	}
 	app := newApp(runtime)
 
-	account, _ := doTestRequest(t, app, mustRequest(http.MethodPost, "/accounts/update-profile", "application/json", `{"actor":{"id":"acct-1"},"account":{"mfa_disabled":true},"device":{"changed":true,"trusted":false},"network":{"ip_reputation":75}}`, nil))
+	account, _ := doTestRequest(t, app, mustRequest(http.MethodPost, "/accounts/update-profile", "application/json", `{"actor":{"id":"acct-1"},"account":{"mfa_disabled":false}}`, nil))
 	assertAnomalyEnforcement(t, account, http.StatusUnauthorized, "step_up", "account_takeover/step_up_account", "600")
 
 	now = now.Add(10*time.Minute + time.Second)
@@ -132,7 +145,7 @@ func TestAnomalySecondWaveDomains(t *testing.T) {
 	compliance, _ := doTestRequest(t, app, mustRequest(http.MethodPost, "/compliance/screen", "application/json", `{"actor":{"id":"screening-1"},"compliance":{"sanctions_hit":true,"pep_hit":true}}`, nil))
 	assertAnomalyEnforcement(t, compliance, http.StatusUnavailableForLegalReasons, "hold", "compliance_risk/hold_compliance", "3600")
 
-	blockedByPre, _ := doTestRequest(t, app, mustRequest(http.MethodPost, "/accounts/update-profile", "application/json", `{"actor":{"id":"acct-1"},"account":{"mfa_disabled":false},"device":{"trusted":true},"network":{"ip_reputation":0}}`, nil))
+	blockedByPre, _ := doTestRequest(t, app, mustRequest(http.MethodPost, "/accounts/update-profile", "application/json", `{"actor":{"id":"acct-1"},"account":{"mfa_disabled":false}}`, nil))
 	assertAnomalyEnforcement(t, blockedByPre, http.StatusUnauthorized, "step_up", "account_takeover/step_up_account", "600")
 }
 
@@ -146,7 +159,7 @@ func TestAnomalyAggregationDomains(t *testing.T) {
 
 	var registration *http.Response
 	for i := 1; i <= 4; i++ {
-		body := fmt.Sprintf(`{"actor":{"id":"reg-%d"},"account":{"email_domain":"example%d.com"},"network":{"ip":"198.51.100.7"}}`, i, i)
+		body := fmt.Sprintf(`{"actor":{"id":"reg-%d"},"account":{"email_domain":"example%d.com"}}`, i, i)
 		registration, _ = doTestRequest(t, app, mustRequest(http.MethodPost, "/accounts/register", "application/json", body, nil))
 	}
 	if registration.Header.Get("X-Condition-Action") != "registration_velocity_anomaly" {

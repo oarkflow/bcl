@@ -48,21 +48,397 @@ The chains define reusable result envelopes with structured `response { body { .
 
 The Go host does not define action allowlists, sink lists, chain IDs, watch IDs, or threat-model content. Those are declared in BCL and surfaced through Condition service APIs.
 
+Session, device, network, token, login, and account-risk signals are application-owned facts. In this demo they come from a small server-side session/context lookup keyed by actor, then flow into Condition through `condition.WithContextFacts` and `condition.WithSession`. They are not accepted from request bodies or demo headers. Production apps should populate the same `context.*` and `session.*` facts from auth middleware, session stores, device fingerprinting, IP reputation services, geo middleware, and account-risk services.
+
 When `--watch` is enabled, the server watches `decision.bcl` and every imported `*.bcl` file under the policy tree. Valid edits are reloaded and activated automatically; invalid edits keep the last known good policy active.
+
+## Complete Flow: Add A New Anomaly
+
+This is the flow to add a new condition, rule, action, chain, lifecycle behavior, and curlable example. The example below adds a refund-abuse anomaly. The same pattern works for session risk, payments, compliance, bot defense, data access, logs, events, triggers, or any other domain.
+
+### 1. Define The Signal And Trust Boundary
+
+First decide where each fact comes from.
+
+- `request.refund.*`: user or business payload for the refund request.
+- `context.risk.*`: trusted middleware or service-derived risk, such as historical refund risk.
+- `session.*`: authenticated account/session facts.
+- `response.*`: handler result observed after the request.
+
+For refund abuse, the user can submit the refund amount and reason, but the app should derive account age, historical refund count, device trust, IP reputation, and other security signals from middleware or services.
+
+```go
+ctx = condition.WithContextFacts(ctx, map[string]any{
+	"risk": map[string]any{
+		"refund_count_7d": 5,
+		"refund_amount_7d": 1200,
+	},
+	"device": map[string]any{
+		"trusted": false,
+	},
+})
+```
+
+Do not read those trusted values from request JSON. The host only passes them through `context.Context`; BCL owns the policy decision.
+
+### 2. Add The Route
+
+Add a route entry in `rules/routes.bcl`.
+
+```bcl
+routes "http" {
+  route "refund_request" {
+    method "POST"
+    pattern "/refunds/request"
+    metadata {
+      category "commerce"
+      sensitivity "high"
+      policy_type "refund-risk"
+    }
+  }
+}
+```
+
+Then register the HTTP endpoint in the Fiber app. The handler stays generic and does not know about actions, thresholds, or escalation.
+
+```go
+app.Post("/refunds/request", acceptHandler("refund", "requested"))
+```
+
+### 3. Declare The Actions
+
+Add event and enforcement actions in `rules/catalogs.bcl`. If the action already exists, reuse it.
+
+```bcl
+action_catalog "anomaly_actions" {
+  action "refund_anomaly" {
+    sink "event"
+    severity "medium"
+  }
+
+  action "challenge" {
+    sink "event"
+    severity "medium"
+  }
+
+  action "hold" {
+    sink "event"
+    severity "high"
+  }
+
+  action "open_case" {
+    sink "event"
+    severity "critical"
+  }
+}
+```
+
+Condition persists action delivery records for declared actions. External delivery remains disabled unless runtime infrastructure explicitly allows it.
+
+### 4. Add The Detection Decision
+
+Create `rules/decisions/refund_risk.bcl`.
+
+```bcl
+decision_table "refund_risk_detection" {
+  contract "anomaly_actions"
+  default allow
+  hit_policy first
+
+  row "high-refund-velocity" {
+    priority 100
+    when {
+      all {
+        route.id == "refund_request"
+        any {
+          context.risk.refund_count_7d >= 3
+          context.risk.refund_amount_7d >= 1000
+          request.refund.amount >= 500
+        }
+        any {
+          context.device.trusted == false
+          context.network.ip_reputation >= 70
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "refund request has velocity and trust anomalies"
+        attributes {
+          action "refund_anomaly"
+          threat "refund_abuse"
+        }
+        metadata {
+          severity "high"
+          category "commerce"
+        }
+      }
+    }
+    reason "refund request has velocity and trust anomalies"
+    reason_code "REFUND_ABUSE_RISK"
+  }
+}
+```
+
+The decision emits `refund_anomaly`. It does not decide cooldowns, repeated escalation, response body, or pre-request blocking. That belongs in a chain.
+
+### 5. Add The Stateful Chain
+
+Create `rules/chains/refund_risk.bcl`.
+
+```bcl
+chain "refund_risk_chain" {
+  entity "request.actor_key"
+
+  watch "refund_abuse" {
+    event "refund_anomaly"
+    window "24h"
+    cooldown "5m"
+
+    step "challenge_refund" {
+      id "refund.challenge"
+      threshold 1
+      action "challenge"
+      severity "medium"
+      ttl "10m"
+
+      response {
+        blocking true
+        status 402
+        retry_after_seconds 600
+        body {
+          error "refund_challenge"
+          message "refund request requires additional verification"
+        }
+      }
+    }
+
+    step "hold_refund" {
+      id "refund.hold"
+      threshold 2
+      action "hold"
+      severity "high"
+      ttl "1h"
+
+      response {
+        blocking true
+        status 409
+        retry_after_seconds 3600
+        body {
+          error "refund_held"
+          message "refund request held after repeated refund-risk signals"
+        }
+      }
+    }
+
+    step "open_refund_case" {
+      id "refund.open_case"
+      threshold 4
+      action "open_case"
+      severity "critical"
+      ttl "24h"
+
+      response {
+        blocking true
+        status 423
+        retry_after_seconds 86400
+        body {
+          error "refund_case_opened"
+          message "refund activity opened a risk case"
+        }
+      }
+    }
+  }
+}
+```
+
+Each `step` defines a reusable result envelope. That envelope is what the host writes back to HTTP clients when the step is blocking.
+
+### 6. Add Pre-Request Enforcement
+
+Update `rules/decisions/pre_request_guard.bcl` so active refund state can block before the handler runs.
+
+```bcl
+row "refund-hold-active" {
+  priority 80
+  when {
+    chain_state.refund_abuse.step == "hold_refund"
+  }
+  then {
+    outcome {
+      decision deny
+      reason "refund hold is active"
+      attributes {
+        result "refund.hold"
+      }
+    }
+  }
+  reason "refund hold is active"
+  reason_code "REFUND_HOLD_ACTIVE"
+}
+```
+
+Use `result "refund.hold"` instead of duplicating action, status, retry, and body fields. If the chain step changes, pre-request enforcement stays consistent.
+
+### 7. Wire The Lifecycle
+
+Update `rules/lifecycle.bcl`.
+
+```bcl
+lifecycle "http_request" {
+  entity "request.actor_key"
+  routes "http"
+
+  phase "pre" {
+    decision "pre_request_guard"
+  }
+
+  phase "post" {
+    decision "refund_risk_detection"
+    chain "refund_risk_chain"
+  }
+}
+```
+
+For most business/anomaly domains, detection runs in `post` so the handler response is available. Active state enforcement runs in `pre`.
+
+### 8. Import The New Files
+
+Add imports to `decision.bcl`.
+
+```bcl
+import "rules/decisions/refund_risk.bcl"
+import "rules/chains/refund_risk.bcl"
+```
+
+When running with `--watch`, editing either imported file triggers a safe reload from the root `decision.bcl`.
+
+### 9. Add Lifecycle Tests
+
+Add a lifecycle test to `tests/lifecycle_tests.bcl`.
+
+```bcl
+lifecycle_test "refund velocity is challenged" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/refunds/request"
+  input {
+    request.actor_key "refund-user-1"
+    context.risk.refund_count_7d 5
+    context.risk.refund_amount_7d 1200
+    context.device.trusted false
+    context.network.ip_reputation 75
+  }
+  request {
+    refund {
+      amount 600
+      reason "not_as_described"
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      refund "requested"
+    }
+    format "json"
+  }
+  expect {
+    final_action "challenge"
+    route "refund_request"
+  }
+}
+```
+
+Also add a negative test when needed: same request body without trusted `context.*` risk should not trigger. This guards the fact boundary.
+
+### 10. Run And Inspect It
+
+Validate first:
+
+```sh
+go run ./cmd/condition validate --name anomaly-detection ./examples/anomaly-detection/decision.bcl
+```
+
+Run the server:
+
+```sh
+go run ./examples/anomaly-detection --serve --addr :8083
+```
+
+Call the endpoint:
+
+```sh
+curl -i -H 'Content-Type: application/json' \
+  -d '{"actor":{"id":"refund-user-1"},"refund":{"amount":600,"reason":"not_as_described"}}' \
+  http://127.0.0.1:8083/refunds/request
+```
+
+Expected first effect:
+
+```text
+HTTP/1.1 402 Payment Required
+X-Condition-Action: challenge
+X-Condition-State: refund_risk_chain/refund_abuse/challenge_refund
+Retry-After: 600
+```
+
+Inspect state, events, actions, and incidents:
+
+```sh
+curl -s 'http://127.0.0.1:8083/_state?actor=refund-user-1'
+curl -s 'http://127.0.0.1:8083/_events?actor=refund-user-1'
+curl -s http://127.0.0.1:8083/_actions
+curl -s http://127.0.0.1:8083/_incidents
+```
+
+### What The Runtime Flow Looks Like
+
+For a request to `/refunds/request`, the full path is:
+
+1. Fiber parses body into ordinary request facts.
+2. Host middleware/session lookup adds trusted `context.*` and `session.*` facts.
+3. Condition matches the route from `rules/routes.bcl`.
+4. `pre` lifecycle reads existing `chain_state`; if a hold/case is active, it returns the referenced result envelope and the handler does not run.
+5. Handler runs only when pre-request policy allows it.
+6. `post` lifecycle receives request and response facts.
+7. `refund_risk_detection` emits `refund_anomaly` when the BCL condition matches.
+8. `refund_risk_chain` updates counters/window state and selects the highest matching step.
+9. Condition persists events, state, action delivery records, incidents, and audit.
+10. The host writes the returned BCL-owned enforcement envelope as HTTP status, headers, and JSON body.
+
+The application never hardcodes `refund_anomaly`, `challenge`, `hold`, thresholds, status codes, retry values, or response bodies. Those live in BCL.
+
+### New Policy Checklist
+
+- Add route in `rules/routes.bcl`.
+- Add or reuse actions in `rules/catalogs.bcl`.
+- Add one decision file under `rules/decisions`.
+- Add one chain file under `rules/chains` if history, escalation, cooldown, aggregation, or blocking is needed.
+- Add pre-request guard rows for active blocking states.
+- Wire decision and chain into `rules/lifecycle.bcl`.
+- Import new files from `decision.bcl`.
+- Add BCL lifecycle tests.
+- Add Go/example tests if the host fact boundary or middleware mapping changed.
+- Run `go run ./cmd/condition validate --name anomaly-detection ./examples/anomaly-detection/decision.bcl`.
+- Run `go test ./examples/anomaly-detection ./pkg/condition`.
+- Use `/_state`, `/_events`, `/_actions`, `/_incidents`, `/_coverage`, and `/_readiness` to inspect behavior.
 
 ## Curl Flows
 
 ```sh
 curl -i -H 'Content-Type: application/json' \
-  -d '{"actor":{"id":"alice"},"session":{"impossible_travel":true},"device":{"trusted":true},"network":{"ip_reputation":10}}' \
+  -d '{"actor":{"id":"alice"}}' \
   http://127.0.0.1:8083/session/continue
 
 curl -i -H 'Content-Type: application/json' \
-  -d '{"actor":{"id":"acct-1"},"account":{"mfa_disabled":true},"device":{"changed":true,"trusted":false},"network":{"ip_reputation":75}}' \
+  -d '{"actor":{"id":"acct-1"}}' \
   http://127.0.0.1:8083/accounts/update-profile
 
 for i in {1..4}; do curl -i -H 'Content-Type: application/json' \
-  -d "{\"actor\":{\"id\":\"reg-$i\"},\"account\":{\"email_domain\":\"example$i.com\"},\"network\":{\"ip\":\"198.51.100.7\"}}" \
+  -d "{\"actor\":{\"id\":\"reg-$i\"},\"account\":{\"email_domain\":\"example$i.com\"}}" \
   http://127.0.0.1:8083/accounts/register; done
 
 curl -i -H 'Content-Type: application/json' \

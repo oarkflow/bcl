@@ -1055,6 +1055,115 @@ func TestServiceEvaluateLifecyclePreAndPostEscalation(t *testing.T) {
 	}
 }
 
+func TestServiceEvaluateLifecycleUsesContextAndSessionFactsForSessionRisk(t *testing.T) {
+	ctx := context.Background()
+	source := `module "session-risk-context" {
+  routes "http" {
+    route "session_continue" {
+      method "POST"
+      pattern "/session/continue"
+      metadata {
+        category "identity"
+      }
+    }
+  }
+
+  decision_table "session_risk" {
+    default allow
+    hit_policy first
+    row "trusted-session-risk" {
+      priority 100
+      when {
+        all {
+          route.id == "session_continue"
+          any {
+            session.risk.impossible_travel == true
+            context.device.changed == true
+          }
+        }
+      }
+      then {
+        outcome {
+          decision require_review
+          reason "trusted session risk"
+          attributes {
+            action "session_anomaly"
+          }
+        }
+      }
+      reason "trusted session risk"
+      reason_code "SESSION_RISK"
+    }
+    row "healthy" {
+      priority 1
+      when {
+        route.id == "session_continue"
+      }
+      then {
+        outcome {
+          decision allow
+          reason "healthy"
+          attributes {
+            action "healthy"
+          }
+        }
+      }
+      reason "healthy"
+      reason_code "HEALTHY"
+    }
+  }
+
+  lifecycle "http_request" {
+    entity "request.actor_key"
+    routes "http"
+    phase "post" {
+      decision "session_risk"
+    }
+  }
+}`
+	svc := NewService(storage.NewMemoryStore(), Config{})
+	if _, err := svc.Publish(ctx, PublishRequest{Name: "session-risk-context", Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	bodyOnly, err := svc.EvaluateLifecycle(ctx, "session-risk-context", "http_request", LifecycleEvaluateRequest{
+		Phase:  "post",
+		Method: "POST",
+		Path:   "/session/continue",
+		Input:  map[string]any{"request": map[string]any{"actor_key": "body-only"}},
+		Request: map[string]any{
+			"session": map[string]any{"risk": map[string]any{"impossible_travel": true}},
+			"device":  map[string]any{"changed": true},
+		},
+		Response: map[string]any{"status": 200},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bodyOnly.Evaluation.FinalAction != "healthy" {
+		t.Fatalf("body-owned security facts should not trigger session risk: %#v", bodyOnly.Evaluation)
+	}
+
+	trustedCtx := WithSession(ctx, map[string]any{"risk": map[string]any{"impossible_travel": true}})
+	trustedCtx = WithContextFacts(trustedCtx, map[string]any{"device": map[string]any{"changed": true}})
+	triggered, err := svc.EvaluateLifecycle(trustedCtx, "session-risk-context", "http_request", LifecycleEvaluateRequest{
+		Phase:  "post",
+		Method: "POST",
+		Path:   "/session/continue",
+		Input:  map[string]any{"request": map[string]any{"actor_key": "ctx-risk"}},
+		Request: map[string]any{
+			"session": map[string]any{"risk": map[string]any{"impossible_travel": false}},
+			"device":  map[string]any{"changed": false},
+		},
+		Response: map[string]any{"status": 200},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if triggered.Evaluation.FinalAction != "session_anomaly" || triggered.Evaluation.FinalEffect != "require_review" {
+		t.Fatalf("context/session risk should trigger and override body conflict: %#v", triggered.Evaluation)
+	}
+}
+
 func TestServiceEvaluateLifecycleInjectsChainStateIntoPreDecision(t *testing.T) {
 	ctx := context.Background()
 	source := `module "lifecycle-state-pre" {

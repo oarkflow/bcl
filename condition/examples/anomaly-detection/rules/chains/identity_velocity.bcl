@@ -4,7 +4,7 @@ chain "identity_velocity_chain" {
   watch "registration_velocity" {
     event "registration_submitted"
     window "10m"
-    group_by "request.network.ip"
+    group_by "context.network.ip"
     distinct "attributes.request.account.email_domain"
     metrics [
       "count"

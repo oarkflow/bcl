@@ -236,7 +236,8 @@ func conditionLifecycle(runtime *anomalyRuntime) fiber.Handler {
 }
 
 func evaluatePre(c fiber.Ctx, svc *condition.Service, requestFacts map[string]any, actor string) (*condition.LifecycleEvaluateResponse, error) {
-	return svc.EvaluateLifecycle(c.Context(), definitionName, "http_request", condition.LifecycleEvaluateRequest{
+	ctx := conditionContext(c, actor)
+	return svc.EvaluateLifecycle(ctx, definitionName, "http_request", condition.LifecycleEvaluateRequest{
 		Phase:   "pre",
 		Method:  c.Method(),
 		Path:    c.Path(),
@@ -246,7 +247,8 @@ func evaluatePre(c fiber.Ctx, svc *condition.Service, requestFacts map[string]an
 }
 
 func evaluatePost(c fiber.Ctx, svc *condition.Service, requestFacts map[string]any, actor string, status int, responseBody []byte) (*condition.LifecycleEvaluateResponse, error) {
-	return svc.EvaluateLifecycle(c.Context(), definitionName, "http_request", condition.LifecycleEvaluateRequest{
+	ctx := conditionContext(c, actor)
+	return svc.EvaluateLifecycle(ctx, definitionName, "http_request", condition.LifecycleEvaluateRequest{
 		Phase:    "post",
 		Method:   c.Method(),
 		Path:     c.Path(),
@@ -265,6 +267,107 @@ func lifecycleInput(actor string) map[string]any {
 	}
 }
 
+func conditionContext(c fiber.Ctx, actor string) context.Context {
+	ctx := c.Context()
+	profile := demoSessionProfile(actor)
+	contextFacts := map[string]any{
+		"device": map[string]any{
+			"id":      profile.DeviceID,
+			"trusted": profile.DeviceTrusted,
+			"changed": profile.DeviceChanged,
+		},
+		"network": map[string]any{
+			"ip":            profile.IP,
+			"asn":           profile.ASN,
+			"asn_changed":   profile.ASNChanged,
+			"ip_reputation": profile.IPReputation,
+		},
+		"geo": map[string]any{
+			"country": profile.Country,
+			"region":  profile.Region,
+		},
+	}
+	session := map[string]any{
+		"id":        profile.SessionID,
+		"logged_in": profile.LoggedIn,
+		"risk": map[string]any{
+			"impossible_travel":  profile.ImpossibleTravel,
+			"mfa_bypass_attempt": profile.MFABypassAttempt,
+		},
+		"token": map[string]any{
+			"reuse_detected": profile.TokenReuseDetected,
+		},
+		"account": map[string]any{
+			"email_changed":    profile.AccountEmailChanged,
+			"phone_changed":    profile.AccountPhoneChanged,
+			"password_changed": profile.AccountPasswordChanged,
+			"recovery_changed": profile.AccountRecoveryChanged,
+			"mfa_disabled":     profile.AccountMFADisabled,
+			"profile_country":  profile.AccountProfileCountry,
+		},
+	}
+	ctx = condition.WithContextFacts(ctx, contextFacts)
+	ctx = condition.WithSession(ctx, session)
+	return ctx
+}
+
+type demoSessionFacts struct {
+	SessionID              string
+	LoggedIn               bool
+	DeviceID               string
+	DeviceTrusted          bool
+	DeviceChanged          bool
+	IP                     string
+	ASN                    string
+	ASNChanged             bool
+	IPReputation           int
+	Country                string
+	Region                 string
+	ImpossibleTravel       bool
+	MFABypassAttempt       bool
+	TokenReuseDetected     bool
+	AccountEmailChanged    bool
+	AccountPhoneChanged    bool
+	AccountPasswordChanged bool
+	AccountRecoveryChanged bool
+	AccountMFADisabled     bool
+	AccountProfileCountry  string
+}
+
+func demoSessionProfile(actor string) demoSessionFacts {
+	facts := demoSessionFacts{
+		SessionID:     "session-" + firstNonEmpty(actor, "anonymous"),
+		LoggedIn:      true,
+		DeviceID:      "device-" + firstNonEmpty(actor, "anonymous"),
+		DeviceTrusted: true,
+		IP:            "198.51.100.7",
+		ASN:           "AS64500",
+		Country:       "US",
+		Region:        "us",
+	}
+	switch actor {
+	case "alice":
+		facts.ImpossibleTravel = true
+	case "alice-token":
+		facts.TokenReuseDetected = true
+	case "alice-mfa":
+		facts.MFABypassAttempt = true
+	case "alice-device":
+		facts.DeviceChanged = true
+	case "untrusted-critical":
+		facts.DeviceTrusted = false
+	case "acct-1":
+		facts.AccountMFADisabled = true
+		facts.DeviceChanged = true
+		facts.DeviceTrusted = false
+		facts.IPReputation = 75
+	case "acct-country":
+		facts.AccountProfileCountry = "DE"
+		facts.Country = "US"
+	}
+	return facts
+}
+
 func requestFacts(c fiber.Ctx) (map[string]any, string) {
 	rawBody := append([]byte(nil), c.Body()...)
 	body := bodyFact(c.Get(fiber.HeaderContentType), rawBody)
@@ -273,7 +376,7 @@ func requestFacts(c fiber.Ctx) (map[string]any, string) {
 		"body":    body,
 		"format":  bodyFormat(c.Get(fiber.HeaderContentType)),
 	}
-	for _, section := range []string{"actor", "tenant", "session", "device", "network", "geo", "business", "payment", "order", "support", "logistics", "data", "api", "account", "fraud", "insider", "bot", "vendor", "compliance", "signal"} {
+	for _, section := range []string{"actor", "tenant", "geo", "business", "payment", "order", "support", "logistics", "data", "api", "account", "fraud", "insider", "bot", "vendor", "compliance", "signal"} {
 		if value := nestedMap(body, section); len(value) > 0 {
 			facts[section] = value
 		}
@@ -300,8 +403,6 @@ func mergeHeaderDefaults(c fiber.Ctx, facts map[string]any) {
 	putNestedDefault(facts, "tenant", "verified", c.Get("X-Tenant-Verified") != "false")
 	putNestedDefault(facts, "geo", "country", firstNonEmpty(c.Get("X-Country"), "US"))
 	putNestedDefault(facts, "geo", "region", firstNonEmpty(c.Get("X-Region"), "us"))
-	putNestedDefault(facts, "device", "trusted", c.Get("X-Device-Trusted") != "false")
-	putNestedDefault(facts, "network", "ip_reputation", 0)
 	putNestedDefault(facts, "business", "business_hours", c.Get("X-Business-Hours") != "false")
 }
 
@@ -594,9 +695,9 @@ func curlExamples(addr string) []string {
 	base := "http://127.0.0.1" + addr
 	return []string{
 		"curl -s " + base + "/",
-		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"alice\"},\"session\":{\"impossible_travel\":true},\"device\":{\"trusted\":true},\"network\":{\"ip_reputation\":10}}' " + base + "/session/continue",
-		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"acct-1\"},\"account\":{\"mfa_disabled\":true},\"device\":{\"changed\":true,\"trusted\":false},\"network\":{\"ip_reputation\":75}}' " + base + "/accounts/update-profile",
-		"for i in {1..4}; do curl -i -H 'Content-Type: application/json' -d \"{\\\"actor\\\":{\\\"id\\\":\\\"reg-$i\\\"},\\\"account\\\":{\\\"email_domain\\\":\\\"example$i.com\\\"},\\\"network\\\":{\\\"ip\\\":\\\"198.51.100.7\\\"}}\" " + base + "/accounts/register; done",
+		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"alice\"}}' " + base + "/session/continue",
+		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"acct-1\"}}' " + base + "/accounts/update-profile",
+		"for i in {1..4}; do curl -i -H 'Content-Type: application/json' -d \"{\\\"actor\\\":{\\\"id\\\":\\\"reg-$i\\\"},\\\"account\\\":{\\\"email_domain\\\":\\\"example$i.com\\\"}}\" " + base + "/accounts/register; done",
 		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"claimant-1\"},\"fraud\":{\"mule_indicator\":true,\"duplicate_identity\":true}}' " + base + "/fraud/claim",
 		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"employee-1\"},\"insider\":{\"privileged_export\":true,\"sensitive_dataset\":true,\"records_exported\":15000}}' " + base + "/insider/export",
 		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"bot-client\"},\"bot\":{\"credential_stuffing\":true,\"captcha_failures\":4,\"request_entropy\":92}}' " + base + "/bots/challenge",
@@ -635,14 +736,14 @@ func runDemo(app *fiber.App, advance func(time.Duration)) {
 		req    func() *http.Request
 	}{
 		{label: "session hijacking", req: func() *http.Request {
-			return mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"},"session":{"impossible_travel":true},"device":{"trusted":true},"network":{"ip_reputation":10}}`, nil)
+			return mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"}}`, nil)
 		}},
 		{label: "account takeover", req: func() *http.Request {
-			return mustRequest(http.MethodPost, "/accounts/update-profile", "application/json", `{"actor":{"id":"acct-1"},"account":{"mfa_disabled":true},"device":{"changed":true,"trusted":false},"network":{"ip_reputation":75}}`, nil)
+			return mustRequest(http.MethodPost, "/accounts/update-profile", "application/json", `{"actor":{"id":"acct-1"}}`, nil)
 		}},
 		{label: "registration velocity", repeat: 4, req: func() *http.Request {
 			registrationCounter++
-			return mustRequest(http.MethodPost, "/accounts/register", "application/json", fmt.Sprintf(`{"actor":{"id":"reg-%d"},"account":{"email_domain":"example%d.com"},"network":{"ip":"198.51.100.7"}}`, registrationCounter, registrationCounter), nil)
+			return mustRequest(http.MethodPost, "/accounts/register", "application/json", fmt.Sprintf(`{"actor":{"id":"reg-%d"},"account":{"email_domain":"example%d.com"}}`, registrationCounter, registrationCounter), nil)
 		}},
 		{label: "fraud claim", req: func() *http.Request {
 			return mustRequest(http.MethodPost, "/fraud/claim", "application/json", `{"actor":{"id":"claimant-1"},"fraud":{"mule_indicator":true,"duplicate_identity":true}}`, nil)
@@ -660,7 +761,7 @@ func runDemo(app *fiber.App, advance func(time.Duration)) {
 			return mustRequest(http.MethodPost, "/compliance/screen", "application/json", `{"actor":{"id":"screening-1"},"compliance":{"sanctions_hit":true,"pep_hit":true}}`, nil)
 		}},
 		{label: "blocked during active step-up", req: func() *http.Request {
-			return mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"},"session":{"impossible_travel":false},"device":{"trusted":true},"network":{"ip_reputation":10}}`, nil)
+			return mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"}}`, nil)
 		}},
 		{label: "payment blocked country", req: func() *http.Request {
 			return mustRequest(http.MethodPost, "/payments/authorize", "application/json", `{"actor":{"id":"buyer-1"},"geo":{"country":"IR","region":"blocked"},"payment":{"amount_vs_avg":1,"velocity_10m":1,"new_method":false,"shipping_country":"IR","billing_country":"IR"}}`, nil)

@@ -9,12 +9,12 @@ decision_table "session_anomaly_detection" {
       all {
         route.category == "identity"
         any {
-          request.session.impossible_travel == true
-          request.session.token_reuse == true
-          request.session.mfa_bypass_attempt == true
-          request.device.changed == true
-          request.network.asn_changed == true
-          request.network.ip_reputation >= 80
+          session.risk.impossible_travel == true
+          session.token.reuse_detected == true
+          session.risk.mfa_bypass_attempt == true
+          context.device.changed == true
+          context.network.asn_changed == true
+          context.network.ip_reputation >= 80
         }
       }
     }
@@ -41,7 +41,7 @@ decision_table "session_anomaly_detection" {
     when {
       all {
         route.sensitivity == "critical"
-        request.device.trusted == false
+        context.device.trusted == false
       }
     }
     then {

@@ -583,7 +583,7 @@ func lifecycleActionFactAttributes(input map[string]any) map[string]any {
 		return nil
 	}
 	attrs := map[string]any{}
-	for _, key := range []string{"request", "response", "route", "endpoint"} {
+	for _, key := range []string{"request", "response", "route", "endpoint", "context", "session"} {
 		if value := mapFromAny(input[key]); len(value) > 0 {
 			attrs[key] = cloneMap(value)
 		}
