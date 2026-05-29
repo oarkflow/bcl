@@ -1,0 +1,66 @@
+decision_table "compliance_detection" {
+  contract "anomaly_actions"
+  default allow
+  hit_policy first
+
+  row "sanctions-or-watchlist-hit" {
+    priority 100
+    when {
+      all {
+        route.id == "compliance_screen"
+        any {
+          request.compliance.sanctions_hit == true
+          request.compliance.watchlist_hit == true
+          request.compliance.pep_hit == true
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "compliance screening hit requires hold"
+        attributes {
+          action "compliance_anomaly"
+          threat "screening_hit"
+        }
+        metadata {
+          severity "critical"
+          category "compliance"
+        }
+      }
+    }
+    reason "compliance screening hit requires hold"
+    reason_code "COMPLIANCE_SCREENING_HIT"
+  }
+
+  row "kyc-or-beneficial-owner-mismatch" {
+    priority 80
+    when {
+      all {
+        route.id == "compliance_screen"
+        any {
+          request.compliance.kyc_missing == true
+          request.compliance.kyb_missing == true
+          request.compliance.beneficial_owner_mismatch == true
+          request.compliance.adverse_media == true
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "compliance due diligence anomaly detected"
+        attributes {
+          action "compliance_anomaly"
+          threat "due_diligence_gap"
+        }
+        metadata {
+          severity "high"
+          category "compliance"
+        }
+      }
+    }
+    reason "compliance due diligence anomaly detected"
+    reason_code "COMPLIANCE_DUE_DILIGENCE"
+  }
+}

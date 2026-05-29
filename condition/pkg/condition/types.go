@@ -223,25 +223,36 @@ type ChainDefinition struct {
 }
 
 type ChainWatchDefinition struct {
-	ID       string         `json:"id"`
-	Event    string         `json:"event"`
-	Events   []string       `json:"events,omitempty"`
-	Window   string         `json:"window,omitempty"`
-	Distinct string         `json:"distinct,omitempty"`
-	Field    string         `json:"field,omitempty"`
-	Metrics  []string       `json:"metrics,omitempty"`
-	Suppress bool           `json:"suppress,omitempty"`
-	Decay    string         `json:"decay,omitempty"`
-	Cooldown string         `json:"cooldown,omitempty"`
-	Reset    string         `json:"reset,omitempty"`
-	Steps    []ChainStep    `json:"steps,omitempty"`
-	Metadata map[string]any `json:"metadata,omitempty"`
+	ID              string         `json:"id"`
+	Event           string         `json:"event"`
+	Events          []string       `json:"events,omitempty"`
+	Window          string         `json:"window,omitempty"`
+	GroupBy         string         `json:"group_by,omitempty"`
+	BaselineWindow  string         `json:"baseline_window,omitempty"`
+	Compare         string         `json:"compare,omitempty"`
+	Ratio           map[string]any `json:"ratio,omitempty"`
+	Consecutive     bool           `json:"consecutive,omitempty"`
+	SuccessStatuses []string       `json:"success_statuses,omitempty"`
+	FailureStatuses []string       `json:"failure_statuses,omitempty"`
+	Distinct        string         `json:"distinct,omitempty"`
+	Field           string         `json:"field,omitempty"`
+	Metrics         []string       `json:"metrics,omitempty"`
+	Suppress        bool           `json:"suppress,omitempty"`
+	Decay           string         `json:"decay,omitempty"`
+	Cooldown        string         `json:"cooldown,omitempty"`
+	Reset           string         `json:"reset,omitempty"`
+	Steps           []ChainStep    `json:"steps,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
 }
 
 type ChainStep struct {
 	ID         string         `json:"id"`
 	ResultID   string         `json:"result_id,omitempty"`
 	Threshold  int            `json:"threshold"`
+	Metric     string         `json:"metric,omitempty"`
+	Operator   string         `json:"op,omitempty"`
+	Value      float64        `json:"value,omitempty"`
+	Compare    string         `json:"compare,omitempty"`
 	Action     string         `json:"action"`
 	Severity   string         `json:"severity,omitempty"`
 	TTL        string         `json:"ttl,omitempty"`
@@ -469,17 +480,21 @@ type CanaryResponse struct {
 }
 
 type ReloadRequest struct {
-	TenantID string `json:"tenant_id,omitempty"`
-	Name     string `json:"name"`
-	Path     string `json:"path,omitempty"`
-	RunTests bool   `json:"run_tests,omitempty"`
+	TenantID       string `json:"tenant_id,omitempty"`
+	Name           string `json:"name"`
+	Path           string `json:"path,omitempty"`
+	RunTests       bool   `json:"run_tests,omitempty"`
+	DebounceMillis int    `json:"debounce_millis,omitempty"`
+	IncludeImports *bool  `json:"include_imports,omitempty"`
 }
 
 type ReloadResponse struct {
-	Reloaded bool             `json:"reloaded"`
-	KeptLast bool             `json:"kept_last_known_good"`
-	Publish  *PublishResponse `json:"publish,omitempty"`
-	Audit    audit.Envelope   `json:"audit"`
+	Reloaded       bool             `json:"reloaded"`
+	KeptLast       bool             `json:"kept_last_known_good"`
+	ChangedPath    string           `json:"changed_path,omitempty"`
+	DependencyPath string           `json:"dependency_path,omitempty"`
+	Publish        *PublishResponse `json:"publish,omitempty"`
+	Audit          audit.Envelope   `json:"audit"`
 }
 
 type WorkflowResult struct {

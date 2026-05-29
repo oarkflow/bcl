@@ -1,0 +1,27 @@
+decision_table "signal_observability" {
+  contract "anomaly_actions"
+  default allow
+  hit_policy first
+
+  row "generic-signal-observed" {
+    priority 100
+    when {
+      route.category == "signals"
+    }
+    then {
+      outcome {
+        decision allow
+        reason "generic log event or trigger signal observed"
+        attributes {
+          action "signal_observed"
+        }
+        metadata {
+          severity "low"
+          category "signals"
+        }
+      }
+    }
+    reason "generic log event or trigger signal observed"
+    reason_code "SIGNAL_OBSERVED"
+  }
+}

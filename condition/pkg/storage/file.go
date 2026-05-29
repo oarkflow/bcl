@@ -431,6 +431,49 @@ func (s *FileStore) GetChainState(ctx context.Context, chain, watch, entityKey s
 	return state, nil
 }
 
+func (s *FileStore) ListChainStates(ctx context.Context, query ChainStateQuery) ([]ChainStateRecord, error) {
+	tenant := firstTenant(firstNonEmpty(query.TenantID, TenantFromContext(ctx)))
+	root := s.chainStatesDir(tenant)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	now := nowUTC()
+	var out []ChainStateRecord
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		var state ChainStateRecord
+		if err := readJSONFile(filepath.Join(root, entry.Name()), &state); err != nil {
+			return nil, err
+		}
+		if firstTenant(state.TenantID) != tenant ||
+			(query.Definition != "" && state.Definition != query.Definition) ||
+			(query.Environment != "" && state.Environment != query.Environment) ||
+			(query.Chain != "" && state.Chain != query.Chain) ||
+			(query.Watch != "" && state.Watch != query.Watch) ||
+			(query.EntityKey != "" && state.EntityKey != query.EntityKey) ||
+			(!query.IncludeExpired && state.ExpiresAt != nil && !state.ExpiresAt.After(now)) {
+			continue
+		}
+		out = append(out, state)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+			return out[i].Chain+"/"+out[i].Watch < out[j].Chain+"/"+out[j].Watch
+		}
+		return out[i].UpdatedAt.Before(out[j].UpdatedAt)
+	})
+	if query.Limit > 0 && len(out) > query.Limit {
+		out = out[len(out)-query.Limit:]
+	}
+	return out, nil
+}
+
 func (s *FileStore) UpsertChainState(ctx context.Context, state ChainStateRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

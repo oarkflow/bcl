@@ -784,6 +784,39 @@ FROM condition_chain_states WHERE tenant_id = ? AND chain = ? AND watch = ? AND 
 	return state, nil
 }
 
+func (s *SQLiteStore) ListChainStates(ctx context.Context, query ChainStateQuery) ([]ChainStateRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT tenant_id, definition, version, environment, chain, watch, entity_key, counters_json, step, action, severity, attributes_json, metadata_json, updated_at, expires_at
+FROM condition_chain_states WHERE tenant_id = ? ORDER BY updated_at ASC`, firstTenant(firstNonEmpty(query.TenantID, TenantFromContext(ctx))))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	now := nowUTC()
+	var out []ChainStateRecord
+	for rows.Next() {
+		state, err := scanChainState(rows)
+		if err != nil {
+			return nil, err
+		}
+		if (query.Definition != "" && state.Definition != query.Definition) ||
+			(query.Environment != "" && state.Environment != query.Environment) ||
+			(query.Chain != "" && state.Chain != query.Chain) ||
+			(query.Watch != "" && state.Watch != query.Watch) ||
+			(query.EntityKey != "" && state.EntityKey != query.EntityKey) ||
+			(!query.IncludeExpired && state.ExpiresAt != nil && !state.ExpiresAt.After(now)) {
+			continue
+		}
+		out = append(out, state)
+	}
+	if rows.Err() != nil {
+		return nil, rows.Err()
+	}
+	if query.Limit > 0 && len(out) > query.Limit {
+		out = out[len(out)-query.Limit:]
+	}
+	return out, nil
+}
+
 func (s *SQLiteStore) UpsertChainState(ctx context.Context, state ChainStateRecord) error {
 	state.TenantID = firstTenant(firstNonEmpty(state.TenantID, TenantFromContext(ctx)))
 	if state.UpdatedAt.IsZero() {

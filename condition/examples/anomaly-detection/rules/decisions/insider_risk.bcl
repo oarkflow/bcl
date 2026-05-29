@@ -1,0 +1,63 @@
+decision_table "insider_risk_detection" {
+  contract "anomaly_actions"
+  default allow
+  hit_policy first
+
+  row "privileged-export-risk" {
+    priority 100
+    when {
+      all {
+        route.id == "insider_export"
+        any {
+          request.insider.privileged_export == true
+          request.insider.audit_disabled == true
+          request.insider.sensitive_dataset == true
+          request.insider.records_exported >= 10000
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "privileged export has insider-risk signals"
+        attributes {
+          action "insider_anomaly"
+          threat "privileged_export"
+        }
+        metadata {
+          severity "critical"
+          category "insider"
+        }
+      }
+    }
+    reason "privileged export has insider-risk signals"
+    reason_code "INSIDER_PRIVILEGED_EXPORT"
+  }
+
+  row "off-hours-insider-export" {
+    priority 80
+    when {
+      all {
+        route.id == "insider_export"
+        request.business.business_hours == false
+        request.insider.records_exported >= 1000
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "off-hours insider export detected"
+        attributes {
+          action "insider_anomaly"
+          threat "off_hours_export"
+        }
+        metadata {
+          severity "high"
+          category "insider"
+        }
+      }
+    }
+    reason "off-hours insider export detected"
+    reason_code "INSIDER_OFF_HOURS_EXPORT"
+  }
+}

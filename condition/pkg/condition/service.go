@@ -57,6 +57,11 @@ func (s *Service) ListActionDeliveries(ctx context.Context, query storage.Action
 	return s.store.ListActionDeliveries(ctx, query)
 }
 
+func (s *Service) ListChainStates(ctx context.Context, query storage.ChainStateQuery) ([]storage.ChainStateRecord, error) {
+	ctx = s.requestContext(ctx, query.TenantID)
+	return s.store.ListChainStates(ctx, query)
+}
+
 func (s *Service) ListIncidents(ctx context.Context, query storage.IncidentQuery) ([]storage.IncidentRecord, error) {
 	ctx = s.requestContext(ctx, query.TenantID)
 	return s.store.ListIncidents(ctx, query)
@@ -419,7 +424,7 @@ func (s *Service) EvaluateChain(ctx context.Context, definition, chainID string,
 	evaluation := ChainEvaluation{Chain: chain.ID, EntityKey: entityKey, StateBefore: cloneChainStates(statesBefore)}
 	pendingEvents := []storage.ChainEventRecord(nil)
 	if req.Event != "" {
-		pendingEvents = append(pendingEvents, s.newChainEvent(record, chain.ID, "", entityKey, req.Event, "", "", "", nil, nil, nil))
+		pendingEvents = append(pendingEvents, s.newChainEvent(record, chain.ID, "", entityKey, req.Event, "", "", "", lifecycleActionFactAttributes(input), nil, nil))
 	}
 	opts := s.bclOptions(ctx, s.strictEvaluation(req.Strict))
 	opts.Context = runtimeContext
@@ -457,13 +462,13 @@ func (s *Service) EvaluateChain(ctx context.Context, definition, chainID string,
 		allEvents = append(allEvents, event)
 	}
 	for _, watch := range chain.Watches {
-		state, generated := s.applyWatch(ctx, record, chain.ID, entityKey, watch, allEvents, stateByWatch[watch.ID], now)
+		state, generated := s.applyWatch(ctx, record, chain.ID, entityKey, watch, allEvents, stateByWatch[watch.ID], now, workingInput)
 		if state.Watch != "" {
 			if err := s.store.UpsertChainState(ctx, state); err != nil {
 				return nil, err
 			}
 			stateByWatch[watch.ID] = state
-			if state.Action != "" && state.Step != "" {
+			if state.Action != "" && state.Step != "" && (req.Event == "" || watchHandlesEvent(watch, req.Event) || len(generated) > 0) {
 				evaluation.FinalAction, evaluation.FinalEffect, evaluation.FinalReason, evaluation.FinalSeverity = chooseFinalAction(evaluation.FinalAction, evaluation.FinalEffect, evaluation.FinalReason, evaluation.FinalSeverity, state.Action, actionEffect(state.Action), fmt.Sprintf("%s triggered %s", watch.ID, state.Step), state.Severity)
 			}
 		}
@@ -573,7 +578,7 @@ func (s *Service) EvaluateLifecycle(ctx context.Context, definition, lifecycleID
 			hydrateDecisionResult(record.Program, report.Decision)
 			evaluation.FinalDecision(report.Decision)
 			evaluation.AddEnforcement(enforcementWithActiveState(enforcementFromDecision(report.Decision), chainStates, now))
-			evaluation.Actions = append(evaluation.Actions, s.lifecycleActionsFromDecision(ctx, record, lifecycle.ID, entityKey, report.Decision, req.DryRun)...)
+			evaluation.Actions = append(evaluation.Actions, s.lifecycleActionsFromDecision(ctx, record, lifecycle.ID, entityKey, report.Decision, req.DryRun, augmented)...)
 		}
 	}
 	chainEvent := req.Event
@@ -602,10 +607,13 @@ func (s *Service) EvaluateLifecycle(ctx context.Context, definition, lifecycleID
 		evaluation.Chains = append(evaluation.Chains, resp.Evaluation)
 		evaluation.FinalAction, evaluation.FinalEffect, evaluation.FinalReason, finalSeverity = chooseFinalAction(evaluation.FinalAction, evaluation.FinalEffect, evaluation.FinalReason, finalSeverity, resp.Evaluation.FinalAction, resp.Evaluation.FinalEffect, resp.Evaluation.FinalReason, resp.Evaluation.FinalSeverity)
 		for _, state := range resp.Evaluation.StateAfter {
-			evaluation.AddEnforcement(enforcementFromState(state, resp.Evaluation.FinalReason, now))
+			if resp.Evaluation.FinalAction != "" && resp.Evaluation.FinalAction == state.Action {
+				evaluation.AddEnforcement(enforcementFromState(state, resp.Evaluation.FinalReason, now))
+			}
 		}
 		for _, event := range resp.Evaluation.Events {
 			action := LifecycleAction{Name: event.EventType, ReasonCode: event.ReasonCode, Severity: event.Severity, Attributes: cloneMap(event.Attributes), Metadata: cloneMap(event.Metadata)}
+			action = actionWithCatalogDefaults(record.Program, action)
 			handled, result := false, &ActionResult{Handled: false, Status: "dry_run"}
 			if !req.DryRun {
 				handled, result = s.dispatchLifecycleAction(ctx, record, action)
@@ -860,13 +868,13 @@ func (s *Service) Reload(ctx context.Context, req ReloadRequest) (*ReloadRespons
 		if auditErr != nil {
 			return nil, auditErr
 		}
-		return &ReloadResponse{Reloaded: false, KeptLast: true, Publish: resp, Audit: envelope}, nil
+		return &ReloadResponse{Reloaded: false, KeptLast: true, ChangedPath: req.Path, DependencyPath: req.Path, Publish: resp, Audit: envelope}, nil
 	}
 	envelope, err := s.audit(ctx, "reload", req.Name, resp.Definition.Version, resp.Definition.Environment, resp.Definition.Digest, req, map[string]any{"reloaded": true}, start, nil)
 	if err != nil {
 		return nil, err
 	}
-	return &ReloadResponse{Reloaded: true, Publish: resp, Audit: envelope}, nil
+	return &ReloadResponse{Reloaded: true, ChangedPath: req.Path, DependencyPath: req.Path, Publish: resp, Audit: envelope}, nil
 }
 
 func (s *Service) ListAudits(ctx context.Context) ([]audit.Envelope, error) {
@@ -1268,6 +1276,23 @@ func stringSet(values []string) map[string]bool {
 	return out
 }
 
+func watchHandlesEvent(watch ChainWatchDefinition, event string) bool {
+	event = strings.TrimSpace(event)
+	if event == "" {
+		return true
+	}
+	events := watch.Events
+	if len(events) == 0 {
+		events = []string{watch.Event}
+	}
+	for _, item := range events {
+		if strings.TrimSpace(item) == event {
+			return true
+		}
+	}
+	return false
+}
+
 func scalarString(v any) string {
 	if v == nil {
 		return ""
@@ -1648,6 +1673,7 @@ func attachPolicyContractBlocks(program *bcl.DecisionProgram, doc *bcl.Document)
 		{"standard_facts", "_condition_standard_facts"},
 		{"response_classifier", "_condition_response_classifiers"},
 		{"policy_overlay", "_condition_policy_overlays"},
+		{"threat_model", "_condition_threat_models"},
 		{"lifecycle_test", "_condition_lifecycle_tests"},
 	} {
 		var blocks []map[string]any

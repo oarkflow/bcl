@@ -12,6 +12,7 @@ decision_table "session_anomaly_detection" {
           request.session.impossible_travel == true
           request.session.token_reuse == true
           request.session.mfa_bypass_attempt == true
+          request.device.changed == true
           request.network.asn_changed == true
           request.network.ip_reputation >= 80
         }

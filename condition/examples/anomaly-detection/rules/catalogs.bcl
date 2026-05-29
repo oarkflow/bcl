@@ -105,6 +105,81 @@ action_catalog "default" {
     sink "event"
     severity "high"
   }
+
+  action "api_behavior_anomaly" {
+    sink "event"
+    severity "high"
+  }
+
+  action "account_anomaly" {
+    sink "event"
+    severity "high"
+  }
+
+  action "fraud_anomaly" {
+    sink "event"
+    severity "high"
+  }
+
+  action "insider_anomaly" {
+    sink "event"
+    severity "critical"
+  }
+
+  action "bot_anomaly" {
+    sink "event"
+    severity "high"
+  }
+
+  action "vendor_anomaly" {
+    sink "event"
+    severity "high"
+  }
+
+  action "compliance_anomaly" {
+    sink "event"
+    severity "critical"
+  }
+
+  action "registration_submitted" {
+    sink "event"
+    severity "low"
+  }
+
+  action "signal_observed" {
+    sink "event"
+    severity "low"
+  }
+
+  action "traffic_anomaly" {
+    sink "event"
+    severity "high"
+  }
+
+  action "success_drop_anomaly" {
+    sink "event"
+    severity "high"
+  }
+
+  action "registration_velocity_anomaly" {
+    sink "event"
+    severity "high"
+  }
+
+  action "ratio_anomaly" {
+    sink "event"
+    severity "high"
+  }
+
+  action "consecutive_failure_anomaly" {
+    sink "event"
+    severity "critical"
+  }
+
+  action "signal_anomaly" {
+    sink "event"
+    severity "high"
+  }
 }
 
 output_contract "anomaly_actions" {
@@ -130,6 +205,21 @@ output_contract "anomaly_actions" {
     "data_access_anomaly"
     "unexpected_4xx"
     "api_5xx"
+    "api_behavior_anomaly"
+    "account_anomaly"
+    "fraud_anomaly"
+    "insider_anomaly"
+    "bot_anomaly"
+    "vendor_anomaly"
+    "compliance_anomaly"
+    "registration_submitted"
+    "signal_observed"
+    "traffic_anomaly"
+    "success_drop_anomaly"
+    "registration_velocity_anomaly"
+    "ratio_anomaly"
+    "consecutive_failure_anomaly"
+    "signal_anomaly"
   ]
   severities [
     "low"

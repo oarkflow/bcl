@@ -1,0 +1,70 @@
+decision_table "account_takeover_detection" {
+  contract "anomaly_actions"
+  default allow
+  hit_policy first
+
+  row "profile-change-from-new-device" {
+    priority 100
+    when {
+      all {
+        route.id == "account_update_profile"
+        any {
+          request.account.email_changed == true
+          request.account.phone_changed == true
+          request.account.password_changed == true
+          request.account.recovery_changed == true
+          request.account.mfa_disabled == true
+        }
+        any {
+          request.device.trusted == false
+          request.device.changed == true
+          request.network.ip_reputation >= 70
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "account profile mutation has takeover signals"
+        attributes {
+          action "account_anomaly"
+          threat "account_takeover"
+        }
+        metadata {
+          severity "critical"
+          category "account"
+        }
+      }
+    }
+    reason "account profile mutation has takeover signals"
+    reason_code "ACCOUNT_TAKEOVER_MUTATION"
+  }
+
+  row "profile-country-drift" {
+    priority 80
+    when {
+      all {
+        route.id == "account_update_profile"
+        request.account.profile_country != ""
+        request.geo.country != ""
+        request.account.profile_country != request.geo.country
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "account profile country drift detected"
+        attributes {
+          action "account_anomaly"
+          threat "profile_country_drift"
+        }
+        metadata {
+          severity "high"
+          category "account"
+        }
+      }
+    }
+    reason "account profile country drift detected"
+    reason_code "ACCOUNT_COUNTRY_DRIFT"
+  }
+}

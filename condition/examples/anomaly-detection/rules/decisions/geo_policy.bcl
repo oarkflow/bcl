@@ -57,6 +57,33 @@ decision_table "geo_policy_detection" {
     reason_code "DATA_RESIDENCY_MISMATCH"
   }
 
+  row "restricted-admin-region" {
+    priority 85
+    when {
+      all {
+        route.id == "risk_console"
+        request.geo.region != "us"
+        request.actor.role != "risk_admin"
+      }
+    }
+    then {
+      outcome {
+        decision deny
+        reason "admin risk console access is restricted outside approved regions"
+        attributes {
+          action "geo_violation"
+          threat "restricted_admin_region"
+        }
+        metadata {
+          severity "critical"
+          category "geo"
+        }
+      }
+    }
+    reason "admin risk console access is restricted outside approved regions"
+    reason_code "RESTRICTED_ADMIN_REGION"
+  }
+
   row "region-drift" {
     priority 70
     when {

@@ -100,6 +100,318 @@ lifecycle_test "impossible travel triggers step up" {
   }
 }
 
+lifecycle_test "device change triggers step up" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/session/continue"
+  input {
+    request.actor_key "alice-device"
+  }
+  request {
+    session {
+      impossible_travel false
+      token_reuse false
+      mfa_bypass_attempt false
+    }
+    network {
+      asn_changed false
+      ip_reputation 10
+    }
+    device {
+      trusted true
+      changed true
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      ok true
+    }
+    format "json"
+  }
+  expect {
+    final_action "step_up"
+    route "session_continue"
+  }
+}
+
+lifecycle_test "account mfa disable from new device triggers step up" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/accounts/update-profile"
+  input {
+    request.actor_key "acct-1"
+  }
+  request {
+    account {
+      mfa_disabled true
+    }
+    device {
+      trusted false
+      changed true
+    }
+    network {
+      ip_reputation 75
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      account "updated"
+    }
+    format "json"
+  }
+  expect {
+    final_action "step_up"
+    route "account_update_profile"
+  }
+}
+
+lifecycle_test "registration request is observed" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/accounts/register"
+  input {
+    request.actor_key "reg-1"
+    request.application_key "anomaly-detection-demo"
+  }
+  request {
+    actor {
+      id "reg-1"
+    }
+    account {
+      email_domain "example.com"
+    }
+    network {
+      ip "198.51.100.7"
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      registration "accepted"
+    }
+    format "json"
+  }
+  expect {
+    final_action "registration_submitted"
+    route "account_register"
+  }
+}
+
+lifecycle_test "generic signal is observed" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/signals/logs"
+  input {
+    request.actor_key "signal-1"
+    request.application_key "anomaly-detection-demo"
+  }
+  request {
+    signal {
+      source "worker-1"
+      kind "log"
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      signal "log"
+    }
+    format "json"
+  }
+  expect {
+    final_action "signal_observed"
+    route "signal_logs"
+  }
+}
+
+lifecycle_test "fraud mule claim is challenged" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/fraud/claim"
+  input {
+    request.actor_key "claimant-1"
+  }
+  request {
+    fraud {
+      mule_indicator true
+      duplicate_identity true
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      claim "submitted"
+    }
+    format "json"
+  }
+  expect {
+    final_action "challenge"
+    route "fraud_claim"
+  }
+}
+
+lifecycle_test "insider privileged export is notified" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/insider/export"
+  input {
+    request.actor_key "employee-1"
+  }
+  request {
+    insider {
+      privileged_export true
+      sensitive_dataset true
+      records_exported 15000
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      export "created"
+    }
+    format "json"
+  }
+  expect {
+    final_action "notify"
+    route "insider_export"
+  }
+}
+
+lifecycle_test "bot credential stuffing is challenged" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/bots/challenge"
+  input {
+    request.actor_key "bot-client"
+  }
+  request {
+    bot {
+      credential_stuffing true
+      captcha_failures 4
+      request_entropy 92
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      bot "accepted"
+    }
+    format "json"
+  }
+  expect {
+    final_action "challenge"
+    route "bot_challenge"
+  }
+}
+
+lifecycle_test "vendor bank change is notified" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/supply-chain/vendor-change"
+  input {
+    request.actor_key "buyer-ops"
+  }
+  request {
+    vendor {
+      bank_changed true
+      new_payee true
+      purchase_order_vs_avg 6
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      vendor "changed"
+    }
+    format "json"
+  }
+  expect {
+    final_action "notify"
+    route "vendor_change"
+  }
+}
+
+lifecycle_test "sanctions screening is held" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/compliance/screen"
+  input {
+    request.actor_key "screening-1"
+  }
+  request {
+    compliance {
+      sanctions_hit true
+      pep_hit true
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      screening "completed"
+    }
+    format "json"
+  }
+  expect {
+    final_action "hold"
+    route "compliance_screen"
+  }
+}
+
+lifecycle_test "restricted admin region is blocked" {
+  lifecycle "http_request"
+  phase "post"
+  method "GET"
+  path "/admin/risk-console"
+  input {
+    request.actor_key "analyst-eu"
+  }
+  request {
+    actor {
+      id "analyst-eu"
+      role "analyst"
+    }
+    geo {
+      country "DE"
+      region "eu"
+    }
+    business {
+      business_hours true
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      ok true
+    }
+    format "json"
+  }
+  expect {
+    final_action "block"
+    route "risk_console"
+  }
+}
+
 lifecycle_test "blocked country is denied" {
   lifecycle "http_request"
   phase "post"
@@ -237,6 +549,100 @@ lifecycle_test "business abuse is monitored" {
   expect {
     final_action "monitor"
     route "support_ticket"
+  }
+}
+
+lifecycle_test "support reopen loop is monitored" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/support/tickets"
+  input {
+    request.actor_key "support-loop-1"
+  }
+  request {
+    tenant {
+      verified true
+    }
+    support {
+      ticket_spam false
+      sla_manipulation false
+      reopen_count 4
+      severity 3
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      ticket "created"
+    }
+    format "json"
+  }
+  expect {
+    final_action "monitor"
+    route "support_ticket"
+  }
+}
+
+lifecycle_test "route country mismatch is monitored" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/logistics/shipments"
+  input {
+    request.actor_key "shipper-1"
+  }
+  request {
+    logistics {
+      restricted_destination false
+      route_country_mismatch true
+      hazmat false
+      carrier_certified true
+      reroute_attempts 0
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      shipment "accepted"
+    }
+    format "json"
+  }
+  expect {
+    final_action "monitor"
+    route "logistics_shipment"
+  }
+}
+
+lifecycle_test "api behavior anomaly is recorded" {
+  lifecycle "http_request"
+  phase "post"
+  method "POST"
+  path "/api/resource"
+  input {
+    request.actor_key "api-client"
+    request.application_key "anomaly-detection-demo"
+  }
+  request {
+    api {
+      unusual_method_mix true
+      endpoint_burst 25
+      error_ratio 0.1
+    }
+    format "json"
+  }
+  response {
+    status 200
+    body {
+      ok true
+    }
+    format "json"
+  }
+  expect {
+    final_action "api_behavior_anomaly"
+    route "api_resource_mutation"
   }
 }
 

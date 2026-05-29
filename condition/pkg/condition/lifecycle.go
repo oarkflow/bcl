@@ -558,11 +558,11 @@ func stringMapFromAny(v any) map[string]string {
 	return out
 }
 
-func (s *Service) lifecycleActionsFromDecision(ctx context.Context, record storage.DefinitionRecord, lifecycleID, entityKey string, decision *bcl.DecisionResult, dryRun bool) []LifecycleAction {
+func (s *Service) lifecycleActionsFromDecision(ctx context.Context, record storage.DefinitionRecord, lifecycleID, entityKey string, decision *bcl.DecisionResult, dryRun bool, input map[string]any) []LifecycleAction {
 	if decision == nil {
 		return nil
 	}
-	attrs := cloneMap(decision.Attributes)
+	attrs := deepMergeMaps(lifecycleActionFactAttributes(input), cloneMap(decision.Attributes))
 	metadata := cloneMap(decision.Metadata)
 	severity := stringAny(metadata["severity"])
 	var actions []LifecycleAction
@@ -578,14 +578,52 @@ func (s *Service) lifecycleActionsFromDecision(ctx context.Context, record stora
 	return actions
 }
 
+func lifecycleActionFactAttributes(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return nil
+	}
+	attrs := map[string]any{}
+	for _, key := range []string{"request", "response", "route", "endpoint"} {
+		if value := mapFromAny(input[key]); len(value) > 0 {
+			attrs[key] = cloneMap(value)
+		}
+	}
+	if route := mapFromAny(attrs["route"]); len(route) > 0 {
+		attrs["route_id"] = stringAny(route["id"])
+		attrs["route_category"] = stringAny(route["category"])
+	}
+	if response := mapFromAny(attrs["response"]); len(response) > 0 {
+		attrs["status"] = intAny(response["status"])
+		attrs["response_status"] = intAny(response["status"])
+		attrs["healthy"] = truthyAny(response["healthy"])
+	}
+	if request := mapFromAny(attrs["request"]); len(request) > 0 {
+		for _, key := range []string{"actor_key", "application_key", "method", "path", "ip", "device_id", "country"} {
+			if value := stringAny(request[key]); value != "" {
+				attrs[key] = value
+			}
+		}
+		if tenant := mapFromAny(request["tenant"]); len(tenant) > 0 {
+			if id := stringAny(tenant["id"]); id != "" {
+				attrs["tenant_id"] = id
+			}
+		}
+		if geo := mapFromAny(request["geo"]); len(geo) > 0 {
+			if country := stringAny(geo["country"]); country != "" {
+				attrs["country"] = country
+			}
+		}
+	}
+	return attrs
+}
+
 func (s *Service) lifecycleAction(ctx context.Context, record storage.DefinitionRecord, lifecycleID, entityKey, name, reasonCode, severity string, attrs, metadata map[string]any, dryRun bool) LifecycleAction {
 	action := LifecycleAction{Name: name, ReasonCode: reasonCode, Severity: severity, Attributes: cloneMap(attrs), Metadata: cloneMap(metadata)}
+	action = actionWithCatalogDefaults(record.Program, action)
 	if sink := strings.TrimSpace(fmt.Sprint(attrs["sink"])); sink != "" && sink != "<nil>" {
 		action.Sink = sink
-	} else if name == "log" {
-		action.Sink = "log"
 	}
-	event := s.newChainEvent(record, lifecycleID, "", entityKey, name, "", reasonCode, severity, attrs, metadata, nil)
+	event := s.newChainEvent(record, lifecycleID, "", entityKey, name, "", reasonCode, action.Severity, attrs, metadata, nil)
 	_ = s.store.AppendChainEvent(ctx, event)
 	handled, result := false, &ActionResult{Handled: false, Status: "dry_run"}
 	if !dryRun {
@@ -603,6 +641,18 @@ func (s *Service) lifecycleAction(ctx context.Context, record storage.Definition
 	if incident, ok := s.incidentFromAction(ctx, record, lifecycleID, entityKey, action); ok {
 		if err := s.store.UpsertIncident(ctx, incident); err == nil {
 			action.IncidentID = incident.ID
+		}
+	}
+	return action
+}
+
+func actionWithCatalogDefaults(program *bcl.DecisionProgram, action LifecycleAction) LifecycleAction {
+	if def, ok := actionDefinition(program, action.Name); ok {
+		if action.Severity == "" {
+			action.Severity = def.Severity
+		}
+		if len(def.Sinks) > 0 {
+			action.Sink = def.Sinks[0]
 		}
 	}
 	return action
@@ -739,14 +789,21 @@ func (s *Service) dispatchLifecycleAction(ctx context.Context, record storage.De
 }
 
 func (s *Service) actionRuntimeAllowed(ctx context.Context, record storage.DefinitionRecord, action LifecycleAction) (bool, string) {
-	if s == nil || len(s.cfg.Runtime.ActionAllowlists) == 0 {
-		return true, ""
-	}
-	tenant := first(record.TenantID, TenantFromContext(ctx), s.cfg.DefaultTenant)
-	env := first(record.Environment, s.cfg.Environment)
 	sink := strings.ToLower(strings.TrimSpace(action.Sink))
 	if sink == "" {
 		sink = "event"
+	}
+	switch sink {
+	case "event", "log":
+		return true, ""
+	}
+	if s == nil {
+		return false, fmt.Sprintf("action %q sink %q requires runtime allowlist", action.Name, sink)
+	}
+	tenant := first(record.TenantID, TenantFromContext(ctx), s.cfg.DefaultTenant)
+	env := first(record.Environment, s.cfg.Environment)
+	if stringAllowed(s.cfg.Runtime.AllowedActionSinks, sink) {
+		return true, ""
 	}
 	for _, allow := range s.cfg.Runtime.ActionAllowlists {
 		if !matchRuntimeScope(allow.TenantID, tenant) || !matchRuntimeScope(allow.Environment, env) {

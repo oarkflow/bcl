@@ -7,17 +7,20 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"mime"
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/oarkflow/condition/examples/internal/examplebase"
 	condition "github.com/oarkflow/condition/pkg/condition"
+	"github.com/oarkflow/condition/pkg/reload"
 	"github.com/oarkflow/condition/pkg/storage"
 )
 
@@ -31,10 +34,14 @@ type anomalyRuntime struct {
 func main() {
 	serve := flag.Bool("serve", false, "run a Fiber HTTP server instead of demo requests")
 	addr := flag.String("addr", ":8083", "Fiber server address")
+	watch := flag.Bool("watch", false, "watch imported BCL files and hot-reload policies in serve mode")
 	flag.Parse()
 
 	if *serve {
 		runtime := mustRuntime()
+		if *watch {
+			startPolicyWatcher(context.Background(), runtime)
+		}
 		app := newApp(runtime)
 		fmt.Printf("anomaly detection Fiber example listening on http://127.0.0.1%s\n", *addr)
 		for _, c := range curlExamples(*addr) {
@@ -72,19 +79,6 @@ func newRuntimeWithClock(clock func() time.Time) (*anomalyRuntime, error) {
 		Environment:  "example",
 		RequireTests: true,
 		Clock:        clock,
-		Runtime: condition.RuntimePolicy{ActionAllowlists: []condition.ActionAllowlist{
-			{
-				TenantID:    "default",
-				Environment: "example",
-				Actions: []string{
-					"allow", "healthy", "monitor", "step_up", "challenge", "hold", "reject", "block", "suspend",
-					"terminate_session", "notify", "escalate", "open_case", "quarantine", "session_anomaly",
-					"geo_violation", "business_rule_violation", "payment_or_order_anomaly", "data_access_anomaly",
-					"unexpected_4xx", "api_5xx",
-				},
-				Sinks: []string{"event", "log"},
-			},
-		}},
 	})
 	if _, err := svc.Publish(context.Background(), condition.PublishRequest{
 		Name:     definitionName,
@@ -97,34 +91,54 @@ func newRuntimeWithClock(clock func() time.Time) (*anomalyRuntime, error) {
 	return &anomalyRuntime{service: svc, store: store}, nil
 }
 
+func startPolicyWatcher(ctx context.Context, runtime *anomalyRuntime) {
+	root := filepath.Join(examplebase.Dir(), "decision.bcl")
+	go func() {
+		err := (reload.Watcher{Service: runtime.service}).Watch(ctx, condition.ReloadRequest{
+			Name:     definitionName,
+			Path:     root,
+			RunTests: true,
+		}, func(resp *condition.ReloadResponse) {
+			if resp == nil {
+				log.Printf("condition policy reload attempted with no response")
+				return
+			}
+			switch {
+			case resp.Reloaded:
+				log.Printf("condition policy reloaded changed=%s dependency=%s", resp.ChangedPath, resp.DependencyPath)
+			case resp.KeptLast:
+				log.Printf("condition policy reload failed; kept last known good changed=%s dependency=%s", resp.ChangedPath, resp.DependencyPath)
+			default:
+				log.Printf("condition policy reload skipped changed=%s dependency=%s", resp.ChangedPath, resp.DependencyPath)
+			}
+		})
+		if err != nil && ctx.Err() == nil {
+			log.Printf("condition policy watcher stopped: %v", err)
+		}
+	}()
+}
+
 func newApp(runtime *anomalyRuntime) *fiber.App {
 	app := fiber.New()
 	app.Use(conditionLifecycle(runtime))
 
 	app.Get("/", func(c fiber.Ctx) error {
+		model, _ := runtime.service.ThreatModel(c.Context(), definitionName, "")
 		return c.JSON(fiber.Map{
-			"name": definitionName,
-			"use_cases": []string{
-				"session hijacking and step-up enforcement",
-				"blocked country and data residency enforcement",
-				"payment, order, support, logistics, and data anomalies",
-				"unexpected 4xx and 5xx API health escalation",
-				"action delivery, incidents, state, route coverage, and threat model inspection",
-			},
-			"routes": []string{
-				"POST /session/continue",
-				"POST /payments/authorize",
-				"POST /orders/checkout",
-				"POST /support/tickets",
-				"POST /logistics/shipments",
-				"POST /data/query",
-				"GET|POST /api/resource",
-				"GET /admin/risk-console",
-			},
+			"name":         definitionName,
+			"threat_model": model,
+			"inspect":      []string{"/_rules", "/_threat-model", "/_state", "/_events", "/_actions", "/_incidents", "/_coverage", "/_readiness"},
 		})
 	})
 
 	app.Post("/session/continue", acceptHandler("session", "continued"))
+	app.Post("/accounts/update-profile", acceptHandler("account", "updated"))
+	app.Post("/accounts/register", acceptHandler("registration", "accepted"))
+	app.Post("/fraud/claim", acceptHandler("claim", "submitted"))
+	app.Post("/insider/export", acceptHandler("export", "created"))
+	app.Post("/bots/challenge", acceptHandler("bot", "accepted"))
+	app.Post("/supply-chain/vendor-change", acceptHandler("vendor", "changed"))
+	app.Post("/compliance/screen", acceptHandler("screening", "completed"))
 	app.Post("/payments/authorize", acceptHandler("payment", "authorized"))
 	app.Post("/orders/checkout", acceptHandler("order", "accepted"))
 	app.Post("/support/tickets", acceptHandler("ticket", "created"))
@@ -132,6 +146,18 @@ func newApp(runtime *anomalyRuntime) *fiber.App {
 	app.Post("/data/query", acceptHandler("query", "accepted"))
 	app.Get("/api/resource", apiResourceHandler)
 	app.Post("/api/resource", acceptHandler("resource", "mutated"))
+	app.Get("/traffic/ok", acceptHandler("traffic", "ok"))
+	app.Get("/traffic/missing", func(c fiber.Ctx) error {
+		c.Status(http.StatusNotFound)
+		return c.JSON(fiber.Map{"error": "traffic_not_found"})
+	})
+	app.Get("/traffic/fail", func(c fiber.Ctx) error {
+		c.Status(http.StatusInternalServerError)
+		return c.JSON(fiber.Map{"error": "traffic_failure"})
+	})
+	app.Post("/signals/logs", acceptHandler("signal", "log"))
+	app.Post("/signals/events", acceptHandler("signal", "event"))
+	app.Post("/signals/triggers", acceptHandler("signal", "trigger"))
 	app.Get("/admin/risk-console", acceptHandler("console", "opened"))
 
 	app.Get("/_rules", func(c fiber.Ctx) error {
@@ -144,14 +170,16 @@ func newApp(runtime *anomalyRuntime) *fiber.App {
 		return c.Type("text").SendString(strings.Join(lines, "\n") + "\n")
 	})
 	app.Get("/_threat-model", func(c fiber.Ctx) error {
-		return c.JSON(threatModel())
+		model, err := runtime.service.ThreatModel(c.Context(), definitionName, c.Query("id"))
+		return writeJSON(c, model, err)
 	})
 	app.Get("/_coverage", func(c fiber.Ctx) error {
 		report, err := runtime.service.RouteCoverage(c.Context(), definitionName)
 		return writeJSON(c, report, err)
 	})
 	app.Get("/_state", func(c fiber.Ctx) error {
-		return writeJSON(c, stateSummary(c.Context(), runtime.store, c.Query("actor")), nil)
+		states, err := runtime.service.ListChainStates(c.Context(), storage.ChainStateQuery{Definition: definitionName, EntityKey: c.Query("actor"), IncludeExpired: true, Limit: 100})
+		return writeJSON(c, states, err)
 	})
 	app.Get("/_events", func(c fiber.Ctx) error {
 		events, err := runtime.store.QueryChainEvents(c.Context(), storage.ChainEventQuery{Definition: definitionName, EntityKey: c.Query("actor"), IncludeExpired: true, Limit: 100})
@@ -245,7 +273,7 @@ func requestFacts(c fiber.Ctx) (map[string]any, string) {
 		"body":    body,
 		"format":  bodyFormat(c.Get(fiber.HeaderContentType)),
 	}
-	for _, section := range []string{"actor", "tenant", "session", "device", "network", "geo", "business", "payment", "order", "support", "logistics", "data"} {
+	for _, section := range []string{"actor", "tenant", "session", "device", "network", "geo", "business", "payment", "order", "support", "logistics", "data", "api", "account", "fraud", "insider", "bot", "vendor", "compliance", "signal"} {
 		if value := nestedMap(body, section); len(value) > 0 {
 			facts[section] = value
 		}
@@ -511,30 +539,6 @@ func nonEmptyStrings(values ...string) []string {
 	return out
 }
 
-func stateSummary(ctx context.Context, store *storage.MemoryStore, actor string) []storage.ChainStateRecord {
-	if actor == "" {
-		actor = "anonymous"
-	}
-	var states []storage.ChainStateRecord
-	for _, item := range []struct {
-		chain string
-		watch string
-	}{
-		{"identity_anomaly_chain", "identity_session"},
-		{"geo_policy_chain", "geo_region_policy"},
-		{"business_abuse_chain", "business_abuse"},
-		{"commerce_risk_chain", "commerce_risk"},
-		{"data_exfiltration_chain", "data_exfiltration"},
-		{"api_health_chain", "api_health"},
-	} {
-		state, err := store.GetChainState(ctx, item.chain, item.watch, actor)
-		if err == nil {
-			states = append(states, state)
-		}
-	}
-	return states
-}
-
 func eventSummary(events []storage.ChainEventRecord) []map[string]any {
 	out := make([]map[string]any, 0, len(events))
 	for _, event := range events {
@@ -569,45 +573,21 @@ func actionSummary(records []storage.ActionDeliveryRecord) []map[string]any {
 	return out
 }
 
-func threatModel() map[string]any {
-	return map[string]any{
-		"assets": []string{"sessions", "payments", "orders", "support workflows", "shipments", "PII datasets", "API availability"},
-		"actors": []string{"legitimate users", "compromised accounts", "fraud operators", "malicious insiders", "automation clients"},
-		"abuse_paths": []string{
-			"session token replay followed by sensitive access",
-			"blocked-country access or cross-region data access",
-			"discount, refund, support, and reroute workflow abuse",
-			"payment velocity and shipping/billing mismatch",
-			"bulk PII export and restricted dataset access",
-			"API error bursts hiding automation or system failure",
-		},
-		"detection_signals": []string{"request body facts", "headers", "route metadata", "response status", "chain state", "durable events"},
-		"controls":          []string{"step-up", "challenge", "hold", "block", "terminate session", "quarantine", "suspend", "notify", "escalate", "open case"},
-	}
-}
-
 func policyFiles() []string {
-	return []string{
-		"decision.bcl",
-		"rules/package.bcl",
-		"rules/catalogs.bcl",
-		"rules/routes.bcl",
-		"rules/lifecycle.bcl",
-		"rules/decisions/pre_request_guard.bcl",
-		"rules/decisions/response_observability.bcl",
-		"rules/decisions/session_anomalies.bcl",
-		"rules/decisions/geo_policy.bcl",
-		"rules/decisions/business_rules.bcl",
-		"rules/decisions/commerce_risk.bcl",
-		"rules/decisions/data_governance.bcl",
-		"rules/chains/identity_anomaly.bcl",
-		"rules/chains/geo_policy.bcl",
-		"rules/chains/business_abuse.bcl",
-		"rules/chains/commerce_risk.bcl",
-		"rules/chains/data_exfiltration.bcl",
-		"rules/chains/api_health.bcl",
-		"tests/lifecycle_tests.bcl",
-	}
+	root := examplebase.Dir()
+	var files []string
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || filepath.Ext(path) != ".bcl" {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr == nil {
+			files = append(files, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	sort.Strings(files)
+	return files
 }
 
 func curlExamples(addr string) []string {
@@ -615,10 +595,25 @@ func curlExamples(addr string) []string {
 	return []string{
 		"curl -s " + base + "/",
 		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"alice\"},\"session\":{\"impossible_travel\":true},\"device\":{\"trusted\":true},\"network\":{\"ip_reputation\":10}}' " + base + "/session/continue",
+		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"acct-1\"},\"account\":{\"mfa_disabled\":true},\"device\":{\"changed\":true,\"trusted\":false},\"network\":{\"ip_reputation\":75}}' " + base + "/accounts/update-profile",
+		"for i in {1..4}; do curl -i -H 'Content-Type: application/json' -d \"{\\\"actor\\\":{\\\"id\\\":\\\"reg-$i\\\"},\\\"account\\\":{\\\"email_domain\\\":\\\"example$i.com\\\"},\\\"network\\\":{\\\"ip\\\":\\\"198.51.100.7\\\"}}\" " + base + "/accounts/register; done",
+		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"claimant-1\"},\"fraud\":{\"mule_indicator\":true,\"duplicate_identity\":true}}' " + base + "/fraud/claim",
+		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"employee-1\"},\"insider\":{\"privileged_export\":true,\"sensitive_dataset\":true,\"records_exported\":15000}}' " + base + "/insider/export",
+		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"bot-client\"},\"bot\":{\"credential_stuffing\":true,\"captcha_failures\":4,\"request_entropy\":92}}' " + base + "/bots/challenge",
+		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"buyer-ops\"},\"vendor\":{\"bank_changed\":true,\"new_payee\":true,\"purchase_order_vs_avg\":6}}' " + base + "/supply-chain/vendor-change",
+		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"screening-1\"},\"compliance\":{\"sanctions_hit\":true,\"pep_hit\":true}}' " + base + "/compliance/screen",
 		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"buyer-1\"},\"geo\":{\"country\":\"IR\",\"region\":\"blocked\"},\"payment\":{\"amount_vs_avg\":1,\"velocity_10m\":1,\"new_method\":false,\"shipping_country\":\"IR\",\"billing_country\":\"IR\"}}' " + base + "/payments/authorize",
+		"curl -i -H 'X-Actor: analyst-eu' -H 'X-Role: analyst' -H 'X-Region: eu' -H 'X-Country: DE' " + base + "/admin/risk-console",
 		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"buyer-2\"},\"geo\":{\"country\":\"US\",\"region\":\"us\"},\"payment\":{\"amount_vs_avg\":6,\"velocity_10m\":1,\"new_method\":false,\"shipping_country\":\"US\",\"billing_country\":\"US\"}}' " + base + "/payments/authorize",
 		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"tenant-user-1\"},\"tenant\":{\"verified\":false},\"support\":{\"ticket_spam\":true,\"severity\":1}}' " + base + "/support/tickets",
+		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"support-loop-1\"},\"tenant\":{\"verified\":true},\"support\":{\"reopen_count\":4,\"severity\":3}}' " + base + "/support/tickets",
+		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"shipper-1\"},\"logistics\":{\"route_country_mismatch\":true,\"restricted_destination\":false,\"hazmat\":false,\"carrier_certified\":true,\"reroute_attempts\":0}}' " + base + "/logistics/shipments",
 		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"analyst-1\"},\"tenant\":{\"region\":\"us\",\"verified\":true},\"geo\":{\"country\":\"DE\",\"region\":\"eu\"},\"data\":{\"pii_export\":true,\"bulk_rows\":25000,\"restricted_dataset\":true,\"cross_region\":true}}' " + base + "/data/query",
+		"curl -i -H 'Content-Type: application/json' -d '{\"actor\":{\"id\":\"api-client\"},\"api\":{\"unusual_method_mix\":true,\"endpoint_burst\":25,\"error_ratio\":0.1}}' " + base + "/api/resource",
+		"for i in {1..5}; do curl -i '" + base + "/traffic/ok'; done",
+		"for i in {1..3}; do curl -i '" + base + "/traffic/missing'; done",
+		"for i in {1..3}; do curl -i '" + base + "/traffic/fail'; done",
+		"for i in {1..5}; do curl -i -H 'Content-Type: application/json' -d \"{\\\"actor\\\":{\\\"id\\\":\\\"signal-$i\\\"},\\\"signal\\\":{\\\"source\\\":\\\"worker-$i\\\"}}\" " + base + "/signals/logs; done",
 		"for i in {1..5}; do curl -i '" + base + "/api/resource?mode=fail'; done",
 		"curl -s " + base + "/_threat-model",
 		"curl -s '" + base + "/_state?actor=alice'",
@@ -631,6 +626,8 @@ func curlExamples(addr string) []string {
 }
 
 func runDemo(app *fiber.App, advance func(time.Duration)) {
+	registrationCounter := 0
+	signalCounter := 0
 	requests := []struct {
 		label  string
 		wait   time.Duration
@@ -640,11 +637,41 @@ func runDemo(app *fiber.App, advance func(time.Duration)) {
 		{label: "session hijacking", req: func() *http.Request {
 			return mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"},"session":{"impossible_travel":true},"device":{"trusted":true},"network":{"ip_reputation":10}}`, nil)
 		}},
+		{label: "account takeover", req: func() *http.Request {
+			return mustRequest(http.MethodPost, "/accounts/update-profile", "application/json", `{"actor":{"id":"acct-1"},"account":{"mfa_disabled":true},"device":{"changed":true,"trusted":false},"network":{"ip_reputation":75}}`, nil)
+		}},
+		{label: "registration velocity", repeat: 4, req: func() *http.Request {
+			registrationCounter++
+			return mustRequest(http.MethodPost, "/accounts/register", "application/json", fmt.Sprintf(`{"actor":{"id":"reg-%d"},"account":{"email_domain":"example%d.com"},"network":{"ip":"198.51.100.7"}}`, registrationCounter, registrationCounter), nil)
+		}},
+		{label: "fraud claim", req: func() *http.Request {
+			return mustRequest(http.MethodPost, "/fraud/claim", "application/json", `{"actor":{"id":"claimant-1"},"fraud":{"mule_indicator":true,"duplicate_identity":true}}`, nil)
+		}},
+		{label: "insider export repeated", repeat: 2, req: func() *http.Request {
+			return mustRequest(http.MethodPost, "/insider/export", "application/json", `{"actor":{"id":"employee-1"},"insider":{"privileged_export":true,"sensitive_dataset":true,"records_exported":15000}}`, nil)
+		}},
+		{label: "bot automation", req: func() *http.Request {
+			return mustRequest(http.MethodPost, "/bots/challenge", "application/json", `{"actor":{"id":"bot-client"},"bot":{"credential_stuffing":true,"captcha_failures":4,"request_entropy":92}}`, nil)
+		}},
+		{label: "vendor payment change", repeat: 2, req: func() *http.Request {
+			return mustRequest(http.MethodPost, "/supply-chain/vendor-change", "application/json", `{"actor":{"id":"buyer-ops"},"vendor":{"bank_changed":true,"new_payee":true,"purchase_order_vs_avg":6}}`, nil)
+		}},
+		{label: "compliance screening", req: func() *http.Request {
+			return mustRequest(http.MethodPost, "/compliance/screen", "application/json", `{"actor":{"id":"screening-1"},"compliance":{"sanctions_hit":true,"pep_hit":true}}`, nil)
+		}},
 		{label: "blocked during active step-up", req: func() *http.Request {
 			return mustRequest(http.MethodPost, "/session/continue", "application/json", `{"actor":{"id":"alice"},"session":{"impossible_travel":false},"device":{"trusted":true},"network":{"ip_reputation":10}}`, nil)
 		}},
 		{label: "payment blocked country", req: func() *http.Request {
 			return mustRequest(http.MethodPost, "/payments/authorize", "application/json", `{"actor":{"id":"buyer-1"},"geo":{"country":"IR","region":"blocked"},"payment":{"amount_vs_avg":1,"velocity_10m":1,"new_method":false,"shipping_country":"IR","billing_country":"IR"}}`, nil)
+		}},
+		{label: "restricted admin region", req: func() *http.Request {
+			return mustRequest(http.MethodGet, "/admin/risk-console", "", "", map[string]string{
+				"X-Actor":   "analyst-eu",
+				"X-Role":    "analyst",
+				"X-Region":  "eu",
+				"X-Country": "DE",
+			})
 		}},
 		{label: "payment spike challenge", req: func() *http.Request {
 			return mustRequest(http.MethodPost, "/payments/authorize", "application/json", `{"actor":{"id":"buyer-2"},"geo":{"country":"US","region":"us"},"payment":{"amount_vs_avg":6,"velocity_10m":1,"new_method":false,"shipping_country":"US","billing_country":"US"}}`, nil)
@@ -652,8 +679,33 @@ func runDemo(app *fiber.App, advance func(time.Duration)) {
 		{label: "support abuse repeated", repeat: 2, req: func() *http.Request {
 			return mustRequest(http.MethodPost, "/support/tickets", "application/json", `{"actor":{"id":"tenant-user-1"},"tenant":{"verified":false},"support":{"ticket_spam":true,"severity":1}}`, nil)
 		}},
+		{label: "support reopen loop", req: func() *http.Request {
+			return mustRequest(http.MethodPost, "/support/tickets", "application/json", `{"actor":{"id":"support-loop-1"},"tenant":{"verified":true},"support":{"reopen_count":4,"severity":3}}`, nil)
+		}},
+		{label: "logistics route mismatch", req: func() *http.Request {
+			return mustRequest(http.MethodPost, "/logistics/shipments", "application/json", `{"actor":{"id":"shipper-1"},"logistics":{"route_country_mismatch":true,"restricted_destination":false,"hazmat":false,"carrier_certified":true,"reroute_attempts":0}}`, nil)
+		}},
+		{label: "policy change window", req: func() *http.Request {
+			return mustRequest(http.MethodGet, "/admin/risk-console", "application/json", `{"actor":{"id":"risk-admin","role":"risk_admin"},"geo":{"country":"US","region":"us"},"business":{"business_hours":true,"policy_change":true,"maintenance_window":false}}`, nil)
+		}},
 		{label: "data exfiltration quarantine", req: func() *http.Request {
 			return mustRequest(http.MethodPost, "/data/query", "application/json", `{"actor":{"id":"analyst-1"},"tenant":{"region":"us","verified":true},"geo":{"country":"DE","region":"eu"},"data":{"pii_export":true,"bulk_rows":25000,"restricted_dataset":true,"cross_region":true}}`, nil)
+		}},
+		{label: "api behavior anomaly", req: func() *http.Request {
+			return mustRequest(http.MethodPost, "/api/resource", "application/json", `{"actor":{"id":"api-client"},"api":{"unusual_method_mix":true,"endpoint_burst":25,"error_ratio":0.1}}`, nil)
+		}},
+		{label: "traffic spike", repeat: 5, req: func() *http.Request {
+			return mustRequest(http.MethodGet, "/traffic/ok", "", "", nil)
+		}},
+		{label: "unexpected 4xx ratio", repeat: 3, req: func() *http.Request {
+			return mustRequest(http.MethodGet, "/traffic/missing", "", "", nil)
+		}},
+		{label: "consecutive traffic failures", repeat: 3, req: func() *http.Request {
+			return mustRequest(http.MethodGet, "/traffic/fail", "", "", nil)
+		}},
+		{label: "generic signal burst", repeat: 5, req: func() *http.Request {
+			signalCounter++
+			return mustRequest(http.MethodPost, "/signals/logs", "application/json", fmt.Sprintf(`{"actor":{"id":"signal-%d"},"signal":{"source":"worker-%d"}}`, signalCounter, signalCounter), nil)
 		}},
 		{label: "api failure burst", repeat: 5, req: func() *http.Request {
 			return mustRequest(http.MethodGet, "/api/resource?mode=fail", "", "", nil)

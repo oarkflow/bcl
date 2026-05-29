@@ -1,0 +1,61 @@
+chain "insider_risk_chain" {
+  entity "request.actor_key"
+
+  watch "insider_risk" {
+    event "insider_anomaly"
+    window "1h"
+    metadata {
+      category "insider"
+      threat "privileged_data_exfiltration"
+    }
+
+    step "notify_insider_risk" {
+      id "insider.notify"
+      threshold 1
+      action "notify"
+      severity "high"
+      ttl "10m"
+      response {
+        blocking false
+        status 200
+        body {
+          message "insider risk notification emitted"
+        }
+      }
+    }
+
+    step "quarantine_insider_export" {
+      id "insider.quarantine"
+      threshold 2
+      action "quarantine"
+      severity "critical"
+      ttl "30m"
+      response {
+        blocking true
+        status 423
+        retry_after_seconds 1800
+        body {
+          error "insider_export_quarantined"
+          message "privileged export quarantined after insider-risk signals"
+        }
+      }
+    }
+
+    step "suspend_insider_access" {
+      id "insider.suspend"
+      threshold 4
+      action "suspend"
+      severity "critical"
+      ttl "24h"
+      response {
+        blocking true
+        status 403
+        retry_after_seconds 86400
+        body {
+          error "insider_access_suspended"
+          message "access suspended after repeated insider-risk signals"
+        }
+      }
+    }
+  }
+}

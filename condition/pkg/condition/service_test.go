@@ -1876,6 +1876,106 @@ func TestServiceEvaluateLifecycleDryRunActions(t *testing.T) {
 	}
 }
 
+func TestServiceActionCatalogDrivesSafeSinksWithoutHostAllowlist(t *testing.T) {
+	ctx := context.Background()
+	source := `module "catalog-safe-actions" {
+  action_catalog "default" {
+    action "observe" { sink "event" severity "medium" }
+    action "log_security" { sink "log" severity "high" }
+  }
+  routes "http" {
+    route "ops" { method "GET" pattern "/ops" }
+  }
+  decision_table "observe" {
+    default allow
+    row "event-action" {
+      when { request.kind == "event" }
+      then { decision require_review reason "observe" attributes { action "observe" } }
+      reason "observe"
+      reason_code "OBSERVE"
+    }
+    row "log-action" {
+      when { request.kind == "log" }
+      then { decision require_review reason "log" attributes { action "log_security" } }
+      reason "log"
+      reason_code "LOG_SECURITY"
+    }
+  }
+  lifecycle "http_request" {
+    entity "request.actor_key"
+    routes "http"
+    phase "post" { decision "observe" }
+  }
+}`
+	svc := NewService(storage.NewMemoryStore(), Config{})
+	if resp, err := svc.Publish(ctx, PublishRequest{Name: "catalog-safe-actions", Source: source}); err != nil {
+		t.Fatalf("%v: %#v", err, resp)
+	}
+	if _, err := svc.EvaluateLifecycle(ctx, "catalog-safe-actions", "http_request", LifecycleEvaluateRequest{Phase: "post", Method: "GET", Path: "/ops", Input: map[string]any{"request": map[string]any{"actor_key": "ops", "kind": "event"}}}); err != nil {
+		t.Fatal(err)
+	}
+	eventDeliveries, err := svc.ListActionDeliveries(ctx, storage.ActionDeliveryQuery{Action: "observe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eventDeliveries) != 1 || eventDeliveries[0].Sink != "event" || eventDeliveries[0].Status != "event_persisted" {
+		t.Fatalf("event deliveries = %#v", eventDeliveries)
+	}
+	if _, err := svc.EvaluateLifecycle(ctx, "catalog-safe-actions", "http_request", LifecycleEvaluateRequest{Phase: "post", Method: "GET", Path: "/ops", Input: map[string]any{"request": map[string]any{"actor_key": "ops", "kind": "log"}}}); err != nil {
+		t.Fatal(err)
+	}
+	logDeliveries, err := svc.ListActionDeliveries(ctx, storage.ActionDeliveryQuery{Action: "log_security"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logDeliveries) != 1 || logDeliveries[0].Sink != "log" || logDeliveries[0].Status != "log" || !logDeliveries[0].Handled {
+		t.Fatalf("log deliveries = %#v", logDeliveries)
+	}
+}
+
+func TestServiceWebhookSinkRequiresRuntimeAllowlist(t *testing.T) {
+	ctx := context.Background()
+	source := `module "catalog-webhook-actions" {
+  action_catalog "default" {
+    action "notify" { sink "webhook" severity "high" }
+  }
+  routes "http" {
+    route "ops" { method "GET" pattern "/ops" }
+  }
+  decision_table "observe" {
+    default allow
+    row "notify" {
+      when { true == true }
+      then { decision require_review reason "notify" attributes { action "notify" } }
+      reason "notify"
+      reason_code "NOTIFY"
+    }
+  }
+  lifecycle "http_request" {
+    entity "request.actor_key"
+    routes "http"
+    phase "post" { decision "observe" }
+  }
+}`
+	called := 0
+	svc := NewService(storage.NewMemoryStore(), Config{ActionHandlers: map[string]ActionHandler{
+		"webhook": func(context.Context, LifecycleAction) (ActionResult, error) {
+			called++
+			return ActionResult{Handled: true, Status: "webhook_delivered"}, nil
+		},
+	}})
+	if resp, err := svc.Publish(ctx, PublishRequest{Name: "catalog-webhook-actions", Source: source}); err != nil {
+		t.Fatalf("%v: %#v", err, resp)
+	}
+	resp, err := svc.EvaluateLifecycle(ctx, "catalog-webhook-actions", "http_request", LifecycleEvaluateRequest{Phase: "post", Method: "GET", Path: "/ops", Input: map[string]any{"request": map[string]any{"actor_key": "ops"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called != 0 || len(resp.Evaluation.Actions) != 1 || resp.Evaluation.Actions[0].Result == nil || resp.Evaluation.Actions[0].Result.Status != "action_not_allowlisted" {
+		t.Fatalf("webhook action = %#v called=%d", resp.Evaluation.Actions, called)
+	}
+}
+
 func TestServiceActionRetryMetadata(t *testing.T) {
 	ctx := context.Background()
 	source := `module "retry-actions" {
@@ -1900,11 +2000,16 @@ func TestServiceActionRetryMetadata(t *testing.T) {
     phase "post" { decision "observe" }
   }
 }`
-	svc := NewService(storage.NewMemoryStore(), Config{ActionHandlers: map[string]ActionHandler{
-		"notify": func(context.Context, LifecycleAction) (ActionResult, error) {
-			return ActionResult{}, errors.New("provider unavailable")
+	svc := NewService(storage.NewMemoryStore(), Config{
+		Runtime: RuntimePolicy{ActionAllowlists: []ActionAllowlist{
+			{TenantID: "default", Environment: "development", Actions: []string{"notify"}, Sinks: []string{"webhook"}},
+		}},
+		ActionHandlers: map[string]ActionHandler{
+			"notify": func(context.Context, LifecycleAction) (ActionResult, error) {
+				return ActionResult{}, errors.New("provider unavailable")
+			},
 		},
-	}})
+	})
 	if resp, err := svc.Publish(ctx, PublishRequest{Name: "retry-actions", Source: source}); err != nil {
 		t.Fatalf("%v: %#v", err, resp)
 	}
@@ -1919,7 +2024,7 @@ func TestServiceActionRetryMetadata(t *testing.T) {
 	if len(deliveries) != 1 || deliveries[0].Status != "retry_scheduled" || deliveries[0].MaxAttempts != 3 || deliveries[0].NextAttempt == nil {
 		t.Fatalf("delivery = %#v", deliveries)
 	}
-	deadLetterSvc := NewService(storage.NewMemoryStore(), Config{ActionHandlers: svc.Config().ActionHandlers})
+	deadLetterSvc := NewService(storage.NewMemoryStore(), Config{Runtime: svc.Config().Runtime, ActionHandlers: svc.Config().ActionHandlers})
 	deadLetterSource := strings.Replace(source, `retries 2`, `retries 0`, 1)
 	if resp, err := deadLetterSvc.Publish(ctx, PublishRequest{Name: "dead-letter-actions", Source: deadLetterSource}); err != nil {
 		t.Fatalf("%v: %#v", err, resp)
@@ -2060,6 +2165,147 @@ func TestServiceChainWatchAnalytics(t *testing.T) {
 	attrs := resp.Evaluation.StateAfter[0].Attributes
 	if attrs["distinct_count"] != 2 || attrs["p95"] != float64(900) || attrs["avg"] != float64(400) {
 		t.Fatalf("analytics attrs = %#v", attrs)
+	}
+}
+
+func TestServiceChainWatchAggregationMetrics(t *testing.T) {
+	ctx := context.Background()
+	source := `module "aggregation" {
+  decision_table "noop" {
+    default allow
+    row "ok" {
+      when { true == true }
+      then { decision allow reason "ok" }
+      reason "ok"
+      reason_code "OK"
+    }
+  }
+  chain "signals" {
+    entity "request.application_key"
+    watch "success_drop" {
+      event "signal"
+      window "5m"
+      group_by "route.id"
+      consecutive true
+      step "ratio" {
+        threshold 3
+        action "notify"
+        severity "high"
+        metric "success_ratio"
+        op "<="
+        value 0.5
+      }
+      step "consecutive" {
+        threshold 3
+        action "escalate"
+        severity "critical"
+        metric "consecutive_count"
+        op ">="
+        value 3
+      }
+    }
+  }
+}`
+	now := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
+	svc := NewService(storage.NewMemoryStore(), Config{Clock: func() time.Time { return now }})
+	if resp, err := svc.Publish(ctx, PublishRequest{Name: "aggregation", Source: source}); err != nil {
+		t.Fatalf("%v: %#v", err, resp)
+	}
+	for i, status := range []int{200, 500, 500, 500} {
+		if err := svc.Store().AppendChainEvent(ctx, storage.ChainEventRecord{
+			ID:          newID("evt"),
+			Definition:  "aggregation",
+			Environment: "development",
+			Chain:       "signals",
+			EntityKey:   "app-1",
+			EventType:   "signal",
+			Attributes:  map[string]any{"response": map[string]any{"status": status}, "route": map[string]any{"id": "checkout"}},
+			CreatedAt:   now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp, err := svc.EvaluateChain(ctx, "aggregation", "signals", ChainEvaluateRequest{Input: map[string]any{
+		"request": map[string]any{"application_key": "app-1"},
+		"route":   map[string]any{"id": "checkout"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Evaluation.FinalAction != "escalate" {
+		t.Fatalf("final action = %q attrs=%#v", resp.Evaluation.FinalAction, resp.Evaluation.StateAfter)
+	}
+	attrs := resp.Evaluation.StateAfter[0].Attributes
+	if attrs["failure_count"] != 3 || attrs["success_count"] != 1 || attrs["consecutive_count"] != 3 {
+		t.Fatalf("aggregation attrs = %#v", attrs)
+	}
+	resp, err = svc.EvaluateChain(ctx, "aggregation", "signals", ChainEvaluateRequest{Input: map[string]any{
+		"request": map[string]any{"application_key": "app-1"},
+		"route":   map[string]any{"id": "profile"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Evaluation.FinalAction != "" {
+		t.Fatalf("grouped route should be isolated, got action %q", resp.Evaluation.FinalAction)
+	}
+}
+
+func TestServiceChainWatchBaselineCompare(t *testing.T) {
+	ctx := context.Background()
+	source := `module "baseline" {
+  decision_table "noop" {
+    default allow
+    row "ok" {
+      when { true == true }
+      then { decision allow reason "ok" }
+      reason "ok"
+      reason_code "OK"
+    }
+  }
+  chain "signals" {
+    entity "request.application_key"
+    watch "spike" {
+      event "signal"
+      window "1m"
+      baseline_window "10m"
+      group_by "route.id"
+      step "spike" {
+        threshold 3
+        action "notify"
+        severity "high"
+        metric "rate_per_minute"
+        op ">="
+        value 3
+        compare "baseline"
+      }
+    }
+  }
+}`
+	now := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
+	svc := NewService(storage.NewMemoryStore(), Config{Clock: func() time.Time { return now }})
+	if resp, err := svc.Publish(ctx, PublishRequest{Name: "baseline", Source: source}); err != nil {
+		t.Fatalf("%v: %#v", err, resp)
+	}
+	for i := 0; i < 2; i++ {
+		if err := svc.Store().AppendChainEvent(ctx, storage.ChainEventRecord{ID: newID("base"), Definition: "baseline", Environment: "development", Chain: "signals", EntityKey: "app-1", EventType: "signal", Attributes: map[string]any{"route": map[string]any{"id": "checkout"}}, CreatedAt: now.Add(-9*time.Minute + time.Duration(i)*time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if err := svc.Store().AppendChainEvent(ctx, storage.ChainEventRecord{ID: newID("cur"), Definition: "baseline", Environment: "development", Chain: "signals", EntityKey: "app-1", EventType: "signal", Attributes: map[string]any{"route": map[string]any{"id": "checkout"}}, CreatedAt: now.Add(-time.Duration(i) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp, err := svc.EvaluateChain(ctx, "baseline", "signals", ChainEvaluateRequest{Input: map[string]any{"request": map[string]any{"application_key": "app-1"}, "route": map[string]any{"id": "checkout"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Evaluation.FinalAction != "notify" {
+		t.Fatalf("final action = %q attrs=%#v", resp.Evaluation.FinalAction, resp.Evaluation.StateAfter)
+	}
+	if _, ok := resp.Evaluation.StateAfter[0].Attributes["rate_per_minute_baseline_ratio"]; !ok {
+		t.Fatalf("missing baseline ratio attrs=%#v", resp.Evaluation.StateAfter[0].Attributes)
 	}
 }
 

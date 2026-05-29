@@ -1,0 +1,66 @@
+decision_table "fraud_claim_detection" {
+  contract "anomaly_actions"
+  default allow
+  hit_policy first
+
+  row "synthetic-or-mule-claim" {
+    priority 100
+    when {
+      all {
+        route.id == "fraud_claim"
+        any {
+          request.fraud.synthetic_identity == true
+          request.fraud.mule_indicator == true
+          request.fraud.duplicate_identity == true
+          request.fraud.identity_velocity_24h >= 5
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "fraud claim contains identity graph risk"
+        attributes {
+          action "fraud_anomaly"
+          threat "identity_fraud"
+        }
+        metadata {
+          severity "critical"
+          category "fraud"
+        }
+      }
+    }
+    reason "fraud claim contains identity graph risk"
+    reason_code "FRAUD_IDENTITY_GRAPH"
+  }
+
+  row "suspicious-claim-pattern" {
+    priority 80
+    when {
+      all {
+        route.id == "fraud_claim"
+        any {
+          request.fraud.chargeback_count_30d >= 3
+          request.fraud.claim_amount_vs_avg >= 5
+          request.fraud.shared_device_count >= 4
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "fraud claim amount or history is anomalous"
+        attributes {
+          action "fraud_anomaly"
+          threat "suspicious_claim_pattern"
+        }
+        metadata {
+          severity "high"
+          category "fraud"
+        }
+      }
+    }
+    reason "fraud claim amount or history is anomalous"
+    reason_code "FRAUD_CLAIM_PATTERN"
+  }
+}

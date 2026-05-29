@@ -256,6 +256,13 @@ func TestStoresPersistChainEventsAndState(t *testing.T) {
 			if got.Counters["failed_login"] != 3 || got.Action != "rate_limit" || got.Metadata["category"] != "abuse" {
 				t.Fatalf("state = %#v", got)
 			}
+			states, err := tt.store.ListChainStates(ctx, ChainStateQuery{Chain: "auth", EntityKey: "user-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(states) != 1 || states[0].Watch != "failed" || states[0].Action != "rate_limit" {
+				t.Fatalf("states = %#v", states)
+			}
 			if err := tt.store.DeleteExpiredChainStates(ctx, now.Add(2*time.Hour)); err != nil {
 				t.Fatal(err)
 			}

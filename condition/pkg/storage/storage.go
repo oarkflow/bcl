@@ -158,6 +158,17 @@ type ChainEventQuery struct {
 	Limit          int        `json:"limit,omitempty"`
 }
 
+type ChainStateQuery struct {
+	TenantID       string `json:"tenant_id,omitempty"`
+	Definition     string `json:"definition,omitempty"`
+	Environment    string `json:"environment,omitempty"`
+	Chain          string `json:"chain,omitempty"`
+	Watch          string `json:"watch,omitempty"`
+	EntityKey      string `json:"entity_key,omitempty"`
+	IncludeExpired bool   `json:"include_expired,omitempty"`
+	Limit          int    `json:"limit,omitempty"`
+}
+
 type ActionDeliveryQuery struct {
 	TenantID    string `json:"tenant_id,omitempty"`
 	Definition  string `json:"definition,omitempty"`
@@ -223,6 +234,7 @@ type Store interface {
 	AppendChainEvent(ctx context.Context, event ChainEventRecord) error
 	QueryChainEvents(ctx context.Context, query ChainEventQuery) ([]ChainEventRecord, error)
 	GetChainState(ctx context.Context, chain, watch, entityKey string) (ChainStateRecord, error)
+	ListChainStates(ctx context.Context, query ChainStateQuery) ([]ChainStateRecord, error)
 	UpsertChainState(ctx context.Context, state ChainStateRecord) error
 	DeleteExpiredChainStates(ctx context.Context, now time.Time) error
 	SaveActionDelivery(ctx context.Context, record ActionDeliveryRecord) error

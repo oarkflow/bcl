@@ -131,6 +131,25 @@ func chainWatchFromBlock(block map[string]any) (*ChainWatchDefinition, error) {
 					return nil, fmt.Errorf("watch %q has invalid window %q", watch.ID, watch.Window)
 				}
 			}
+		case "group_by":
+			watch.GroupBy = blockValueString(item["value"])
+		case "baseline_window":
+			watch.BaselineWindow = blockValueString(item["value"])
+			if watch.BaselineWindow != "" {
+				if _, err := chainDuration(watch.BaselineWindow); err != nil {
+					return nil, fmt.Errorf("watch %q has invalid baseline_window %q", watch.ID, watch.BaselineWindow)
+				}
+			}
+		case "compare":
+			watch.Compare = blockValueString(item["value"])
+		case "ratio":
+			watch.Ratio = contentMapAny(item["value"])
+		case "consecutive":
+			watch.Consecutive = truthyAny(item["value"])
+		case "success_statuses":
+			watch.SuccessStatuses = statusRangesFromAny(item["value"])
+		case "failure_statuses":
+			watch.FailureStatuses = statusRangesFromAny(item["value"])
 		case "distinct":
 			watch.Distinct = blockValueString(item["value"])
 		case "field":
@@ -154,6 +173,32 @@ func chainWatchFromBlock(block map[string]any) (*ChainWatchDefinition, error) {
 	body := bodyMap(block["body"])
 	if watch.Distinct == "" {
 		watch.Distinct = stringAny(body["distinct"])
+	}
+	if watch.GroupBy == "" {
+		watch.GroupBy = stringAny(body["group_by"])
+	}
+	if watch.BaselineWindow == "" {
+		watch.BaselineWindow = stringAny(body["baseline_window"])
+	}
+	if watch.BaselineWindow != "" {
+		if _, err := chainDuration(watch.BaselineWindow); err != nil {
+			return nil, fmt.Errorf("watch %q has invalid baseline_window %q", watch.ID, watch.BaselineWindow)
+		}
+	}
+	if watch.Compare == "" {
+		watch.Compare = stringAny(body["compare"])
+	}
+	if watch.Ratio == nil {
+		watch.Ratio = contentMapAny(body["ratio"])
+	}
+	if !watch.Consecutive {
+		watch.Consecutive = truthyAny(body["consecutive"])
+	}
+	if len(watch.SuccessStatuses) == 0 {
+		watch.SuccessStatuses = statusRangesFromAny(body["success_statuses"])
+	}
+	if len(watch.FailureStatuses) == 0 {
+		watch.FailureStatuses = statusRangesFromAny(body["failure_statuses"])
 	}
 	if watch.Field == "" {
 		watch.Field = stringAny(body["field"])
@@ -199,7 +244,10 @@ func chainWatchFromBlock(block map[string]any) (*ChainWatchDefinition, error) {
 	if len(watch.Steps) == 0 {
 		return nil, fmt.Errorf("watch %q is missing steps", watch.ID)
 	}
-	sort.Slice(watch.Steps, func(i, j int) bool { return watch.Steps[i].Threshold < watch.Steps[j].Threshold })
+	if err := validateWatchCompare(watch); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(watch.Steps, func(i, j int) bool { return watch.Steps[i].Threshold < watch.Steps[j].Threshold })
 	return watch, nil
 }
 
@@ -214,8 +262,36 @@ func chainStepFromBlock(block map[string]any) (*ChainStep, error) {
 	step.Action = stringAny(body["action"])
 	step.Severity = stringAny(body["severity"])
 	step.TTL = stringAny(body["ttl"])
-	if step.Threshold <= 0 {
+	when := childBlockContent(block["body"], "when")
+	if len(when) == 0 {
+		when = contentMapAny(body["when"])
+	}
+	step.Metric = stringAny(when["metric"])
+	step.Operator = first(stringAny(when["op"]), stringAny(when["operator"]))
+	step.Value, _ = floatAny(when["value"])
+	step.Compare = stringAny(when["compare"])
+	if step.Metric == "" {
+		step.Metric = stringAny(body["metric"])
+	}
+	if step.Operator == "" {
+		step.Operator = first(stringAny(body["op"]), stringAny(body["operator"]))
+	}
+	if step.Value == 0 {
+		step.Value, _ = floatAny(body["value"])
+	}
+	if step.Compare == "" {
+		step.Compare = stringAny(body["compare"])
+	}
+	if step.Threshold <= 0 && step.Metric == "" {
 		return nil, fmt.Errorf("step %q has invalid threshold", step.ID)
+	}
+	if step.Metric != "" {
+		if step.Operator == "" {
+			step.Operator = ">="
+		}
+		if !validMetricOperator(step.Operator) {
+			return nil, fmt.Errorf("step %q has unsupported metric operator %q", step.ID, step.Operator)
+		}
 	}
 	if step.Action == "" {
 		return nil, fmt.Errorf("step %q is missing action", step.ID)
@@ -227,7 +303,7 @@ func chainStepFromBlock(block map[string]any) (*ChainStep, error) {
 	}
 	for key, value := range body {
 		switch key {
-		case "id", "threshold", "action", "severity", "ttl", "metadata", "response":
+		case "id", "threshold", "action", "severity", "ttl", "metadata", "response", "when", "metric", "op", "operator", "value", "compare":
 		default:
 			step.Attributes[key] = literalValue(value)
 		}
@@ -335,6 +411,13 @@ func contentLiteralValue(v any) any {
 	if m, ok := v.(map[string]any); ok {
 		if fields, ok := m["fields"].([]any); ok {
 			return blockContentMap(fields)
+		}
+		if items, ok := m["items"].([]any); ok {
+			out := make([]any, 0, len(items))
+			for _, item := range items {
+				out = append(out, contentLiteralValue(item))
+			}
+			return out
 		}
 		if data, exists := m["data"]; exists {
 			return data
@@ -588,27 +671,40 @@ func (s *Service) eventsFromDecision(record storage.DefinitionRecord, chain, ent
 	return out
 }
 
-func (s *Service) applyWatch(ctx context.Context, record storage.DefinitionRecord, chainID, entityKey string, watch ChainWatchDefinition, events []storage.ChainEventRecord, previous storage.ChainStateRecord, now time.Time) (storage.ChainStateRecord, []storage.ChainEventRecord) {
+func (s *Service) applyWatch(ctx context.Context, record storage.DefinitionRecord, chainID, entityKey string, watch ChainWatchDefinition, events []storage.ChainEventRecord, previous storage.ChainStateRecord, now time.Time, input map[string]any) (storage.ChainStateRecord, []storage.ChainEventRecord) {
 	window := durationOrZero(watch.Window)
 	since := time.Time{}
 	if window > 0 {
 		since = now.Add(-window)
 	}
+	baselineWindow := durationOrZero(watch.BaselineWindow)
+	baselineSince := time.Time{}
+	if baselineWindow > 0 && window > 0 {
+		baselineSince = since.Add(-baselineWindow)
+	}
+	groupValue := watchGroupValue(input, watch.GroupBy)
 	watchEvents := watch.Events
 	if len(watchEvents) == 0 {
 		watchEvents = []string{watch.Event}
 	}
 	watchEventSet := stringSet(watchEvents)
 	matching := make([]storage.ChainEventRecord, 0, len(events))
+	baseline := make([]storage.ChainEventRecord, 0, len(events))
 	countsByEvent := map[string]int{}
 	for _, event := range events {
 		if event.Chain != chainID || event.EntityKey != entityKey || !watchEventSet[event.EventType] {
 			continue
 		}
-		if !since.IsZero() && event.CreatedAt.Before(since) {
+		if event.ExpiresAt != nil && !event.ExpiresAt.After(now) {
 			continue
 		}
-		if event.ExpiresAt != nil && !event.ExpiresAt.After(now) {
+		if groupValue != "" && eventGroupValue(event, watch.GroupBy) != groupValue {
+			continue
+		}
+		if !since.IsZero() && event.CreatedAt.Before(since) {
+			if !baselineSince.IsZero() && !event.CreatedAt.Before(baselineSince) {
+				baseline = append(baseline, event)
+			}
 			continue
 		}
 		matching = append(matching, event)
@@ -622,7 +718,14 @@ func (s *Service) applyWatch(ctx context.Context, record storage.DefinitionRecor
 	for eventType, eventCount := range countsByEvent {
 		counters[eventType] = eventCount
 	}
-	attributes := watchAnalytics(watch, matching, window)
+	attributes := watchAnalytics(watch, matching, baseline, window, baselineWindow)
+	if groupValue != "" {
+		attributes["group_by"] = watch.GroupBy
+		attributes["group_value"] = groupValue
+	}
+	if groupValue != "" && stringAny(previous.Attributes["group_value"]) != "" && stringAny(previous.Attributes["group_value"]) != groupValue {
+		previous = storage.ChainStateRecord{}
+	}
 	if distinct := intAny(attributes["distinct_count"]); distinct > 0 {
 		counters["distinct"] = distinct
 	}
@@ -668,7 +771,7 @@ func (s *Service) applyWatch(ctx context.Context, record storage.DefinitionRecor
 	}
 	var matched *ChainStep
 	for i := range watch.Steps {
-		if count >= watch.Steps[i].Threshold {
+		if stepMatchesWatch(watch.Steps[i], count, attributes) {
 			matched = &watch.Steps[i]
 		}
 	}
@@ -734,10 +837,14 @@ func (s *Service) applyWatch(ctx context.Context, record storage.DefinitionRecor
 	return state, []storage.ChainEventRecord{event}
 }
 
-func watchAnalytics(watch ChainWatchDefinition, events []storage.ChainEventRecord, window time.Duration) map[string]any {
+func watchAnalytics(watch ChainWatchDefinition, events, baseline []storage.ChainEventRecord, window, baselineWindow time.Duration) map[string]any {
 	out := map[string]any{"count": len(events)}
 	if window > 0 {
 		out["rate_per_minute"] = float64(len(events)) / window.Minutes()
+	}
+	statusAnalytics(out, watch, events)
+	if watch.Consecutive {
+		out["consecutive_count"] = consecutiveFailureCount(watch, events)
 	}
 	if watch.Distinct != "" {
 		seen := map[string]bool{}
@@ -753,6 +860,7 @@ func watchAnalytics(watch ChainWatchDefinition, events []storage.ChainEventRecor
 		field = firstNumericAttributePath(events)
 	}
 	if field == "" || len(events) == 0 {
+		addBaselineAnalytics(out, watch, baseline, baselineWindow)
 		return out
 	}
 	values := make([]float64, 0, len(events))
@@ -762,6 +870,7 @@ func watchAnalytics(watch ChainWatchDefinition, events []storage.ChainEventRecor
 		}
 	}
 	if len(values) == 0 {
+		addBaselineAnalytics(out, watch, baseline, baselineWindow)
 		return out
 	}
 	sort.Float64s(values)
@@ -793,7 +902,179 @@ func watchAnalytics(watch ChainWatchDefinition, events []storage.ChainEventRecor
 			}
 		}
 	}
+	addBaselineAnalytics(out, watch, baseline, baselineWindow)
 	return out
+}
+
+func addBaselineAnalytics(out map[string]any, watch ChainWatchDefinition, baseline []storage.ChainEventRecord, baselineWindow time.Duration) {
+	if baselineWindow <= 0 {
+		return
+	}
+	base := map[string]any{"count": len(baseline)}
+	base["rate_per_minute"] = float64(len(baseline)) / baselineWindow.Minutes()
+	statusAnalytics(base, watch, baseline)
+	for key, value := range base {
+		n, ok := floatAny(value)
+		if !ok {
+			continue
+		}
+		out["baseline_"+key] = n
+		if cur, ok := floatAny(out[key]); ok {
+			out[key+"_delta"] = cur - n
+			if n != 0 {
+				out[key+"_delta_percent"] = ((cur - n) / n) * 100
+				out[key+"_baseline_ratio"] = cur / n
+			}
+		}
+	}
+}
+
+func statusAnalytics(out map[string]any, watch ChainWatchDefinition, events []storage.ChainEventRecord) {
+	success, failure, expected := 0, 0, 0
+	for _, event := range events {
+		status := eventStatus(event)
+		if status <= 0 {
+			continue
+		}
+		switch {
+		case statusMatches(status, watch.SuccessStatuses, true):
+			success++
+		case expectedClientStatus(status):
+			expected++
+		case statusMatches(status, watch.FailureStatuses, false):
+			failure++
+		}
+	}
+	total := success + failure + expected
+	out["success_count"] = success
+	out["failure_count"] = failure
+	out["expected_client_count"] = expected
+	if total > 0 {
+		out["success_ratio"] = float64(success) / float64(total)
+		out["failure_ratio"] = float64(failure) / float64(total)
+	}
+}
+
+func consecutiveFailureCount(watch ChainWatchDefinition, events []storage.ChainEventRecord) int {
+	if len(events) == 0 {
+		return 0
+	}
+	ordered := append([]storage.ChainEventRecord(nil), events...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].CreatedAt.After(ordered[j].CreatedAt) })
+	count := 0
+	for _, event := range ordered {
+		status := eventStatus(event)
+		if status <= 0 {
+			continue
+		}
+		if expectedClientStatus(status) || statusMatches(status, watch.SuccessStatuses, true) {
+			break
+		}
+		if statusMatches(status, watch.FailureStatuses, false) {
+			count++
+			continue
+		}
+		break
+	}
+	return count
+}
+
+func eventStatus(event storage.ChainEventRecord) int {
+	for _, path := range []string{"response.status", "status", "response_status"} {
+		if status := intAny(lookupAnyPath(event.Attributes, path)); status > 0 {
+			return status
+		}
+		if status := intAny(lookupAnyPath(event.Metadata, path)); status > 0 {
+			return status
+		}
+	}
+	return 0
+}
+
+func expectedClientStatus(status int) bool {
+	return status == 400 || status == 401 || status == 403
+}
+
+func statusMatches(status int, ranges []string, successDefault bool) bool {
+	if len(ranges) == 0 {
+		if successDefault {
+			return status >= 200 && status <= 299
+		}
+		return status >= 500 || (status >= 400 && status <= 499 && !expectedClientStatus(status))
+	}
+	for _, item := range ranges {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if strings.Contains(item, "-") {
+			parts := strings.SplitN(item, "-", 2)
+			lo, hi := intAny(parts[0]), intAny(parts[1])
+			if lo > 0 && hi >= lo && status >= lo && status <= hi {
+				return true
+			}
+			continue
+		}
+		if status == intAny(item) {
+			return true
+		}
+	}
+	return false
+}
+
+func stepMatchesWatch(step ChainStep, count int, attrs map[string]any) bool {
+	if step.Metric == "" {
+		return step.Threshold > 0 && count >= step.Threshold
+	}
+	if step.Threshold > 0 && count < step.Threshold {
+		return false
+	}
+	value, ok := metricValueForStep(step, attrs)
+	if !ok {
+		return false
+	}
+	return compareFloat(value, step.Operator, step.Value)
+}
+
+func metricValueForStep(step ChainStep, attrs map[string]any) (float64, bool) {
+	metric := strings.TrimSpace(step.Metric)
+	if metric == "" {
+		return 0, false
+	}
+	if strings.EqualFold(step.Compare, "baseline") {
+		if value, ok := floatAny(attrs[metric+"_baseline_ratio"]); ok {
+			return value, true
+		}
+		current, currentOK := floatAny(attrs[metric])
+		baseline, baselineOK := floatAny(attrs["baseline_"+metric])
+		if currentOK && baselineOK && baseline != 0 {
+			return current / baseline, true
+		}
+		if currentOK && (!baselineOK || baseline == 0) {
+			return current, true
+		}
+		return 0, false
+	}
+	return floatAny(attrs[metric])
+}
+
+func compareFloat(left float64, op string, right float64) bool {
+	switch strings.TrimSpace(op) {
+	case ">", "gt":
+		return left > right
+	case ">=", "gte", "":
+		return left >= right
+	case "<", "lt":
+		return left < right
+	case "<=", "lte":
+		return left <= right
+	case "==", "=", "eq":
+		return left == right
+	case "!=", "ne":
+		return left != right
+	default:
+		return false
+	}
 }
 
 func hasWatchEvent(events []storage.ChainEventRecord, chainID, entityKey, eventType string, since, now time.Time) bool {
@@ -864,6 +1145,124 @@ func percentile(values []float64, p float64) float64 {
 		idx = len(values) - 1
 	}
 	return values[idx]
+}
+
+func watchGroupValue(input map[string]any, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	value := lookupInputPath(input, path)
+	if value == nil && strings.HasPrefix(path, "attributes.") {
+		value = lookupInputPath(input, strings.TrimPrefix(path, "attributes."))
+	}
+	return cleanGroupValue(value)
+}
+
+func eventGroupValue(event storage.ChainEventRecord, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	for _, candidate := range []any{
+		lookupAnyPath(event.Attributes, path),
+		lookupAnyPath(event.Metadata, path),
+		lookupAnyPath(map[string]any{"attributes": event.Attributes, "metadata": event.Metadata}, path),
+		lookupAnyPath(map[string]any{"attributes": event.Attributes, "metadata": event.Metadata}, "attributes."+path),
+		lookupAnyPath(map[string]any{"attributes": event.Attributes, "metadata": event.Metadata}, "metadata."+path),
+	} {
+		if value := cleanGroupValue(candidate); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func cleanGroupValue(value any) string {
+	text := strings.TrimSpace(fmt.Sprint(literalValue(value)))
+	if text == "" || text == "<nil>" {
+		return ""
+	}
+	return text
+}
+
+func statusRangesFromAny(v any) []string {
+	switch x := literalValue(v).(type) {
+	case []any:
+		out := make([]string, 0, len(x))
+		for _, item := range x {
+			if s := strings.TrimSpace(fmt.Sprint(literalValue(item))); s != "" && s != "<nil>" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		if strings.TrimSpace(x) == "" {
+			return nil
+		}
+		return []string{strings.TrimSpace(x)}
+	default:
+		if s := strings.TrimSpace(fmt.Sprint(literalValue(v))); s != "" && s != "<nil>" {
+			return []string{s}
+		}
+		return nil
+	}
+}
+
+func validateWatchCompare(watch *ChainWatchDefinition) error {
+	if watch == nil {
+		return nil
+	}
+	if watch.Compare != "" && !validWatchCompare(watch.Compare) {
+		return fmt.Errorf("watch %q has unsupported compare %q", watch.ID, watch.Compare)
+	}
+	for _, status := range append(append([]string{}, watch.SuccessStatuses...), watch.FailureStatuses...) {
+		if !validStatusRange(status) {
+			return fmt.Errorf("watch %q has invalid status range %q", watch.ID, status)
+		}
+	}
+	for _, step := range watch.Steps {
+		if step.Metric == "" {
+			continue
+		}
+		if step.Compare != "" && !validWatchCompare(step.Compare) {
+			return fmt.Errorf("step %q has unsupported compare %q", step.ID, step.Compare)
+		}
+		if !validMetricOperator(step.Operator) {
+			return fmt.Errorf("step %q has unsupported metric operator %q", step.ID, step.Operator)
+		}
+	}
+	return nil
+}
+
+func validWatchCompare(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "baseline", "absolute":
+		return true
+	default:
+		return false
+	}
+}
+
+func validMetricOperator(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "", ">", ">=", "<", "<=", "==", "=", "!=", "gt", "gte", "lt", "lte", "eq", "ne":
+		return true
+	default:
+		return false
+	}
+}
+
+func validStatusRange(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if strings.Contains(value, "-") {
+		parts := strings.SplitN(value, "-", 2)
+		return intAny(parts[0]) > 0 && intAny(parts[1]) >= intAny(parts[0])
+	}
+	return intAny(value) > 0
 }
 
 func existingGeneratedActive(events []storage.ChainEventRecord, chain, watch, entityKey, action string, now time.Time) bool {

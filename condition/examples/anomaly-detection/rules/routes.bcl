@@ -9,6 +9,76 @@ routes "http" {
     }
   }
 
+  route "account_update_profile" {
+    method "POST"
+    pattern "/accounts/update-profile"
+    metadata {
+      category "account"
+      policy_type "account-takeover"
+      sensitivity "high"
+    }
+  }
+
+  route "account_register" {
+    method "POST"
+    pattern "/accounts/register"
+    metadata {
+      category "identity"
+      policy_type "registration-velocity"
+      sensitivity "medium"
+    }
+  }
+
+  route "fraud_claim" {
+    method "POST"
+    pattern "/fraud/claim"
+    metadata {
+      category "fraud"
+      policy_type "fraud-risk"
+      sensitivity "high"
+    }
+  }
+
+  route "insider_export" {
+    method "POST"
+    pattern "/insider/export"
+    metadata {
+      category "insider"
+      policy_type "insider-risk"
+      sensitivity "critical"
+    }
+  }
+
+  route "bot_challenge" {
+    method "POST"
+    pattern "/bots/challenge"
+    metadata {
+      category "bot"
+      policy_type "bot-defense"
+      sensitivity "medium"
+    }
+  }
+
+  route "vendor_change" {
+    method "POST"
+    pattern "/supply-chain/vendor-change"
+    metadata {
+      category "supply_chain"
+      policy_type "vendor-risk"
+      sensitivity "high"
+    }
+  }
+
+  route "compliance_screen" {
+    method "POST"
+    pattern "/compliance/screen"
+    metadata {
+      category "compliance"
+      policy_type "compliance-risk"
+      sensitivity "critical"
+    }
+  }
+
   route "payment_authorize" {
     method "POST"
     pattern "/payments/authorize"
@@ -75,6 +145,66 @@ routes "http" {
     metadata {
       category "api"
       policy_type "api-health"
+      sensitivity "medium"
+    }
+  }
+
+  route "traffic_ok" {
+    method "GET"
+    pattern "/traffic/ok"
+    metadata {
+      category "traffic"
+      policy_type "api-aggregation"
+      sensitivity "low"
+    }
+  }
+
+  route "traffic_missing" {
+    method "GET"
+    pattern "/traffic/missing"
+    metadata {
+      category "traffic"
+      policy_type "api-aggregation"
+      sensitivity "low"
+    }
+  }
+
+  route "traffic_fail" {
+    method "GET"
+    pattern "/traffic/fail"
+    metadata {
+      category "traffic"
+      policy_type "api-aggregation"
+      sensitivity "medium"
+    }
+  }
+
+  route "signal_logs" {
+    method "POST"
+    pattern "/signals/logs"
+    metadata {
+      category "signals"
+      policy_type "generic-aggregation"
+      sensitivity "medium"
+    }
+  }
+
+  route "signal_events" {
+    method "POST"
+    pattern "/signals/events"
+    metadata {
+      category "signals"
+      policy_type "generic-aggregation"
+      sensitivity "medium"
+    }
+  }
+
+  route "signal_triggers" {
+    method "POST"
+    pattern "/signals/triggers"
+    metadata {
+      category "signals"
+      policy_type "generic-aggregation"
       sensitivity "medium"
     }
   }

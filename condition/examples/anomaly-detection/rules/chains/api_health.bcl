@@ -6,6 +6,7 @@ chain "api_health_chain" {
     events [
       "api_5xx"
       "unexpected_4xx"
+      "api_behavior_anomaly"
     ]
     window "10m"
     metadata {

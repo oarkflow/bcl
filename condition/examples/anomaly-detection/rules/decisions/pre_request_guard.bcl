@@ -69,6 +69,72 @@ decision_table "pre_request_guard" {
     reason_code "ACTIVE_STEP_UP"
   }
 
+  row "active-account-suspend" {
+    priority 575
+    when {
+      chain_state.account_takeover.step == "suspend_account_access"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active account takeover suspension"
+        attributes {
+          result "account.suspend"
+        }
+        metadata {
+          severity "critical"
+          category "account"
+        }
+      }
+    }
+    reason "active account takeover suspension"
+    reason_code "ACTIVE_ACCOUNT_SUSPEND"
+  }
+
+  row "active-account-terminate" {
+    priority 574
+    when {
+      chain_state.account_takeover.step == "terminate_account_session"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active account session termination"
+        attributes {
+          result "account.terminate"
+        }
+        metadata {
+          severity "critical"
+          category "account"
+        }
+      }
+    }
+    reason "active account session termination"
+    reason_code "ACTIVE_ACCOUNT_TERMINATE"
+  }
+
+  row "active-account-step-up" {
+    priority 573
+    when {
+      chain_state.account_takeover.step == "step_up_account"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active account step-up requirement"
+        attributes {
+          result "account.step_up"
+        }
+        metadata {
+          severity "high"
+          category "account"
+        }
+      }
+    }
+    reason "active account step-up requirement"
+    reason_code "ACTIVE_ACCOUNT_STEP_UP"
+  }
+
   row "active-geo-suspend" {
     priority 560
     when {
@@ -157,6 +223,50 @@ decision_table "pre_request_guard" {
     reason_code "ACTIVE_DATA_QUARANTINE"
   }
 
+  row "active-insider-suspend" {
+    priority 515
+    when {
+      chain_state.insider_risk.step == "suspend_insider_access"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active insider-risk suspension"
+        attributes {
+          result "insider.suspend"
+        }
+        metadata {
+          severity "critical"
+          category "insider"
+        }
+      }
+    }
+    reason "active insider-risk suspension"
+    reason_code "ACTIVE_INSIDER_SUSPEND"
+  }
+
+  row "active-insider-quarantine" {
+    priority 514
+    when {
+      chain_state.insider_risk.step == "quarantine_insider_export"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active insider export quarantine"
+        attributes {
+          result "insider.quarantine"
+        }
+        metadata {
+          severity "critical"
+          category "insider"
+        }
+      }
+    }
+    reason "active insider export quarantine"
+    reason_code "ACTIVE_INSIDER_QUARANTINE"
+  }
+
   row "active-commerce-reject" {
     priority 500
     when {
@@ -223,6 +333,94 @@ decision_table "pre_request_guard" {
     reason_code "ACTIVE_COMMERCE_CHALLENGE"
   }
 
+  row "active-fraud-case" {
+    priority 475
+    when {
+      chain_state.fraud_risk.step == "open_fraud_case"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active fraud case"
+        attributes {
+          result "fraud.open_case"
+        }
+        metadata {
+          severity "critical"
+          category "fraud"
+        }
+      }
+    }
+    reason "active fraud case"
+    reason_code "ACTIVE_FRAUD_CASE"
+  }
+
+  row "active-fraud-reject" {
+    priority 474
+    when {
+      chain_state.fraud_risk.step == "reject_claim"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active fraud rejection"
+        attributes {
+          result "fraud.reject"
+        }
+        metadata {
+          severity "critical"
+          category "fraud"
+        }
+      }
+    }
+    reason "active fraud rejection"
+    reason_code "ACTIVE_FRAUD_REJECT"
+  }
+
+  row "active-fraud-hold" {
+    priority 473
+    when {
+      chain_state.fraud_risk.step == "hold_claim"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active fraud hold"
+        attributes {
+          result "fraud.hold"
+        }
+        metadata {
+          severity "high"
+          category "fraud"
+        }
+      }
+    }
+    reason "active fraud hold"
+    reason_code "ACTIVE_FRAUD_HOLD"
+  }
+
+  row "active-fraud-challenge" {
+    priority 472
+    when {
+      chain_state.fraud_risk.step == "challenge_claim"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active fraud challenge"
+        attributes {
+          result "fraud.challenge"
+        }
+        metadata {
+          severity "high"
+          category "fraud"
+        }
+      }
+    }
+    reason "active fraud challenge"
+    reason_code "ACTIVE_FRAUD_CHALLENGE"
+  }
+
   row "active-business-case" {
     priority 460
     when {
@@ -265,5 +463,181 @@ decision_table "pre_request_guard" {
     }
     reason "active business hold"
     reason_code "ACTIVE_BUSINESS_HOLD"
+  }
+
+  row "active-bot-suspend" {
+    priority 440
+    when {
+      chain_state.bot_defense.step == "suspend_bot_actor"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active bot actor suspension"
+        attributes {
+          result "bot.suspend"
+        }
+        metadata {
+          severity "critical"
+          category "bot"
+        }
+      }
+    }
+    reason "active bot actor suspension"
+    reason_code "ACTIVE_BOT_SUSPEND"
+  }
+
+  row "active-bot-hold" {
+    priority 439
+    when {
+      chain_state.bot_defense.step == "hold_bot"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active bot traffic hold"
+        attributes {
+          result "bot.hold"
+        }
+        metadata {
+          severity "high"
+          category "bot"
+        }
+      }
+    }
+    reason "active bot traffic hold"
+    reason_code "ACTIVE_BOT_HOLD"
+  }
+
+  row "active-bot-challenge" {
+    priority 438
+    when {
+      chain_state.bot_defense.step == "challenge_bot"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active bot challenge"
+        attributes {
+          result "bot.challenge"
+        }
+        metadata {
+          severity "high"
+          category "bot"
+        }
+      }
+    }
+    reason "active bot challenge"
+    reason_code "ACTIVE_BOT_CHALLENGE"
+  }
+
+  row "active-vendor-case" {
+    priority 430
+    when {
+      chain_state.vendor_risk.step == "open_vendor_case"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active vendor risk case"
+        attributes {
+          result "vendor.open_case"
+        }
+        metadata {
+          severity "critical"
+          category "supply_chain"
+        }
+      }
+    }
+    reason "active vendor risk case"
+    reason_code "ACTIVE_VENDOR_CASE"
+  }
+
+  row "active-vendor-hold" {
+    priority 429
+    when {
+      chain_state.vendor_risk.step == "hold_vendor_change"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active vendor change hold"
+        attributes {
+          result "vendor.hold"
+        }
+        metadata {
+          severity "high"
+          category "supply_chain"
+        }
+      }
+    }
+    reason "active vendor change hold"
+    reason_code "ACTIVE_VENDOR_HOLD"
+  }
+
+  row "active-compliance-case" {
+    priority 420
+    when {
+      chain_state.compliance_risk.step == "open_compliance_case"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active compliance case"
+        attributes {
+          result "compliance.open_case"
+        }
+        metadata {
+          severity "critical"
+          category "compliance"
+        }
+      }
+    }
+    reason "active compliance case"
+    reason_code "ACTIVE_COMPLIANCE_CASE"
+  }
+
+  row "active-compliance-reject" {
+    priority 419
+    when {
+      chain_state.compliance_risk.step == "reject_compliance"
+    }
+    then {
+      outcome {
+        decision deny
+        reason "active compliance rejection"
+        attributes {
+          result "compliance.reject"
+        }
+        metadata {
+          severity "critical"
+          category "compliance"
+        }
+      }
+    }
+    reason "active compliance rejection"
+    reason_code "ACTIVE_COMPLIANCE_REJECT"
+  }
+
+  row "active-compliance-hold" {
+    priority 418
+    when {
+      chain_state.compliance_risk.step == "hold_compliance"
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "active compliance hold"
+        attributes {
+          result "compliance.hold"
+        }
+        metadata {
+          severity "critical"
+          category "compliance"
+        }
+      }
+    }
+    reason "active compliance hold"
+    reason_code "ACTIVE_COMPLIANCE_HOLD"
   }
 }

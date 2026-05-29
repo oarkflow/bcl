@@ -1,0 +1,37 @@
+decision_table "bot_behavior_detection" {
+  contract "anomaly_actions"
+  default allow
+  hit_policy first
+
+  row "credential-stuffing-or-headless" {
+    priority 100
+    when {
+      all {
+        route.id == "bot_challenge"
+        any {
+          request.bot.credential_stuffing == true
+          request.bot.headless == true
+          request.bot.captcha_failures >= 3
+          request.bot.request_entropy >= 90
+          request.bot.scrape_rate >= 100
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "bot or automation anomaly detected"
+        attributes {
+          action "bot_anomaly"
+          threat "automation_abuse"
+        }
+        metadata {
+          severity "high"
+          category "bot"
+        }
+      }
+    }
+    reason "bot or automation anomaly detected"
+    reason_code "BOT_AUTOMATION"
+  }
+}

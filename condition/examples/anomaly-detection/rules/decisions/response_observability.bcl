@@ -53,6 +53,35 @@ decision_table "response_observability" {
     reason_code "UNEXPECTED_4XX"
   }
 
+  row "api-behavior-anomaly" {
+    priority 70
+    when {
+      all {
+        route.category == "api"
+        any {
+          request.api.unusual_method_mix == true
+          request.api.endpoint_burst >= 20
+          request.api.error_ratio >= 0.5
+        }
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "API behavior anomaly detected"
+        attributes {
+          action "api_behavior_anomaly"
+        }
+        metadata {
+          severity "high"
+          category "api"
+        }
+      }
+    }
+    reason "API behavior anomaly detected"
+    reason_code "API_BEHAVIOR_ANOMALY"
+  }
+
   row "healthy-response" {
     priority 10
     when {

@@ -38,6 +38,7 @@ decision_table "business_rule_detection" {
         any {
           request.support.ticket_spam == true
           request.support.sla_manipulation == true
+          request.support.reopen_count >= 3
           all {
             request.support.severity <= 1
             request.tenant.verified == false
@@ -70,6 +71,7 @@ decision_table "business_rule_detection" {
         route.id == "logistics_shipment"
         any {
           request.logistics.restricted_destination == true
+          request.logistics.route_country_mismatch == true
           all {
             request.logistics.hazmat == true
             request.logistics.carrier_certified == false
@@ -94,6 +96,33 @@ decision_table "business_rule_detection" {
     }
     reason "logistics business anomaly detected"
     reason_code "LOGISTICS_POLICY"
+  }
+
+  row "policy-change-outside-maintenance" {
+    priority 75
+    when {
+      all {
+        route.id == "risk_console"
+        request.business.policy_change == true
+        request.business.maintenance_window == false
+      }
+    }
+    then {
+      outcome {
+        decision require_review
+        reason "policy change attempted outside maintenance window"
+        attributes {
+          action "business_rule_violation"
+          threat "policy_change_outside_maintenance"
+        }
+        metadata {
+          severity "critical"
+          category "business"
+        }
+      }
+    }
+    reason "policy change attempted outside maintenance window"
+    reason_code "POLICY_CHANGE_WINDOW"
   }
 
   row "order-business-abuse" {

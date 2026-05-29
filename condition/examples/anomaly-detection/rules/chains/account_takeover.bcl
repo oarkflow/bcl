@@ -1,0 +1,63 @@
+chain "account_takeover_chain" {
+  entity "request.actor_key"
+
+  watch "account_takeover" {
+    event "account_anomaly"
+    window "1h"
+    metadata {
+      category "account"
+      threat "account_takeover"
+    }
+
+    step "step_up_account" {
+      id "account.step_up"
+      threshold 1
+      action "step_up"
+      severity "high"
+      ttl "10m"
+      response {
+        blocking true
+        status 401
+        retry_after_seconds 600
+        body {
+          error "account_step_up_required"
+          message "account mutation requires step-up verification"
+        }
+      }
+    }
+
+    step "terminate_account_session" {
+      id "account.terminate"
+      threshold 3
+      action "terminate_session"
+      severity "critical"
+      ttl "30m"
+      response {
+        blocking true
+        status 401
+        retry_after_seconds 1800
+        body {
+          error "account_session_terminated"
+          message "session terminated after repeated account takeover signals"
+        }
+      }
+    }
+
+    step "suspend_account_access" {
+      id "account.suspend"
+      threshold 5
+      action "suspend"
+      severity "critical"
+      ttl "24h"
+      response {
+        blocking true
+        status 403
+        retry_after_seconds 86400
+        body {
+          error "account_access_suspended"
+          message "account access suspended after repeated takeover signals"
+        }
+      }
+    }
+  }
+}

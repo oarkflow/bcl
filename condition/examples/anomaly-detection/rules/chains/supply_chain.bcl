@@ -1,0 +1,61 @@
+chain "supply_chain_chain" {
+  entity "request.actor_key"
+
+  watch "vendor_risk" {
+    event "vendor_anomaly"
+    window "24h"
+    metadata {
+      category "supply_chain"
+      threat "vendor_payment_diversion"
+    }
+
+    step "notify_vendor_risk" {
+      id "vendor.notify"
+      threshold 1
+      action "notify"
+      severity "high"
+      ttl "15m"
+      response {
+        blocking false
+        status 200
+        body {
+          message "vendor risk notification emitted"
+        }
+      }
+    }
+
+    step "hold_vendor_change" {
+      id "vendor.hold"
+      threshold 2
+      action "hold"
+      severity "high"
+      ttl "1h"
+      response {
+        blocking true
+        status 409
+        retry_after_seconds 3600
+        body {
+          error "vendor_change_held"
+          message "vendor change held for supply-chain review"
+        }
+      }
+    }
+
+    step "open_vendor_case" {
+      id "vendor.open_case"
+      threshold 4
+      action "open_case"
+      severity "critical"
+      ttl "24h"
+      response {
+        blocking true
+        status 409
+        retry_after_seconds 86400
+        body {
+          error "vendor_case_opened"
+          message "risk case opened for repeated vendor anomalies"
+        }
+      }
+    }
+  }
+}
