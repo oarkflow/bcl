@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
-	"github.com/oarkflow/condition/examples/internal/examplebase"
-	condition "github.com/oarkflow/condition/pkg/condition"
-	"github.com/oarkflow/condition/pkg/storage"
+	"github.com/oarkflow/bcl/condition/examples/internal/examplebase"
+	condition "github.com/oarkflow/bcl/condition/pkg/condition"
+	"github.com/oarkflow/bcl/condition/pkg/storage"
 )
 
 const definitionName = "complete-platform"

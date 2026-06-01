@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oarkflow/condition/pkg/storage"
+	"github.com/oarkflow/bcl/condition/pkg/storage"
 )
 
 func BenchmarkServicePublishStrict(b *testing.B) {

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/oarkflow/bcl"
-	"github.com/oarkflow/condition/pkg/audit"
+	"github.com/oarkflow/bcl/condition/pkg/audit"
 )
 
 type DefinitionRecord struct {

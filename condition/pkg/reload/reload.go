@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/oarkflow/bcl"
-	condition "github.com/oarkflow/condition/pkg/condition"
+	condition "github.com/oarkflow/bcl/condition/pkg/condition"
 )
 
 type Watcher struct {

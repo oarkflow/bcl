@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/oarkflow/bcl"
-	"github.com/oarkflow/condition/pkg/audit"
-	"github.com/oarkflow/condition/pkg/storage"
+	"github.com/oarkflow/bcl/condition/pkg/audit"
+	"github.com/oarkflow/bcl/condition/pkg/storage"
 )
 
 const demoSource = `module "demo" {

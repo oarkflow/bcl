@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/oarkflow/authz"
-	"github.com/oarkflow/condition/pkg/routing"
+	"github.com/oarkflow/bcl/condition/pkg/routing"
 )
 
 type routeSpec struct {

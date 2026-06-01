@@ -3,7 +3,7 @@ package condition
 import (
 	"context"
 
-	"github.com/oarkflow/condition/pkg/storage"
+	"github.com/oarkflow/bcl/condition/pkg/storage"
 )
 
 type contextKey string

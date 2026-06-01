@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oarkflow/condition/pkg/audit"
+	"github.com/oarkflow/bcl/condition/pkg/audit"
 	_ "modernc.org/sqlite"
 )
 

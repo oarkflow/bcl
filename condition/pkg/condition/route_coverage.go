@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/oarkflow/condition/pkg/storage"
+	"github.com/oarkflow/bcl/condition/pkg/storage"
 )
 
 func (s *Service) RouteCoverage(ctx context.Context, definition string) (*RouteCoverageReport, error) {

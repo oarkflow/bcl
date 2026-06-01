@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"time"
 
-	condition "github.com/oarkflow/condition/pkg/condition"
-	"github.com/oarkflow/condition/pkg/storage"
+	condition "github.com/oarkflow/bcl/condition/pkg/condition"
+	"github.com/oarkflow/bcl/condition/pkg/storage"
 )
 
 func main() {

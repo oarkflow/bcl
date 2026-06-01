@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/oarkflow/bcl"
-	condition "github.com/oarkflow/condition/pkg/condition"
-	"github.com/oarkflow/condition/pkg/server"
-	"github.com/oarkflow/condition/pkg/storage"
+	condition "github.com/oarkflow/bcl/condition/pkg/condition"
+	"github.com/oarkflow/bcl/condition/pkg/server"
+	"github.com/oarkflow/bcl/condition/pkg/storage"
 	"gopkg.in/yaml.v3"
 )
 

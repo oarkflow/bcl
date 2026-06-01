@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/oarkflow/condition/pkg/storage"
+	"github.com/oarkflow/bcl/condition/pkg/storage"
 )
 
 func TestConditionExamplesValidateStrict(t *testing.T) {

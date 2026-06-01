@@ -16,9 +16,9 @@ import (
 	"github.com/oarkflow/authz"
 	authzmw "github.com/oarkflow/authz/middleware"
 	authzstores "github.com/oarkflow/authz/stores"
-	condition "github.com/oarkflow/condition/pkg/condition"
-	"github.com/oarkflow/condition/pkg/routing"
-	"github.com/oarkflow/condition/pkg/storage"
+	condition "github.com/oarkflow/bcl/condition/pkg/condition"
+	"github.com/oarkflow/bcl/condition/pkg/routing"
+	"github.com/oarkflow/bcl/condition/pkg/storage"
 )
 
 type Server struct {

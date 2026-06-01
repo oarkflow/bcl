@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oarkflow/condition/pkg/audit"
+	"github.com/oarkflow/bcl/condition/pkg/audit"
 )
 
 type MemoryStore struct {

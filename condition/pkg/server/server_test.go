@@ -13,8 +13,8 @@ import (
 
 	"github.com/oarkflow/authz"
 	authzstores "github.com/oarkflow/authz/stores"
-	condition "github.com/oarkflow/condition/pkg/condition"
-	"github.com/oarkflow/condition/pkg/storage"
+	condition "github.com/oarkflow/bcl/condition/pkg/condition"
+	"github.com/oarkflow/bcl/condition/pkg/storage"
 )
 
 func TestServerPublishEvaluateAndAudit(t *testing.T) {

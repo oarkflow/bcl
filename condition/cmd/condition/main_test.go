@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/oarkflow/condition/pkg/server"
+	"github.com/oarkflow/bcl/condition/pkg/server"
 )
 
 func TestLoadConfigBCLProductionExample(t *testing.T) {

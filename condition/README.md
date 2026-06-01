@@ -5,7 +5,7 @@ Condition is a BCL-backed decision automation platform for policy evaluation, ra
 This module is intentionally separate from the root BCL module:
 
 ```go
-module github.com/oarkflow/condition
+module github.com/oarkflow/bcl/condition
 
 replace github.com/oarkflow/bcl => ..
 ```

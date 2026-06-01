@@ -1,4 +1,4 @@
-module github.com/oarkflow/condition
+module github.com/oarkflow/bcl/condition
 
 go 1.26.2
 
