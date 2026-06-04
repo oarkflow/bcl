@@ -262,6 +262,73 @@ func TestMarshalNestedCollectionsUseBCLSyntax(t *testing.T) {
 	}
 }
 
+func TestMarshalUnmarshalNamedBlocks(t *testing.T) {
+	type Command struct {
+		Name    string   `bcl:",id"`
+		Phase   string   `bcl:"phase,ident"`
+		Command []string `bcl:"exec"`
+		Timeout int      `bcl:"timeout"`
+	}
+	type Profile struct {
+		Name     string         `bcl:",id"`
+		Kind     string         `bcl:"kind,ident"`
+		Commands []Command      `bcl:"command,block"`
+		Env      map[string]any `bcl:"env"`
+	}
+	type Config struct {
+		Profiles []Profile `bcl:"profile,block"`
+	}
+
+	src := []byte(`
+profile "python" {
+  kind python
+  command "prepare" {
+    phase pre_embed
+    exec ["scripts/prepare.sh"]
+    timeout 900
+  }
+  env {
+    APPVAULT_MODEL_PATH default("models/anti_spoof.onnx")
+  }
+}
+`)
+	var cfg Config
+	if err := Unmarshal(src, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Profiles) != 1 || cfg.Profiles[0].Name != "python" || len(cfg.Profiles[0].Commands) != 1 {
+		t.Fatalf("decoded blocks = %#v", cfg)
+	}
+
+	out, err := Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	for _, want := range []string{
+		`profile "python" {`,
+		`kind python`,
+		`command "prepare" {`,
+		`phase pre_embed`,
+		`APPVAULT_MODEL_PATH default("models/anti_spoof.onnx")`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("marshal missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "profiles [") || strings.Contains(got, `"name":`) {
+		t.Fatalf("marshal used data-literal/JSON-ish shape:\n%s", got)
+	}
+
+	var roundTrip Config
+	if err := Unmarshal(out, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if len(roundTrip.Profiles) != 1 || roundTrip.Profiles[0].Commands[0].Phase != "pre_embed" {
+		t.Fatalf("round trip = %#v", roundTrip)
+	}
+}
+
 func TestFormatAndDecode(t *testing.T) {
 	src := []byte(`name "x"
 roles { admin

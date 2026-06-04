@@ -1,0 +1,31 @@
+profile "python" {
+  kind python
+  runtime python
+  dependency_mode vendored
+
+  detect_files ["requirements.txt", "app/main.py"]
+  start_command ["python3", "-m", "app.main"]
+
+  startup_timeout 10
+  shutdown_timeout 5
+  health_path "/healthz"
+
+  command "prepare" {
+    phase pre_embed
+    exec ["scripts/prepare.sh"]
+    timeout 900
+  }
+
+  command "test" {
+    phase manual
+    exec ["scripts/prepare-dev.sh", "test"]
+    timeout 900
+  }
+
+  env {
+    PYTHONDONTWRITEBYTECODE "1"
+    PYTHONPATH "vendor"
+    APPVAULT_CAPTURE_DIR "${state.storage}/captures"
+    APPVAULT_MODEL_PATH default("models/anti_spoof.onnx")
+  }
+}

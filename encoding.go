@@ -37,7 +37,14 @@ func UnmarshalWithOptions(data []byte, v any, opts *Options) error {
 	if rv.Kind() != reflect.Pointer || rv.IsNil() {
 		return fmt.Errorf("bcl: Unmarshal target must be a non-nil pointer")
 	}
-	return assignGoValue(rv.Elem(), n.Body)
+	src := make(map[string]any, len(n.Body)+1)
+	for k, v := range n.Body {
+		src[k] = v
+	}
+	if len(n.Blocks) > 0 {
+		src["$blocks"] = n.Blocks
+	}
+	return assignGoValue(rv.Elem(), src)
 }
 
 type Encoder struct {
@@ -132,44 +139,16 @@ func writeGoValue(b *bytes.Buffer, rv reflect.Value, indent int, name string) er
 			fmt.Fprintf(b, "%s%s {\n", pad(indent), name)
 			indent++
 		}
-		rt := rv.Type()
-		for i := 0; i < rv.NumField(); i++ {
-			sf := rt.Field(i)
-			if sf.PkgPath != "" {
-				continue
-			}
-			tag := parseTag(sf.Tag.Get("bcl"))
-			if tag.skip {
-				continue
-			}
-			fv := rv.Field(i)
-			if tag.omitEmpty && isZero(fv) {
-				continue
-			}
-			fieldName := tag.name
-			if fieldName == "" {
-				fieldName = lowerFirst(sf.Name)
-			}
-			if tag.inline {
-				if err := writeGoValue(b, fv, indent, ""); err != nil {
-					return err
-				}
-				continue
-			}
-			if tag.sensitive {
-				fmt.Fprintf(b, "%s%s sensitive(", pad(indent), fieldName)
-				writeScalar(b, fv)
-				b.WriteString(")\n")
-				continue
-			}
-			if err := writeGoValue(b, fv, indent, fieldName); err != nil {
-				return err
-			}
+		if err := writeStructFields(b, rv, indent); err != nil {
+			return err
 		}
 		if name != "" {
 			fmt.Fprintf(b, "%s}\n", pad(indent-1))
 		}
 	case reflect.Map:
+		if writeSpecialMapValue(b, rv, indent, name) {
+			return nil
+		}
 		if name != "" {
 			fmt.Fprintf(b, "%s%s {\n", pad(indent), name)
 			indent++
@@ -196,6 +175,118 @@ func writeGoValue(b *bytes.Buffer, rv reflect.Value, indent int, name string) er
 		b.WriteByte('\n')
 	}
 	return nil
+}
+
+func writeStructFields(b *bytes.Buffer, rv reflect.Value, indent int) error {
+	rt := rv.Type()
+	for i := 0; i < rv.NumField(); i++ {
+		sf := rt.Field(i)
+		if sf.PkgPath != "" {
+			continue
+		}
+		tag := parseTag(sf.Tag.Get("bcl"))
+		if tag.skip || tag.id {
+			continue
+		}
+		fv := rv.Field(i)
+		if tag.omitEmpty && isZero(fv) {
+			continue
+		}
+		fieldName := tag.name
+		if fieldName == "" {
+			fieldName = lowerFirst(sf.Name)
+		}
+		if tag.inline {
+			if err := writeGoValue(b, fv, indent, ""); err != nil {
+				return err
+			}
+			continue
+		}
+		if tag.block {
+			if err := writeBlockValues(b, fv, indent, fieldName); err != nil {
+				return err
+			}
+			continue
+		}
+		if tag.sensitive {
+			fmt.Fprintf(b, "%s%s sensitive(", pad(indent), fieldName)
+			writeScalar(b, fv)
+			b.WriteString(")\n")
+			continue
+		}
+		if tag.ident {
+			fmt.Fprintf(b, "%s%s %s\n", pad(indent), fieldName, identValue(fv))
+			continue
+		}
+		if err := writeGoValue(b, fv, indent, fieldName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeBlockValues(b *bytes.Buffer, rv reflect.Value, indent int, blockType string) error {
+	rv = indirectValue(rv)
+	if !rv.IsValid() {
+		return nil
+	}
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < rv.Len(); i++ {
+			if err := writeBlockValue(b, rv.Index(i), indent, blockType); err != nil {
+				return err
+			}
+			if i+1 < rv.Len() {
+				b.WriteByte('\n')
+			}
+		}
+	default:
+		return writeBlockValue(b, rv, indent, blockType)
+	}
+	return nil
+}
+
+func writeBlockValue(b *bytes.Buffer, rv reflect.Value, indent int, blockType string) error {
+	rv = indirectValue(rv)
+	if !rv.IsValid() {
+		return nil
+	}
+	id := blockStructID(rv)
+	if id != "" {
+		fmt.Fprintf(b, "%s%s %s {\n", pad(indent), blockType, quoteBCLString(id))
+	} else {
+		fmt.Fprintf(b, "%s%s {\n", pad(indent), blockType)
+	}
+	if rv.Kind() == reflect.Struct {
+		if err := writeStructFields(b, rv, indent+1); err != nil {
+			return err
+		}
+	} else {
+		if err := writeGoValue(b, rv, indent+1, ""); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(b, "%s}\n", pad(indent))
+	return nil
+}
+
+func blockStructID(rv reflect.Value) string {
+	rv = indirectValue(rv)
+	if !rv.IsValid() || rv.Kind() != reflect.Struct {
+		return ""
+	}
+	rt := rv.Type()
+	for i := 0; i < rv.NumField(); i++ {
+		sf := rt.Field(i)
+		if sf.PkgPath != "" {
+			continue
+		}
+		tag := parseTag(sf.Tag.Get("bcl"))
+		if tag.id {
+			return fmt.Sprint(indirectValue(rv.Field(i)).Interface())
+		}
+	}
+	return ""
 }
 
 func writeInlineValue(b *bytes.Buffer, rv reflect.Value, indent int) {
@@ -244,6 +335,9 @@ func writeInlineValue(b *bytes.Buffer, rv reflect.Value, indent int) {
 		b.WriteString(pad(indent))
 		b.WriteByte('}')
 	case reflect.Map:
+		if writeSpecialMapValue(b, rv, indent, "") {
+			return
+		}
 		b.WriteString("{\n")
 		for _, k := range sortedReflectMapKeys(rv) {
 			_ = writeGoValue(b, rv.MapIndex(k), indent+1, formatBCLName(fmt.Sprint(k.Interface())))
@@ -280,6 +374,63 @@ func writeInlineList(b *bytes.Buffer, rv reflect.Value, indent int) {
 	}
 	b.WriteString(pad(indent))
 	b.WriteByte(']')
+}
+
+func writeSpecialMapValue(b *bytes.Buffer, rv reflect.Value, indent int, name string) bool {
+	m, ok := reflectMapToStringAny(rv)
+	if !ok {
+		return false
+	}
+	if _, ok := m["$call"]; !ok {
+		if _, ok := m["$ref"]; !ok {
+			if _, ok := m["$expr"]; !ok {
+				return false
+			}
+		}
+	}
+	if name != "" {
+		fmt.Fprintf(b, "%s%s ", pad(indent), name)
+	}
+	writeSpecialAnyValue(b, m, indent)
+	if name != "" {
+		b.WriteByte('\n')
+	}
+	return true
+}
+
+func writeSpecialAnyValue(b *bytes.Buffer, m map[string]any, indent int) {
+	if call, ok := m["$call"].(string); ok {
+		b.WriteString(call)
+		b.WriteByte('(')
+		for i, arg := range listFromAny(m["args"]) {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			writeInlineValue(b, reflect.ValueOf(arg), indent)
+		}
+		b.WriteByte(')')
+		return
+	}
+	if ref, ok := m["$ref"].(string); ok {
+		b.WriteString(ref)
+		return
+	}
+	if expr, ok := m["$expr"].(string); ok {
+		b.WriteString(expr)
+		return
+	}
+}
+
+func reflectMapToStringAny(rv reflect.Value) (map[string]any, bool) {
+	rv = indirectValue(rv)
+	if !rv.IsValid() || rv.Kind() != reflect.Map || rv.Type().Key().Kind() != reflect.String {
+		return nil, false
+	}
+	m := make(map[string]any, rv.Len())
+	for _, key := range rv.MapKeys() {
+		m[key.String()] = rv.MapIndex(key).Interface()
+	}
+	return m, true
 }
 
 func hasCompositeListItem(rv reflect.Value) bool {
@@ -365,6 +516,9 @@ type tagInfo struct {
 	inline    bool
 	omitEmpty bool
 	sensitive bool
+	block     bool
+	id        bool
+	ident     bool
 }
 
 func parseTag(s string) tagInfo {
@@ -381,9 +535,27 @@ func parseTag(s string) tagInfo {
 			t.omitEmpty = true
 		case "sensitive":
 			t.sensitive = true
+		case "block":
+			t.block = true
+		case "id":
+			t.id = true
+		case "ident":
+			t.ident = true
 		}
 	}
 	return t
+}
+
+func identValue(rv reflect.Value) string {
+	rv = indirectValue(rv)
+	if !rv.IsValid() {
+		return "null"
+	}
+	s := fmt.Sprint(rv.Interface())
+	if isBCLIdent(s) {
+		return s
+	}
+	return quoteBCLString(s)
 }
 
 func parseJSONName(s string) string {
@@ -433,6 +605,14 @@ func assignGoValue(dst reflect.Value, src any) error {
 			if tag.skip {
 				continue
 			}
+			if tag.id {
+				if value, ok := m["$id"]; ok {
+					if err := assignGoValue(dst.Field(i), value); err != nil {
+						return err
+					}
+				}
+				continue
+			}
 			if tag.inline {
 				if err := assignGoValue(dst.Field(i), src); err != nil {
 					return err
@@ -445,6 +625,12 @@ func assignGoValue(dst reflect.Value, src any) error {
 			}
 			if name == "" {
 				name = lowerFirst(sf.Name)
+			}
+			if tag.block {
+				if err := assignGoValue(dst.Field(i), blockValues(m, name)); err != nil {
+					return err
+				}
+				continue
 			}
 			if value, ok := m[name]; ok {
 				if err := assignGoValue(dst.Field(i), value); err != nil {
@@ -510,6 +696,62 @@ func assignGoValue(dst reflect.Value, src any) error {
 		dst.Set(reflect.ValueOf(src))
 	}
 	return nil
+}
+
+func blockValues(m map[string]any, name string) []any {
+	var out []any
+	if blocks, ok := m["$blocks"].([]map[string]any); ok {
+		for _, block := range blocks {
+			if stringValue(block["type"]) == name {
+				out = append(out, blockBodyWithID(block))
+			}
+		}
+	}
+	if blocks, ok := m["$blocks"].([]any); ok {
+		for _, item := range blocks {
+			block := mapFromAny(item)
+			if stringValue(block["type"]) == name {
+				out = append(out, blockBodyWithID(block))
+			}
+		}
+	}
+	if v, ok := m[name]; ok {
+		for _, block := range listFromAny(v) {
+			out = append(out, blockBodyWithID(mapFromAny(block)))
+		}
+	}
+	return out
+}
+
+func mapFromAny(v any) map[string]any {
+	m, _ := v.(map[string]any)
+	return m
+}
+
+func listFromAny(v any) []any {
+	if xs, ok := v.([]any); ok {
+		return xs
+	}
+	if xs, ok := v.([]map[string]any); ok {
+		out := make([]any, 0, len(xs))
+		for _, x := range xs {
+			out = append(out, x)
+		}
+		return out
+	}
+	return nil
+}
+
+func blockBodyWithID(block map[string]any) map[string]any {
+	body := mapFromAny(block["body"])
+	out := make(map[string]any, len(body)+1)
+	for k, v := range body {
+		out[k] = v
+	}
+	if id, ok := block["id"]; ok {
+		out["$id"] = id
+	}
+	return out
 }
 
 func textUnmarshaler(dst reflect.Value) (encoding.TextUnmarshaler, bool) {
