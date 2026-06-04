@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -108,14 +109,12 @@ func writeGoValue(b *bytes.Buffer, rv reflect.Value, indent int, name string) er
 		}
 		return nil
 	}
-	if rv.Kind() == reflect.Pointer {
-		if rv.IsNil() {
-			if name != "" {
-				fmt.Fprintf(b, "%s%s null\n", pad(indent), name)
-			}
-			return nil
+	rv = indirectValue(rv)
+	if !rv.IsValid() {
+		if name != "" {
+			fmt.Fprintf(b, "%s%s null\n", pad(indent), name)
 		}
-		rv = rv.Elem()
+		return nil
 	}
 	if text, ok := textMarshaler(rv); ok {
 		if name != "" {
@@ -175,8 +174,8 @@ func writeGoValue(b *bytes.Buffer, rv reflect.Value, indent int, name string) er
 			fmt.Fprintf(b, "%s%s {\n", pad(indent), name)
 			indent++
 		}
-		for _, k := range rv.MapKeys() {
-			if err := writeGoValue(b, rv.MapIndex(k), indent, fmt.Sprint(k.Interface())); err != nil {
+		for _, k := range sortedReflectMapKeys(rv) {
+			if err := writeGoValue(b, rv.MapIndex(k), indent, formatBCLName(fmt.Sprint(k.Interface()))); err != nil {
 				return err
 			}
 		}
@@ -184,14 +183,13 @@ func writeGoValue(b *bytes.Buffer, rv reflect.Value, indent int, name string) er
 			fmt.Fprintf(b, "%s}\n", pad(indent-1))
 		}
 	case reflect.Slice, reflect.Array:
-		fmt.Fprintf(b, "%s%s [", pad(indent), name)
-		for i := 0; i < rv.Len(); i++ {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			writeScalar(b, rv.Index(i))
+		if name != "" {
+			fmt.Fprintf(b, "%s%s ", pad(indent), name)
+		} else {
+			b.WriteString(pad(indent))
 		}
-		b.WriteString("]\n")
+		writeInlineValue(b, rv, indent)
+		b.WriteByte('\n')
 	default:
 		fmt.Fprintf(b, "%s%s ", pad(indent), name)
 		writeScalar(b, rv)
@@ -200,13 +198,109 @@ func writeGoValue(b *bytes.Buffer, rv reflect.Value, indent int, name string) er
 	return nil
 }
 
-func writeScalar(b *bytes.Buffer, rv reflect.Value) {
-	if rv.Kind() == reflect.Pointer {
-		if rv.IsNil() {
-			b.WriteString("null")
-			return
+func writeInlineValue(b *bytes.Buffer, rv reflect.Value, indent int) {
+	rv = indirectValue(rv)
+	if !rv.IsValid() {
+		b.WriteString("null")
+		return
+	}
+	if text, ok := textMarshaler(rv); ok {
+		writeTextMarshaler(b, text)
+		return
+	}
+	switch rv.Kind() {
+	case reflect.Struct:
+		b.WriteString("{\n")
+		rt := rv.Type()
+		for i := 0; i < rv.NumField(); i++ {
+			sf := rt.Field(i)
+			if sf.PkgPath != "" {
+				continue
+			}
+			tag := parseTag(sf.Tag.Get("bcl"))
+			if tag.skip {
+				continue
+			}
+			fv := rv.Field(i)
+			if tag.omitEmpty && isZero(fv) {
+				continue
+			}
+			fieldName := tag.name
+			if fieldName == "" {
+				fieldName = lowerFirst(sf.Name)
+			}
+			if tag.inline {
+				_ = writeGoValue(b, fv, indent+1, "")
+				continue
+			}
+			if tag.sensitive {
+				fmt.Fprintf(b, "%s%s sensitive(", pad(indent+1), fieldName)
+				writeScalar(b, fv)
+				b.WriteString(")\n")
+				continue
+			}
+			_ = writeGoValue(b, fv, indent+1, fieldName)
 		}
-		rv = rv.Elem()
+		b.WriteString(pad(indent))
+		b.WriteByte('}')
+	case reflect.Map:
+		b.WriteString("{\n")
+		for _, k := range sortedReflectMapKeys(rv) {
+			_ = writeGoValue(b, rv.MapIndex(k), indent+1, formatBCLName(fmt.Sprint(k.Interface())))
+		}
+		b.WriteString(pad(indent))
+		b.WriteByte('}')
+	case reflect.Slice, reflect.Array:
+		writeInlineList(b, rv, indent)
+	default:
+		writeScalar(b, rv)
+	}
+}
+
+func writeInlineList(b *bytes.Buffer, rv reflect.Value, indent int) {
+	if !hasCompositeListItem(rv) {
+		b.WriteByte('[')
+		for i := 0; i < rv.Len(); i++ {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			writeInlineValue(b, rv.Index(i), indent)
+		}
+		b.WriteByte(']')
+		return
+	}
+	b.WriteString("[\n")
+	for i := 0; i < rv.Len(); i++ {
+		b.WriteString(pad(indent + 1))
+		writeInlineValue(b, rv.Index(i), indent+1)
+		if i+1 < rv.Len() {
+			b.WriteByte(',')
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteString(pad(indent))
+	b.WriteByte(']')
+}
+
+func hasCompositeListItem(rv reflect.Value) bool {
+	for i := 0; i < rv.Len(); i++ {
+		item := indirectValue(rv.Index(i))
+		if !item.IsValid() {
+			continue
+		}
+		switch item.Kind() {
+		case reflect.Struct, reflect.Map:
+			return true
+		}
+	}
+	return false
+}
+
+func writeScalar(b *bytes.Buffer, rv reflect.Value) {
+	rv = indirectValue(rv)
+	if !rv.IsValid() {
+		b.WriteString("null")
+		return
 	}
 	if text, ok := textMarshaler(rv); ok {
 		writeTextMarshaler(b, text)
@@ -227,6 +321,16 @@ func writeScalar(b *bytes.Buffer, rv reflect.Value) {
 		j, _ := json.Marshal(rv.Interface())
 		b.Write(j)
 	}
+}
+
+func indirectValue(rv reflect.Value) reflect.Value {
+	for rv.IsValid() && (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface) {
+		if rv.IsNil() {
+			return reflect.Value{}
+		}
+		rv = rv.Elem()
+	}
+	return rv
 }
 
 func textMarshaler(rv reflect.Value) (encoding.TextMarshaler, bool) {
@@ -472,4 +576,37 @@ func lowerFirst(s string) string {
 
 func pad(n int) string {
 	return strings.Repeat("  ", n)
+}
+
+func sortedReflectMapKeys(rv reflect.Value) []reflect.Value {
+	keys := rv.MapKeys()
+	sort.Slice(keys, func(i, j int) bool {
+		return fmt.Sprint(keys[i].Interface()) < fmt.Sprint(keys[j].Interface())
+	})
+	return keys
+}
+
+func formatBCLName(s string) string {
+	if isBCLIdent(s) {
+		return s
+	}
+	return quoteBCLString(s)
+}
+
+func isBCLIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if i == 0 {
+			if !isIdentStart(r) {
+				return false
+			}
+			continue
+		}
+		if !(isIdentPart(r) || r == '*' || r == ':' || r == '-' || r == '/') {
+			return false
+		}
+	}
+	return true
 }

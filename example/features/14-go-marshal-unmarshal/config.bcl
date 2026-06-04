@@ -24,3 +24,15 @@ features {
   explain true
   hot_reload false
 }
+
+routes [
+  {
+    name "public"
+    path "/api"
+    methods ["GET"]
+    headers {
+      cache true
+      x-owner "edge"
+    }
+  }
+]

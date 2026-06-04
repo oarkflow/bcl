@@ -22,6 +22,8 @@ type Config struct {
 	Database DatabaseConfig    `bcl:"database"`
 	Features map[string]bool   `bcl:"features"`
 	Labels   map[string]string `bcl:"labels,omitempty"`
+	Routes   []RouteConfig     `bcl:"routes"`
+	Metadata []map[string]any  `bcl:"metadata,omitempty"`
 }
 
 // Endpoint is a custom user type. It is not a string alias: it has its own
@@ -69,6 +71,13 @@ type DatabaseConfig struct {
 	Password string `bcl:"password,sensitive"`
 }
 
+type RouteConfig struct {
+	Name    string         `bcl:"name"`
+	Path    string         `bcl:"path"`
+	Methods []string       `bcl:"methods"`
+	Headers map[string]any `bcl:"headers,omitempty"`
+}
+
 func main() {
 	input := filepath.Join(exampleDir(), "config.bcl")
 
@@ -83,6 +92,19 @@ func main() {
 	cfg.Labels = map[string]string{
 		"owner": "platform",
 		"tier":  "enterprise",
+	}
+	cfg.Routes = append(cfg.Routes, RouteConfig{
+		Name:    "admin",
+		Path:    "/admin",
+		Methods: []string{"GET", "POST"},
+		Headers: map[string]any{
+			"x-owner": "platform",
+			"mfa":     true,
+		},
+	})
+	cfg.Metadata = []map[string]any{
+		{"owner": "platform", "critical": true},
+		{"owner": "security", "critical": false},
 	}
 
 	output := filepath.Join(os.TempDir(), "bcl-user-config.bcl")

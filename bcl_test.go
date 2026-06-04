@@ -213,6 +213,55 @@ func TestMarshalUnmarshal(t *testing.T) {
 	}
 }
 
+func TestMarshalNestedCollectionsUseBCLSyntax(t *testing.T) {
+	type Rule struct {
+		Name    string         `bcl:"name"`
+		Enabled bool           `bcl:"enabled"`
+		Attrs   map[string]any `bcl:"attrs"`
+	}
+	type Config struct {
+		Rules []Rule           `bcl:"rules"`
+		Meta  []map[string]any `bcl:"meta"`
+	}
+	in := Config{
+		Rules: []Rule{
+			{Name: "primary", Enabled: true, Attrs: map[string]any{"priority": 10, "tier-name": "gold"}},
+		},
+		Meta: []map[string]any{
+			{"owner": "platform", "active": true},
+		},
+	}
+	data, err := Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	for _, bad := range []string{`{"`, `"name":`, `"owner":`} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("marshal used JSON syntax %q in:\n%s", bad, got)
+		}
+	}
+	for _, want := range []string{
+		"rules [\n",
+		"name \"primary\"",
+		"attrs {",
+		"tier-name \"gold\"",
+		"meta [\n",
+		"owner \"platform\"",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("marshal missing %q in:\n%s", want, got)
+		}
+	}
+	var out Config
+	if err := Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Rules) != 1 || out.Rules[0].Name != "primary" || out.Rules[0].Attrs["tier-name"] != "gold" {
+		t.Fatalf("round trip = %#v", out)
+	}
+}
+
 func TestFormatAndDecode(t *testing.T) {
 	src := []byte(`name "x"
 roles { admin
