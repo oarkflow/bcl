@@ -6,9 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"reflect"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -449,7 +452,7 @@ func (c *exprCompiler) call(name string) ([]exprInstr, any, bool, error) {
 
 func pureConstCall(name string) bool {
 	switch name {
-	case "lower", "upper", "trim", "len", "contains", "regex", "cidr", "ip", "duration", "concat", "coalesce":
+	case "abs", "acos", "append", "asin", "atan", "at", "avg", "bool", "ceil", "clamp", "coalesce", "compact", "concat", "contains", "cos", "difference", "duration", "empty", "ends_with", "entries", "exists", "exp", "first", "flatten", "float", "floor", "get", "has_key", "has_path", "index_of", "int", "intersect", "intersection", "join", "json", "keys", "last", "last_index_of", "ln", "log", "log10", "max", "median", "merge", "min", "not_empty", "omit", "pad_left", "pad_right", "pick", "product", "pow", "prepend", "push", "range", "regex", "regex_match", "regex_replace", "repeat", "reverse", "round", "sin", "sign", "slice", "sort", "split", "sqrt", "starts_with", "str", "string", "substr", "substring", "sum", "tan", "title", "to_bool", "to_float", "to_int", "to_string", "trim", "trim_prefix", "trim_suffix", "union", "unique", "values", "without":
 		return true
 	default:
 		return false
@@ -770,6 +773,73 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 			return nil, fmt.Errorf("trim requires 1 argument")
 		}
 		return strings.TrimSpace(fmt.Sprint(args[0])), nil
+	case "title":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("title requires 1 argument")
+		}
+		return strings.Title(fmt.Sprint(args[0])), nil
+	case "starts_with":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("starts_with requires 2 arguments")
+		}
+		return strings.HasPrefix(fmt.Sprint(args[0]), fmt.Sprint(args[1])), nil
+	case "ends_with":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("ends_with requires 2 arguments")
+		}
+		return strings.HasSuffix(fmt.Sprint(args[0]), fmt.Sprint(args[1])), nil
+	case "trim_prefix":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("trim_prefix requires 2 arguments")
+		}
+		return strings.TrimPrefix(fmt.Sprint(args[0]), fmt.Sprint(args[1])), nil
+	case "trim_suffix":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("trim_suffix requires 2 arguments")
+		}
+		return strings.TrimSuffix(fmt.Sprint(args[0]), fmt.Sprint(args[1])), nil
+	case "repeat":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("repeat requires 2 arguments")
+		}
+		count, ok := intScalarValue(args[1])
+		if !ok {
+			return nil, fmt.Errorf("repeat count must be an integer")
+		}
+		if count < 0 {
+			return nil, fmt.Errorf("repeat count must be non-negative")
+		}
+		return strings.Repeat(fmt.Sprint(args[0]), count), nil
+	case "pad_left", "pad_right":
+		if len(args) != 2 && len(args) != 3 {
+			return nil, fmt.Errorf("%s requires 2 or 3 arguments", name)
+		}
+		width, ok := intScalarValue(args[1])
+		if !ok {
+			return nil, fmt.Errorf("%s width must be an integer", name)
+		}
+		pad := " "
+		if len(args) == 3 {
+			pad = fmt.Sprint(args[2])
+		}
+		return padString(fmt.Sprint(args[0]), width, pad, name == "pad_left"), nil
+	case "substr", "substring":
+		if len(args) != 2 && len(args) != 3 {
+			return nil, fmt.Errorf("%s requires 2 or 3 arguments", name)
+		}
+		start, ok := intScalarValue(args[1])
+		if !ok {
+			return nil, fmt.Errorf("%s start must be an integer", name)
+		}
+		length := -1
+		if len(args) == 3 {
+			var lengthOK bool
+			length, lengthOK = intScalarValue(args[2])
+			if !lengthOK {
+				return nil, fmt.Errorf("%s length must be an integer", name)
+			}
+		}
+		return substringRunes(fmt.Sprint(args[0]), start, length), nil
 	case "len", "length":
 		if len(args) != 1 {
 			return nil, fmt.Errorf("%s requires 1 argument", name)
@@ -817,6 +887,451 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 			return nil, fmt.Errorf("contains requires 2 arguments")
 		}
 		return contains(args[0], args[1]), nil
+	case "index_of":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("index_of requires 2 arguments")
+		}
+		return indexOf(args[0], args[1]), nil
+	case "last_index_of":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("last_index_of requires 2 arguments")
+		}
+		return lastIndexOf(args[0], args[1]), nil
+	case "exists":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("exists requires 1 argument")
+		}
+		return args[0] != nil, nil
+	case "empty":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("empty requires 1 argument")
+		}
+		return isEmpty(args[0]), nil
+	case "not_empty":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("not_empty requires 1 argument")
+		}
+		return !isEmpty(args[0]), nil
+	case "first":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("first requires 1 argument")
+		}
+		return indexValue(args[0], 0), nil
+	case "last":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("last requires 1 argument")
+		}
+		return indexValue(args[0], -1), nil
+	case "at":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("at requires 2 arguments")
+		}
+		i, ok := intScalarValue(args[1])
+		if !ok {
+			return nil, fmt.Errorf("at index must be an integer")
+		}
+		return indexValue(args[0], i), nil
+	case "slice":
+		if len(args) != 2 && len(args) != 3 {
+			return nil, fmt.Errorf("slice requires 2 or 3 arguments")
+		}
+		start, ok := intScalarValue(args[1])
+		if !ok {
+			return nil, fmt.Errorf("slice start must be an integer")
+		}
+		end := int(^uint(0) >> 1)
+		if len(args) == 3 {
+			var endOK bool
+			end, endOK = intScalarValue(args[2])
+			if !endOK {
+				return nil, fmt.Errorf("slice end must be an integer")
+			}
+		}
+		return sliceValue(args[0], start, end), nil
+	case "append", "push":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("%s requires at least 2 arguments", name)
+		}
+		xs, ok := sliceValues(args[0])
+		if !ok {
+			return nil, fmt.Errorf("%s requires a list", name)
+		}
+		out := append([]any(nil), xs...)
+		return append(out, args[1:]...), nil
+	case "prepend":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("prepend requires at least 2 arguments")
+		}
+		xs, ok := sliceValues(args[0])
+		if !ok {
+			return nil, fmt.Errorf("prepend requires a list")
+		}
+		out := append([]any(nil), args[1:]...)
+		return append(out, xs...), nil
+	case "reverse":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("reverse requires 1 argument")
+		}
+		xs, ok := sliceValues(args[0])
+		if !ok {
+			return nil, fmt.Errorf("reverse requires a list")
+		}
+		out := append([]any(nil), xs...)
+		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+			out[i], out[j] = out[j], out[i]
+		}
+		return out, nil
+	case "sort":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("sort requires 1 argument")
+		}
+		return sortValues(args[0])
+	case "unique":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("unique requires 1 argument")
+		}
+		xs, ok := sliceValues(args[0])
+		if !ok {
+			return nil, fmt.Errorf("unique requires a list")
+		}
+		seen := map[string]bool{}
+		out := make([]any, 0, len(xs))
+		for _, x := range xs {
+			key := fmt.Sprintf("%T:%v", x, x)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, x)
+		}
+		return out, nil
+	case "compact":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("compact requires 1 argument")
+		}
+		xs, ok := sliceValues(args[0])
+		if !ok {
+			return nil, fmt.Errorf("compact requires a list")
+		}
+		out := make([]any, 0, len(xs))
+		for _, x := range xs {
+			if x != nil && !isEmpty(x) {
+				out = append(out, x)
+			}
+		}
+		return out, nil
+	case "flatten":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("flatten requires 1 argument")
+		}
+		xs, ok := sliceValues(args[0])
+		if !ok {
+			return nil, fmt.Errorf("flatten requires a list")
+		}
+		out := make([]any, 0, len(xs))
+		for _, x := range xs {
+			if inner, ok := sliceValues(x); ok {
+				out = append(out, inner...)
+			} else {
+				out = append(out, x)
+			}
+		}
+		return out, nil
+	case "union", "intersect", "intersection", "difference":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("%s requires at least 2 arguments", name)
+		}
+		return listSetOp(name, args)
+	case "without":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("without requires a list and at least one value")
+		}
+		return listWithout(args[0], args[1:])
+	case "range":
+		if len(args) < 1 || len(args) > 3 {
+			return nil, fmt.Errorf("range requires 1 to 3 arguments")
+		}
+		start := 0
+		end, ok := intScalarValue(args[0])
+		if !ok {
+			return nil, fmt.Errorf("range end must be an integer")
+		}
+		step := 1
+		if len(args) >= 2 {
+			start = end
+			end, ok = intScalarValue(args[1])
+			if !ok {
+				return nil, fmt.Errorf("range end must be an integer")
+			}
+		}
+		if len(args) == 3 {
+			step, ok = intScalarValue(args[2])
+			if !ok {
+				return nil, fmt.Errorf("range step must be an integer")
+			}
+		}
+		return rangeValues(start, end, step)
+	case "keys":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("keys requires 1 argument")
+		}
+		return mapKeys(args[0]), nil
+	case "values":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("values requires 1 argument")
+		}
+		return mapValues(args[0]), nil
+	case "get":
+		if len(args) != 2 && len(args) != 3 {
+			return nil, fmt.Errorf("get requires 2 or 3 arguments")
+		}
+		v := getValue(args[0], fmt.Sprint(args[1]))
+		if v == nil && len(args) == 3 {
+			return args[2], nil
+		}
+		return v, nil
+	case "has_key", "has_path":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("%s requires 2 arguments", name)
+		}
+		_, ok := getValuePresence(args[0], fmt.Sprint(args[1]))
+		return ok, nil
+	case "entries":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("entries requires 1 argument")
+		}
+		return mapEntries(args[0]), nil
+	case "merge":
+		if len(args) == 0 {
+			return map[string]any{}, nil
+		}
+		out := map[string]any{}
+		for _, arg := range args {
+			m, ok := mapValue(arg)
+			if !ok {
+				return nil, fmt.Errorf("merge requires objects")
+			}
+			for k, v := range m {
+				out[k] = v
+			}
+		}
+		return out, nil
+	case "pick", "omit":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("%s requires an object and at least one key", name)
+		}
+		m, ok := mapValue(args[0])
+		if !ok {
+			return nil, fmt.Errorf("%s requires an object", name)
+		}
+		keys := map[string]bool{}
+		for _, arg := range args[1:] {
+			if xs, ok := sliceValues(arg); ok {
+				for _, x := range xs {
+					keys[fmt.Sprint(x)] = true
+				}
+			} else {
+				keys[fmt.Sprint(arg)] = true
+			}
+		}
+		out := map[string]any{}
+		for k, v := range m {
+			keep := keys[k]
+			if name == "omit" {
+				keep = !keep
+			}
+			if keep {
+				out[k] = v
+			}
+		}
+		return out, nil
+	case "str", "string", "to_string":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("%s requires 1 argument", name)
+		}
+		return fmt.Sprint(args[0]), nil
+	case "int", "to_int":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("%s requires 1 argument", name)
+		}
+		return toInt(args[0])
+	case "float", "to_float":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("%s requires 1 argument", name)
+		}
+		return toFloat(args[0])
+	case "bool", "to_bool":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("%s requires 1 argument", name)
+		}
+		return toBool(args[0])
+	case "abs":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("abs requires 1 argument")
+		}
+		f, ok := num(args[0])
+		if !ok {
+			return nil, fmt.Errorf("abs requires a numeric value")
+		}
+		return math.Abs(f), nil
+	case "floor":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("floor requires 1 argument")
+		}
+		f, ok := num(args[0])
+		if !ok {
+			return nil, fmt.Errorf("floor requires a numeric value")
+		}
+		return math.Floor(f), nil
+	case "ceil":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("ceil requires 1 argument")
+		}
+		f, ok := num(args[0])
+		if !ok {
+			return nil, fmt.Errorf("ceil requires a numeric value")
+		}
+		return math.Ceil(f), nil
+	case "round":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("round requires 1 argument")
+		}
+		f, ok := num(args[0])
+		if !ok {
+			return nil, fmt.Errorf("round requires a numeric value")
+		}
+		return math.Round(f), nil
+	case "sqrt":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("sqrt requires 1 argument")
+		}
+		f, ok := num(args[0])
+		if !ok {
+			return nil, fmt.Errorf("sqrt requires a numeric value")
+		}
+		return math.Sqrt(f), nil
+	case "pow":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("pow requires 2 arguments")
+		}
+		a, aok := num(args[0])
+		b, bok := num(args[1])
+		if !aok || !bok {
+			return nil, fmt.Errorf("pow requires numeric values")
+		}
+		return math.Pow(a, b), nil
+	case "log", "ln", "log10", "exp", "sin", "cos", "tan", "asin", "acos", "atan":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("%s requires 1 argument", name)
+		}
+		f, ok := num(args[0])
+		if !ok {
+			return nil, fmt.Errorf("%s requires a numeric value", name)
+		}
+		switch name {
+		case "log", "ln":
+			return math.Log(f), nil
+		case "log10":
+			return math.Log10(f), nil
+		case "exp":
+			return math.Exp(f), nil
+		case "sin":
+			return math.Sin(f), nil
+		case "cos":
+			return math.Cos(f), nil
+		case "tan":
+			return math.Tan(f), nil
+		case "asin":
+			return math.Asin(f), nil
+		case "acos":
+			return math.Acos(f), nil
+		default:
+			return math.Atan(f), nil
+		}
+	case "sign":
+		if len(args) != 1 {
+			return nil, fmt.Errorf("sign requires 1 argument")
+		}
+		f, ok := num(args[0])
+		if !ok {
+			return nil, fmt.Errorf("sign requires a numeric value")
+		}
+		switch {
+		case f < 0:
+			return float64(-1), nil
+		case f > 0:
+			return float64(1), nil
+		default:
+			return float64(0), nil
+		}
+	case "min", "max":
+		if len(args) == 0 {
+			return nil, fmt.Errorf("%s requires at least 1 argument", name)
+		}
+		values := numericArgs(args)
+		if len(args) == 1 {
+			if xs, ok := sliceValues(args[0]); ok {
+				values = numericArgs(xs)
+			}
+		}
+		if len(values) == 0 {
+			return nil, fmt.Errorf("%s requires numeric values", name)
+		}
+		best := values[0]
+		for _, v := range values[1:] {
+			if name == "min" && v < best || name == "max" && v > best {
+				best = v
+			}
+		}
+		return best, nil
+	case "sum", "avg", "product", "median":
+		if len(args) == 0 {
+			return nil, fmt.Errorf("%s requires at least 1 argument", name)
+		}
+		values := numericArgs(args)
+		if len(args) == 1 {
+			if xs, ok := sliceValues(args[0]); ok {
+				values = numericArgs(xs)
+			}
+		}
+		if len(values) == 0 {
+			return nil, fmt.Errorf("%s requires numeric values", name)
+		}
+		if name == "product" {
+			total := float64(1)
+			for _, v := range values {
+				total *= v
+			}
+			return total, nil
+		}
+		if name == "median" {
+			return median(values), nil
+		}
+		var total float64
+		for _, v := range values {
+			total += v
+		}
+		if name == "avg" {
+			return total / float64(len(values)), nil
+		}
+		return total, nil
+	case "clamp":
+		if len(args) != 3 {
+			return nil, fmt.Errorf("clamp requires 3 arguments")
+		}
+		v, vok := num(args[0])
+		lo, look := num(args[1])
+		hi, hiok := num(args[2])
+		if !vok || !look || !hiok {
+			return nil, fmt.Errorf("clamp requires numeric values")
+		}
+		if v < lo {
+			return lo, nil
+		}
+		if v > hi {
+			return hi, nil
+		}
+		return v, nil
 	case "regex":
 		if len(args) != 1 {
 			return nil, fmt.Errorf("regex requires 1 argument")
@@ -831,6 +1346,24 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 		}
 		regexCache.Store(pattern, re)
 		return re, nil
+	case "regex_match":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("regex_match requires 2 arguments")
+		}
+		re, err := regexp.Compile(fmt.Sprint(args[1]))
+		if err != nil {
+			return nil, err
+		}
+		return re.MatchString(fmt.Sprint(args[0])), nil
+	case "regex_replace":
+		if len(args) != 3 {
+			return nil, fmt.Errorf("regex_replace requires 3 arguments")
+		}
+		re, err := regexp.Compile(fmt.Sprint(args[1]))
+		if err != nil {
+			return nil, err
+		}
+		return re.ReplaceAllString(fmt.Sprint(args[0]), fmt.Sprint(args[2])), nil
 	case "cidr":
 		if len(args) != 1 {
 			return nil, fmt.Errorf("cidr requires 1 argument")
@@ -947,7 +1480,7 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 	case "concat":
 		var b strings.Builder
 		for _, a := range args {
-			b.WriteString(fmt.Sprint(a))
+			fmt.Fprint(&b, a)
 		}
 		return b.String(), nil
 	case "coalesce":
@@ -2282,6 +2815,479 @@ func containsValue(container, value any) bool {
 		}
 	}
 	return false
+}
+
+func substringRunes(s string, start, length int) string {
+	rs := []rune(s)
+	start = normalizeIndex(start, len(rs))
+	if start > len(rs) {
+		start = len(rs)
+	}
+	end := len(rs)
+	if length >= 0 {
+		end = start + length
+		if end > len(rs) {
+			end = len(rs)
+		}
+	}
+	if end < start {
+		end = start
+	}
+	return string(rs[start:end])
+}
+
+func padString(s string, width int, pad string, left bool) string {
+	if width <= 0 {
+		return s
+	}
+	if pad == "" {
+		pad = " "
+	}
+	need := width - len([]rune(s))
+	if need <= 0 {
+		return s
+	}
+	prefix := repeatRunes(pad, need)
+	if left {
+		return prefix + s
+	}
+	return s + prefix
+}
+
+func repeatRunes(s string, n int) string {
+	rs := []rune(s)
+	if len(rs) == 0 || n <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	for b.Len() < n {
+		for _, r := range rs {
+			if b.Len() >= n {
+				break
+			}
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func indexOf(container, value any) int {
+	if s, ok := container.(string); ok {
+		return strings.Index(s, fmt.Sprint(value))
+	}
+	xs, ok := sliceValues(container)
+	if !ok {
+		return -1
+	}
+	for i, x := range xs {
+		if equalLoose(x, value) {
+			return i
+		}
+	}
+	return -1
+}
+
+func lastIndexOf(container, value any) int {
+	if s, ok := container.(string); ok {
+		return strings.LastIndex(s, fmt.Sprint(value))
+	}
+	xs, ok := sliceValues(container)
+	if !ok {
+		return -1
+	}
+	for i := len(xs) - 1; i >= 0; i-- {
+		if equalLoose(xs[i], value) {
+			return i
+		}
+	}
+	return -1
+}
+
+func normalizeIndex(i, n int) int {
+	if i < 0 {
+		i = n + i
+	}
+	if i < 0 {
+		return 0
+	}
+	return i
+}
+
+func indexValue(v any, i int) any {
+	if s, ok := v.(string); ok {
+		rs := []rune(s)
+		i = normalizeIndex(i, len(rs))
+		if i < 0 || i >= len(rs) {
+			return nil
+		}
+		return string(rs[i])
+	}
+	xs, ok := sliceValues(v)
+	if !ok {
+		return nil
+	}
+	i = normalizeIndex(i, len(xs))
+	if i < 0 || i >= len(xs) {
+		return nil
+	}
+	return xs[i]
+}
+
+func sliceValue(v any, start, end int) any {
+	if s, ok := v.(string); ok {
+		rs := []rune(s)
+		start = normalizeIndex(start, len(rs))
+		end = normalizeIndex(end, len(rs))
+		if start > len(rs) {
+			start = len(rs)
+		}
+		if end > len(rs) {
+			end = len(rs)
+		}
+		if end < start {
+			end = start
+		}
+		return string(rs[start:end])
+	}
+	xs, ok := sliceValues(v)
+	if !ok {
+		return nil
+	}
+	start = normalizeIndex(start, len(xs))
+	end = normalizeIndex(end, len(xs))
+	if start > len(xs) {
+		start = len(xs)
+	}
+	if end > len(xs) {
+		end = len(xs)
+	}
+	if end < start {
+		end = start
+	}
+	return append([]any(nil), xs[start:end]...)
+}
+
+func sortValues(v any) (any, error) {
+	xs, ok := sliceValues(v)
+	if !ok {
+		return nil, fmt.Errorf("sort requires a list")
+	}
+	out := append([]any(nil), xs...)
+	allNumeric := len(out) > 0
+	for _, x := range out {
+		if _, ok := num(x); !ok {
+			allNumeric = false
+			break
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if allNumeric {
+			a, _ := num(out[i])
+			b, _ := num(out[j])
+			return a < b
+		}
+		return fmt.Sprint(out[i]) < fmt.Sprint(out[j])
+	})
+	return out, nil
+}
+
+func listSetOp(name string, args []any) ([]any, error) {
+	first, ok := sliceValues(args[0])
+	if !ok {
+		return nil, fmt.Errorf("%s requires lists", name)
+	}
+	switch name {
+	case "union":
+		out := append([]any(nil), first...)
+		for _, arg := range args[1:] {
+			xs, ok := sliceValues(arg)
+			if !ok {
+				return nil, fmt.Errorf("union requires lists")
+			}
+			for _, x := range xs {
+				if !containsValue(out, x) {
+					out = append(out, x)
+				}
+			}
+		}
+		return uniqueList(out), nil
+	case "intersect", "intersection":
+		out := make([]any, 0, len(first))
+		for _, x := range first {
+			inAll := true
+			for _, arg := range args[1:] {
+				xs, ok := sliceValues(arg)
+				if !ok {
+					return nil, fmt.Errorf("%s requires lists", name)
+				}
+				if !containsValue(xs, x) {
+					inAll = false
+					break
+				}
+			}
+			if inAll && !containsValue(out, x) {
+				out = append(out, x)
+			}
+		}
+		return out, nil
+	default:
+		out := make([]any, 0, len(first))
+		for _, x := range first {
+			remove := false
+			for _, arg := range args[1:] {
+				xs, ok := sliceValues(arg)
+				if !ok {
+					return nil, fmt.Errorf("difference requires lists")
+				}
+				if containsValue(xs, x) {
+					remove = true
+					break
+				}
+			}
+			if !remove {
+				out = append(out, x)
+			}
+		}
+		return out, nil
+	}
+}
+
+func listWithout(container any, values []any) ([]any, error) {
+	xs, ok := sliceValues(container)
+	if !ok {
+		return nil, fmt.Errorf("without requires a list")
+	}
+	out := make([]any, 0, len(xs))
+	for _, x := range xs {
+		if !containsValue(values, x) {
+			out = append(out, x)
+		}
+	}
+	return out, nil
+}
+
+func uniqueList(xs []any) []any {
+	out := make([]any, 0, len(xs))
+	for _, x := range xs {
+		if !containsValue(out, x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+func rangeValues(start, end, step int) ([]any, error) {
+	if step == 0 {
+		return nil, fmt.Errorf("range step must not be zero")
+	}
+	var out []any
+	if step > 0 {
+		for i := start; i < end; i += step {
+			out = append(out, i)
+		}
+		return out, nil
+	}
+	for i := start; i > end; i += step {
+		out = append(out, i)
+	}
+	return out, nil
+}
+
+func mapValue(v any) (map[string]any, bool) {
+	if m, ok := v.(map[string]any); ok {
+		return m, true
+	}
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() {
+		return nil, false
+	}
+	switch rv.Kind() {
+	case reflect.Map:
+		out := make(map[string]any, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			out[fmt.Sprint(iter.Key().Interface())] = iter.Value().Interface()
+		}
+		return out, true
+	case reflect.Struct:
+		rt := rv.Type()
+		out := make(map[string]any, rv.NumField())
+		for i := 0; i < rv.NumField(); i++ {
+			field := rt.Field(i)
+			if field.PkgPath != "" {
+				continue
+			}
+			out[field.Name] = rv.Field(i).Interface()
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func mapKeys(v any) []any {
+	m, ok := mapValue(v)
+	if !ok {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]any, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, k)
+	}
+	return out
+}
+
+func mapValues(v any) []any {
+	m, ok := mapValue(v)
+	if !ok {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]any, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, m[k])
+	}
+	return out
+}
+
+func mapEntries(v any) []any {
+	m, ok := mapValue(v)
+	if !ok {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]any, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, map[string]any{"key": k, "value": m[k]})
+	}
+	return out
+}
+
+func getValue(v any, path string) any {
+	got, _ := getValuePresence(v, path)
+	return got
+}
+
+func getValuePresence(v any, path string) (any, bool) {
+	if path == "" {
+		return v, true
+	}
+	cur := v
+	for _, part := range strings.Split(path, ".") {
+		if xs, ok := sliceValues(cur); ok {
+			i, err := strconv.Atoi(part)
+			if err != nil {
+				return nil, false
+			}
+			i = normalizeIndex(i, len(xs))
+			if i < 0 || i >= len(xs) {
+				return nil, false
+			}
+			cur = xs[i]
+			continue
+		}
+		var ok bool
+		cur, ok = lookupPartPresence(cur, part)
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
+func numericArgs(args []any) []float64 {
+	out := make([]float64, 0, len(args))
+	for _, arg := range args {
+		f, ok := num(arg)
+		if !ok {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+func median(values []float64) float64 {
+	xs := append([]float64(nil), values...)
+	sort.Float64s(xs)
+	mid := len(xs) / 2
+	if len(xs)%2 == 1 {
+		return xs[mid]
+	}
+	return (xs[mid-1] + xs[mid]) / 2
+}
+
+func toInt(v any) (int, error) {
+	if i, ok := intScalarValue(v); ok {
+		return i, nil
+	}
+	switch x := v.(type) {
+	case string:
+		i, err := strconv.Atoi(strings.TrimSpace(x))
+		if err != nil {
+			return 0, err
+		}
+		return i, nil
+	case bool:
+		if x {
+			return 1, nil
+		}
+		return 0, nil
+	default:
+		return 0, fmt.Errorf("cannot convert %T to int", v)
+	}
+}
+
+func toFloat(v any) (float64, error) {
+	if f, ok := num(v); ok {
+		return f, nil
+	}
+	switch x := v.(type) {
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(x), 64)
+		if err != nil {
+			return 0, err
+		}
+		return f, nil
+	case bool:
+		if x {
+			return 1, nil
+		}
+		return 0, nil
+	default:
+		return 0, fmt.Errorf("cannot convert %T to float", v)
+	}
+}
+
+func toBool(v any) (bool, error) {
+	switch x := v.(type) {
+	case bool:
+		return x, nil
+	case string:
+		b, err := strconv.ParseBool(strings.TrimSpace(x))
+		if err != nil {
+			return false, err
+		}
+		return b, nil
+	default:
+		if f, ok := num(v); ok {
+			return f != 0, nil
+		}
+		return truthy(v), nil
+	}
 }
 
 func equalLoose(a, b any) bool {
