@@ -1639,7 +1639,7 @@ func evaluateDecisionIntoInternalWithStack(program *DecisionProgram, decision st
 		if !ok {
 			if explain {
 				result.Trace = append(result.Trace, rule.ID+": condition false")
-				result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Phase: rule.Phase, Status: "skipped", Priority: rule.Priority, ConditionResult: boolPtr(false), Message: explainConditionFailure(rule.Condition, vars, opts)})
+				result.Explain = append(result.Explain, DecisionTrace{RuleID: rule.ID, Source: rule.Source, Phase: rule.Phase, Status: "skipped", Priority: rule.Priority, ConditionResult: boolPtr(false), Message: explainConditionFailure(rule.Condition, vars, conditionOpts)})
 			}
 			continue
 		}
@@ -1688,7 +1688,7 @@ func evaluateDecisionIntoInternalWithStack(program *DecisionProgram, decision st
 			}
 		}
 	}
-	if rank := evaluateDecisionRank(program, decision, vars, input, opts, result, explain); rank != nil {
+	if rank := evaluateDecisionRank(program, decision, vars, input, conditionOpts, result, explain); rank != nil {
 		result.Rank = rank
 	}
 	result.Allowed = result.Effect == "allow"
@@ -1871,11 +1871,11 @@ func decisionEvalOptions(opts *Options, program *DecisionProgram, input map[stri
 	if opts != nil {
 		*cp = *opts
 	}
-	funcs := map[string]EvalFunction{}
+	funcs := decisionEvalFunctions(opts)
+	if funcs == nil {
+		funcs = map[string]EvalFunction{}
+	}
 	if opts != nil {
-		for k, v := range opts.EvalFunctions {
-			funcs[k] = v
-		}
 		addRuntimeScopeFunctions(funcs, "context", opts.Context)
 		addRuntimeScopeFunctions(funcs, "session", opts.Session)
 		addRequestHeaderFunction(funcs, opts.Context)
@@ -1902,6 +1902,27 @@ func decisionEvalOptions(opts *Options, program *DecisionProgram, input map[stri
 	}
 	cp.EvalFunctions = funcs
 	return cp
+}
+
+func decisionEvalFunctions(opts *Options) map[string]EvalFunction {
+	var funcs map[string]EvalFunction
+	decisionFunctions.RLock()
+	if len(decisionFunctions.m) > 0 {
+		funcs = make(map[string]EvalFunction, len(decisionFunctions.m))
+		for k, v := range decisionFunctions.m {
+			funcs[k] = v
+		}
+	}
+	decisionFunctions.RUnlock()
+	if opts != nil && len(opts.EvalFunctions) > 0 {
+		if funcs == nil {
+			funcs = make(map[string]EvalFunction, len(opts.EvalFunctions))
+		}
+		for k, v := range opts.EvalFunctions {
+			funcs[k] = v
+		}
+	}
+	return funcs
 }
 
 func addRequestHeaderFunction(funcs map[string]EvalFunction, contextScope map[string]any) {

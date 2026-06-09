@@ -37,6 +37,21 @@ var decisionDatasetAdapters = struct {
 	m map[string]DecisionDatasetAdapter
 }{m: map[string]DecisionDatasetAdapter{}}
 
+var decisionFunctions = struct {
+	sync.RWMutex
+	m map[string]EvalFunction
+}{m: map[string]EvalFunction{}}
+
+func RegisterDecisionFunction(name string, fn EvalFunction) {
+	name = strings.TrimSpace(name)
+	if name == "" || fn == nil {
+		return
+	}
+	decisionFunctions.Lock()
+	defer decisionFunctions.Unlock()
+	decisionFunctions.m[name] = fn
+}
+
 func RegisterDecisionDatasetAdapter(kind string, adapter DecisionDatasetAdapter) {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	if kind == "" || adapter == nil {

@@ -314,6 +314,80 @@ func TestDecisionDatasetCustomAdapterAndRanking(t *testing.T) {
 	}
 }
 
+func TestDecisionEvaluateExternalFunction(t *testing.T) {
+	doc, err := Parse([]byte(`module "external-function-test" {
+  decision_table "screen" {
+    default deny
+    hit_policy first
+    row "allow-trusted" { when { external_trust_score(customer.id) >= 80 } then { decision allow } }
+  }
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := CompileDecisionDocument(doc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := EvaluateDecision(prog, "screen", map[string]any{
+		"customer": map[string]any{"id": "cust-123"},
+	}, &Options{EvalFunctions: map[string]EvalFunction{
+		"external_trust_score": func(args []any, opts *EvalOptions) (any, error) {
+			if len(args) != 1 || args[0] != "cust-123" {
+				return nil, fmt.Errorf("bad args: %#v", args)
+			}
+			return 91, nil
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Effect != "allow" || !result.Allowed {
+		t.Fatalf("decision = %#v", result)
+	}
+}
+
+func TestDecisionRegisteredExternalFunctionInRankingCondition(t *testing.T) {
+	RegisterDecisionFunction("registered_provider_available_for_test", func(args []any, opts *EvalOptions) (any, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("registered_provider_available_for_test requires 1 argument")
+		}
+		return args[0] == "fast", nil
+	})
+	doc, err := Parse([]byte(`module "registered-external-function-test" {
+  decision_table "route" {
+    default deny
+    hit_policy first
+    row "allow" { when { request.ready == true } then { decision allow } }
+  }
+  ranking "route" {
+    selection highest_score
+    priority_path "provider.priority"
+    rule "available" { when { registered_provider_available_for_test(provider.id) } }
+  }
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := CompileDecisionDocument(doc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := EvaluateDecision(prog, "route", map[string]any{
+		"request": map[string]any{"ready": true},
+		"candidates": []any{
+			map[string]any{"id": "slow", "facts": map[string]any{"provider": map[string]any{"id": "slow", "priority": int64(100)}}},
+			map[string]any{"id": "fast", "facts": map[string]any{"provider": map[string]any{"id": "fast", "priority": int64(10)}}},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Rank == nil || result.Rank.ID != "fast" {
+		t.Fatalf("rank = %#v", result.Rank)
+	}
+}
+
 func TestDecisionPlatformReport(t *testing.T) {
 	prog, err := CompileDecisionFile("examples/bcl_decision_platform/use_cases/iam-access/decision.bcl", &Options{AllowTime: true})
 	if err != nil {
