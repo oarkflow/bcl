@@ -58,6 +58,19 @@ func Compile(doc *Document, opts *Options) (*Normalized, error) {
 	if opts.BaseDir == "" && doc.File != "" && doc.File != "<input>" {
 		opts.BaseDir = filepath.Dir(doc.File)
 	}
+	if len(opts.EnvFiles) == 0 {
+		baseDir := opts.BaseDir
+		if baseDir == "" {
+			baseDir = "."
+		}
+		if absDir, err := filepath.Abs(baseDir); err == nil {
+			baseDir = absDir
+		}
+		candidate := filepath.Join(baseDir, ".env")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			opts.EnvFiles = append(opts.EnvFiles, candidate)
+		}
+	}
 	topCap := len(doc.Items)
 	c := &compiler{
 		opts:        opts,
