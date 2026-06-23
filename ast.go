@@ -231,6 +231,7 @@ type Object struct {
 	Span   Span   `json:"span,omitempty"`
 }
 
+func (*Object) node()           {}
 func (*Object) value()          {}
 func (o *Object) Kind() string  { return "object" }
 func (o *Object) GetSpan() Span { return o.Span }

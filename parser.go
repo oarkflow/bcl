@@ -140,6 +140,11 @@ func (p *parser) parseNode() Node {
 	if t.kind == tokOperator && t.text == "&" {
 		return p.parseSpread()
 	}
+	if t.kind == tokLBrace {
+		lb := p.next()
+		body := p.parseNodes(tokRBrace)
+		return &Object{Fields: body, Span: lb.span}
+	}
 	if t.kind != tokIdent && t.kind != tokString && t.kind != tokNumber {
 		p.error(t, "expected declaration, assignment, or block")
 		return nil
@@ -1477,6 +1482,21 @@ func blockValue(name string, body []Node, sp Span) Value {
 	}
 	if name == "then" {
 		return &Object{Fields: body, Span: sp}
+	}
+	if len(body) > 0 {
+		allObjects := true
+		objects := make([]Value, 0, len(body))
+		for _, n := range body {
+			if obj, ok := n.(*Object); ok {
+				objects = append(objects, obj)
+			} else {
+				allObjects = false
+				break
+			}
+		}
+		if allObjects {
+			return &List{Items: objects, Span: sp}
+		}
 	}
 	allBare := len(body) > 0
 	items := make([]Value, 0, len(body))
