@@ -203,7 +203,8 @@ func writeStructFields(b *bytes.Buffer, rv reflect.Value, indent int) error {
 			continue
 		}
 		if tag.block {
-			if err := writeBlockValues(b, fv, indent, fieldName); err != nil {
+			blockType := singularName(fieldName)
+			if err := writeBlockValues(b, fv, indent, blockType); err != nil {
 				return err
 			}
 			continue
@@ -702,7 +703,7 @@ func blockValues(m map[string]any, name string) []any {
 	var out []any
 	if blocks, ok := m["$blocks"].([]map[string]any); ok {
 		for _, block := range blocks {
-			if stringValue(block["type"]) == name {
+			if sameCollectionName(name, stringValue(block["type"])) {
 				out = append(out, blockBodyWithID(block))
 			}
 		}
@@ -710,12 +711,15 @@ func blockValues(m map[string]any, name string) []any {
 	if blocks, ok := m["$blocks"].([]any); ok {
 		for _, item := range blocks {
 			block := mapFromAny(item)
-			if stringValue(block["type"]) == name {
+			if sameCollectionName(name, stringValue(block["type"])) {
 				out = append(out, blockBodyWithID(block))
 			}
 		}
 	}
-	if v, ok := m[name]; ok {
+	for key, v := range m {
+		if !sameCollectionName(name, key) {
+			continue
+		}
 		for _, block := range listFromAny(v) {
 			out = append(out, blockBodyWithID(mapFromAny(block)))
 		}
@@ -732,6 +736,9 @@ func listFromAny(v any) []any {
 	if xs, ok := v.([]any); ok {
 		return xs
 	}
+	if m, ok := v.(map[string]any); ok {
+		return []any{m}
+	}
 	if xs, ok := v.([]map[string]any); ok {
 		out := make([]any, 0, len(xs))
 		for _, x := range xs {
@@ -744,8 +751,14 @@ func listFromAny(v any) []any {
 
 func blockBodyWithID(block map[string]any) map[string]any {
 	body := mapFromAny(block["body"])
+	if body == nil {
+		body = block
+	}
 	out := make(map[string]any, len(body)+1)
 	for k, v := range body {
+		if k == "type" || k == "body" {
+			continue
+		}
 		out[k] = v
 	}
 	if id, ok := block["id"]; ok {

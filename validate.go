@@ -1059,13 +1059,23 @@ func validateSchemas(nodes []Node, schemas map[string]*SchemaDecl, aliases map[s
 
 func validateBlockAgainstSchema(b *Block, schema *SchemaDecl, aliases map[string]string, diags *[]Diagnostic) {
 	fields := map[string]Value{}
+	blockFields := map[string][]*Block{}
 	for _, n := range b.Body {
-		if a, ok := n.(*Assignment); ok {
-			fields[a.Name] = a.Value
+		switch x := n.(type) {
+		case *Assignment:
+			fields[x.Name] = x.Value
+		case *Block:
+			blockFields[x.Type] = append(blockFields[x.Type], x)
 		}
 	}
 	for _, f := range schema.Fields {
 		v, ok := fields[f.Name]
+		if !ok {
+			if blocks := matchingSchemaBlocks(blockFields, f.Name); len(blocks) > 0 {
+				v = blocksToSchemaListValue(blocks)
+				ok = true
+			}
+		}
 		if !ok {
 			if f.Required && f.Default == nil {
 				*diags = append(*diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("%s %q missing required field %q", b.Type, b.ID, f.Name), Span: b.Span})
@@ -1221,11 +1231,44 @@ func schemaFieldValidationMap(f SchemaField) map[string]any {
 func blockValidationMap(b *Block) map[string]any {
 	out := map[string]any{}
 	for _, n := range b.Body {
-		if a, ok := n.(*Assignment); ok {
-			out[a.Name] = validationValue(a.Value)
+		switch x := n.(type) {
+		case *Assignment:
+			out[x.Name] = validationValue(x.Value)
+		case *Block:
+			block := map[string]any{"type": x.Type, "body": blockValidationMap(x)}
+			if x.ID != "" {
+				block["id"] = x.ID
+			}
+			out[x.Type] = appendBlock(out[x.Type], block)
+			plural := pluralName(x.Type)
+			if plural != x.Type {
+				out[plural] = appendBlock(out[plural], block)
+			}
 		}
 	}
 	return out
+}
+
+func matchingSchemaBlocks(blocks map[string][]*Block, fieldName string) []*Block {
+	for name, xs := range blocks {
+		if sameCollectionName(fieldName, name) {
+			return xs
+		}
+	}
+	return nil
+}
+
+func blocksToSchemaListValue(blocks []*Block) Value {
+	items := make([]Value, 0, len(blocks))
+	for _, b := range blocks {
+		fields := make([]Node, 0, len(b.Body)+1)
+		if b.ID != "" {
+			fields = append(fields, &Assignment{Name: "id", Value: &Literal{Type: "string", Data: b.ID, Span: b.Span}, Span: b.Span})
+		}
+		fields = append(fields, b.Body...)
+		items = append(items, &Object{Fields: fields, Span: b.Span})
+	}
+	return &List{Items: items}
 }
 
 func validationValue(v Value) any {

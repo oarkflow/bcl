@@ -530,7 +530,8 @@ func (c *compiler) block(b *Block) map[string]any {
 		case *Assignment:
 			setNormalized(body, x.Name, c.assignmentValue(x))
 		case *Block:
-			body[x.Type] = appendBlock(body[x.Type], c.block(x))
+			key := c.blockCollectionKey(b.Type, x.Type)
+			body[key] = appendBlock(body[key], c.block(x))
 		case *Spread:
 			if merged := c.spreadBody(b.Type, x); merged != nil {
 				mergeMap(body, merged)
@@ -540,6 +541,26 @@ func (c *compiler) block(b *Block) map[string]any {
 	out["body"] = body
 	c.applySchemaDefaults(b.Type, body)
 	return out
+}
+
+func (c *compiler) blockCollectionKey(parentType, childType string) string {
+	if parentType == "" || childType == "" {
+		return childType
+	}
+	s := c.schemaDecls[parentType]
+	if s == nil {
+		return childType
+	}
+	for _, f := range s.Fields {
+		ft := resolveBuiltinAlias(resolveAlias(f.Type, c.types))
+		if !strings.HasPrefix(ft, "list") && !strings.HasPrefix(ft, "array") {
+			continue
+		}
+		if sameCollectionName(f.Name, childType) {
+			return f.Name
+		}
+	}
+	return childType
 }
 
 func (c *compiler) applySchemaDefaults(blockType string, body map[string]any) {
@@ -594,7 +615,8 @@ func (c *compiler) nodesToBody(nodes []Node, currentType string) map[string]any 
 		case *Assignment:
 			setNormalized(body, x.Name, c.assignmentValue(x))
 		case *Block:
-			body[x.Type] = appendBlock(body[x.Type], c.block(x))
+			key := c.blockCollectionKey(currentType, x.Type)
+			body[key] = appendBlock(body[key], c.block(x))
 		case *Spread:
 			if merged := c.spreadBody(currentType, x); merged != nil {
 				mergeMap(body, merged)

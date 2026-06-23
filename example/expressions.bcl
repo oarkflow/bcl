@@ -22,38 +22,35 @@ predicate_suite "bytecode-fast-paths" {
     }
   }
 
-  cases [
-    {
-      name "role membership"
-      expr `subject.roles has_any ["admin", "superadmin"]`
-      expect true
-    },
-    {
-      name "string comparison"
-      expr `subject.status != "blocked"`
-      expect true
-    },
-    {
-      name "reference equality"
-      expr `resource.owner_id == subject.id`
-      expect true
-    },
-    {
-      name "regex match"
-      expr `request.path matches regex("^/admin/.*")`
-      expect true
-    },
-    {
-      name "exists check"
-      expr `request.id exists`
-      expect true
-    },
-    {
-      name "empty check"
-      expr `request.optional empty`
-      expect true
-    }
-  ]
+  case "role membership" {
+    expr `subject.roles has_any ["admin", "superadmin"]`
+    expect true
+  }
+
+  case "string comparison" {
+    expr `subject.status != "blocked"`
+    expect true
+  }
+
+  case "reference equality" {
+    expr `resource.owner_id == subject.id`
+    expect true
+  }
+
+  case "regex match" {
+    expr `request.path matches regex("^/admin/.*")`
+    expect true
+  }
+
+  case "exists check" {
+    expr `request.id exists`
+    expect true
+  }
+
+  case "empty check" {
+    expr `request.optional empty`
+    expect true
+  }
 }
 
 predicate_suite "general-bytecode" {

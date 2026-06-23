@@ -734,3 +734,86 @@ Migration "b" {
 		}
 	}
 }
+
+func TestPluralSchemaFieldAcceptsSingularRepeatedBlocks(t *testing.T) {
+	src := []byte(`
+schema predicate_suite {
+  required description string
+  optional cases list<object>
+}
+
+predicate_suite "bytecode-fast-paths" {
+  description "Expressions commonly compiled into fast paths"
+
+  case "role membership" {
+    expr ` + "`" + `subject.roles has_any ["admin", "superadmin"]` + "`" + `
+    expect true
+  }
+
+  case "empty check" {
+    expr ` + "`" + `request.optional empty` + "`" + `
+    expect true
+  }
+}
+`)
+	n, err := CompileBytes(src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := findBlock(n.Blocks, "predicate_suite", "bytecode-fast-paths")
+	if block == nil {
+		t.Fatal("missing predicate_suite block")
+	}
+	body := block["body"].(map[string]any)
+	cases, ok := body["cases"].([]any)
+	if !ok || len(cases) != 2 {
+		t.Fatalf("cases should be normalized from singular case blocks: %#v", body["cases"])
+	}
+	if _, exists := body["case"]; exists {
+		t.Fatalf("schema-backed singular case blocks should use plural schema field cases, got body: %#v", body)
+	}
+}
+
+func TestMarshalUnmarshalPluralBlockTagUsesSingularBlocks(t *testing.T) {
+	type Case struct {
+		Name   string `bcl:",id"`
+		Expr   string `bcl:"expr"`
+		Expect bool   `bcl:"expect"`
+	}
+	type Suite struct {
+		Description string `bcl:"description"`
+		Cases       []Case `bcl:"cases,block"`
+	}
+	type Config struct {
+		Suites []Suite `bcl:"predicate_suite,block"`
+	}
+
+	cfg := Config{Suites: []Suite{{Description: "Expressions", Cases: []Case{{Name: "role membership", Expr: `subject.roles has_any ["admin", "superadmin"]`, Expect: true}}}}}
+	data, err := Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `case "role membership" {`) {
+		t.Fatalf("plural block tag should marshal as singular repeated blocks, got:\n%s", text)
+	}
+	if strings.Contains(text, `cases "role membership" {`) {
+		t.Fatalf("plural collection name leaked into block type:\n%s", text)
+	}
+
+	var out Config
+	if err := Unmarshal([]byte(`
+predicate_suite {
+  description "Expressions"
+  case "role membership" {
+    expr `+"`"+`subject.roles has_any ["admin", "superadmin"]`+"`"+`
+    expect true
+  }
+}
+`), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Suites) != 1 || len(out.Suites[0].Cases) != 1 || out.Suites[0].Cases[0].Name != "role membership" || !out.Suites[0].Cases[0].Expect {
+		t.Fatalf("unmarshal singular case blocks into plural Cases failed: %#v", out)
+	}
+}
