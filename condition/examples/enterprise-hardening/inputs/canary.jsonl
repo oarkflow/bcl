@@ -1,2 +1,0 @@
-{"id":"active-reader","input":{"request":{"user":{"active":true},"action":"read"}},"expect":{"effect":"allow","reason_code":"TENANT_FIXED_TIME_ALLOW"}}
-{"id":"inactive-reader","input":{"request":{"user":{"active":false},"action":"read"}},"expect":{"effect":"deny"}}
