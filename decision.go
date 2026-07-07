@@ -10,10 +10,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/oarkflow/convert"
 )
 
 type DecisionProgram struct {
@@ -2018,22 +2019,17 @@ func runtimeScopeCall(scopeName string, scope map[string]any, fnName string, arg
 		if i, ok := numericInt(val); ok {
 			return i, nil
 		}
-		var i int64
-		fmt.Sscan(fmt.Sprint(val), &i)
-		return i, nil
+		return int64(0), nil
 	case scopeName + ".bool":
-		if b, ok := val.(bool); ok {
+		if b, err := convert.ToBool(val); err == nil {
 			return b, nil
 		}
-		s := strings.ToLower(fmt.Sprint(val))
-		return s == "true" || s == "1" || s == "yes", nil
+		return false, nil
 	case scopeName + ".float":
 		if f, ok := numericFloat(val); ok {
 			return f, nil
 		}
-		var f float64
-		fmt.Sscan(fmt.Sprint(val), &f)
-		return f, nil
+		return float64(0), nil
 	case scopeName + ".list":
 		switch xs := val.(type) {
 		case []any:
@@ -2811,15 +2807,11 @@ func lookupExpr(v any) any {
 }
 
 func parseInlineNumber(s string) any {
-	if strings.Contains(s, ".") {
-		var f float64
-		if _, err := fmt.Sscan(s, &f); err == nil {
-			return f
-		}
-	}
-	var i int64
-	if _, err := fmt.Sscan(s, &i); err == nil {
+	if i, err := convert.ToInt64(s); err == nil {
 		return i
+	}
+	if f, err := convert.ToFloat64(s); err == nil {
+		return f
 	}
 	return s
 }
@@ -4407,11 +4399,11 @@ func parseYAMLScalar(s string) any {
 		return out
 	}
 	if strings.ContainsAny(s, ".eE") {
-		if f, err := strconv.ParseFloat(s, 64); err == nil {
+		if f, err := convert.ToFloat64(s); err == nil {
 			return f
 		}
 	}
-	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+	if i, err := convert.ToInt64(s); err == nil {
 		return i
 	}
 	return s

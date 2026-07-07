@@ -289,8 +289,13 @@ func (p *parser) parseSpreadTarget() token {
 		return token{text: "", span: t.span}
 	}
 	first := p.next()
-	parts := []string{first.text}
 	sp := first.span
+	if p.peek().kind != tokDot {
+		return token{text: first.text, span: sp}
+	}
+	var b strings.Builder
+	b.Grow(32)
+	b.WriteString(first.text)
 	for p.peek().kind == tokDot {
 		p.next()
 		next := p.peek()
@@ -299,10 +304,11 @@ func (p *parser) parseSpreadTarget() token {
 			break
 		}
 		part := p.next()
-		parts = append(parts, part.text)
+		b.WriteByte('.')
+		b.WriteString(part.text)
 		sp = spanJoin(sp, part.span)
 	}
-	return token{text: strings.Join(parts, "."), span: sp}
+	return token{text: b.String(), span: sp}
 }
 
 func (p *parser) parseConditionalBlock(first token) Node {
@@ -356,16 +362,21 @@ func (p *parser) dottedAssignmentAhead() bool {
 }
 
 func (p *parser) parseDottedAssignment(first token) Node {
-	parts := []string{first.text}
+	var b strings.Builder
+	b.Grow(32)
+	b.WriteString(first.text)
 	for p.peek().kind == tokDot {
 		p.next()
-		parts = append(parts, p.expect(tokIdent, "expected assignment path segment").text)
+		seg := p.expect(tokIdent, "expected assignment path segment").text
+		b.WriteByte('.')
+		b.WriteString(seg)
 	}
+	name := b.String()
 	if p.peek().kind == tokEqual {
 		p.next()
 	}
 	v := p.parseValueUntilLine()
-	return &Assignment{Name: strings.Join(parts, "."), Value: v, Span: spanJoin(first.span, v.GetSpan())}
+	return &Assignment{Name: name, Value: v, Span: spanJoin(first.span, v.GetSpan())}
 }
 
 func (p *parser) parseExprNode(first token) Node {
@@ -1049,15 +1060,21 @@ func (p *parser) parseSchemaField() SchemaField {
 
 func (p *parser) parseSchemaFieldName() token {
 	first := p.expect(tokIdent, "expected field name")
-	parts := []string{first.text}
+	if p.peek().kind != tokDot {
+		return first
+	}
 	sp := first.span
+	var b strings.Builder
+	b.Grow(32)
+	b.WriteString(first.text)
 	for p.peek().kind == tokDot {
 		p.next()
 		part := p.expect(tokIdent, "expected field path segment")
-		parts = append(parts, part.text)
+		b.WriteByte('.')
+		b.WriteString(part.text)
 		sp = spanJoin(sp, part.span)
 	}
-	first.text = strings.Join(parts, ".")
+	first.text = b.String()
 	first.span = sp
 	return first
 }
@@ -1311,7 +1328,8 @@ func (p *parser) schemaStringClause() string {
 }
 
 func (p *parser) parseSchemaType() string {
-	var parts []string
+	var b strings.Builder
+	b.Grow(16)
 	depth := 0
 	for {
 		t := p.peek()
@@ -1327,12 +1345,17 @@ func (p *parser) parseSchemaType() string {
 		if t.text == ">" && depth > 0 {
 			depth--
 		}
-		parts = append(parts, p.next().text)
+		text := p.next().text
+		if text == "," {
+			b.WriteString(", ")
+		} else {
+			b.WriteString(text)
+		}
 	}
-	if len(parts) == 0 {
+	if b.Len() == 0 {
 		return "any"
 	}
-	return joinTypeParts(parts)
+	return b.String()
 }
 
 func isSchemaClause(s string) bool {
@@ -1590,12 +1613,19 @@ func looksConstantName(s string) bool {
 }
 
 func (p *parser) collectRef(first token) string {
-	parts := []string{first.text}
+	if p.peek().kind != tokDot {
+		return first.text
+	}
+	var b strings.Builder
+	b.Grow(len(first.text) + 32)
+	b.WriteString(first.text)
 	for p.peek().kind == tokDot {
 		p.next()
-		parts = append(parts, p.expect(tokIdent, "expected reference segment").text)
+		seg := p.expect(tokIdent, "expected reference segment").text
+		b.WriteByte('.')
+		b.WriteString(seg)
 	}
-	return strings.Join(parts, ".")
+	return b.String()
 }
 
 func (p *parser) skipNewlines() {
@@ -1717,14 +1747,4 @@ func isByteUnit(s string) bool {
 	}
 }
 
-func joinTypeParts(parts []string) string {
-	var b strings.Builder
-	for _, p := range parts {
-		if p == "," {
-			b.WriteString(", ")
-			continue
-		}
-		b.WriteString(p)
-	}
-	return b.String()
-}
+

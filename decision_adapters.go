@@ -11,10 +11,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/oarkflow/convert"
 )
 
 type DecisionDatasetAdapter interface {
@@ -446,13 +447,13 @@ func candidateFromMap(m map[string]any, source DatasetSource) DecisionCandidate 
 }
 
 func parseCSVScalar(s string) any {
-	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+	if i, err := convert.ToInt64(s); err == nil {
 		return i
 	}
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
+	if f, err := convert.ToFloat64(s); err == nil {
 		return f
 	}
-	if b, err := strconv.ParseBool(s); err == nil {
+	if b, err := convert.ToBool(s); err == nil {
 		return b
 	}
 	return s

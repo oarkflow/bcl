@@ -1,11 +1,17 @@
 # BCL Benchmark Notes
 
-Benchmarks live in [benchmark_test.go](/Users/sujit/Sites/bcl-v2/benchmark_test.go).
+Benchmarks live in [benchmark_test.go](benchmark_test.go).
 
 Command used:
 
 ```bash
-GOCACHE=/private/tmp/bcl-gocache GOMODCACHE=/private/tmp/bcl-gomodcache go test -run '^$' -bench . -benchmem
+GOCACHE=/private/tmp/bcl-gocache GOMODCACHE=/private/tmp/bcl-gomodcache go test -run '^$' -bench . -benchmem -count=3
+```
+
+Or run the repository helper:
+
+```bash
+make bench
 ```
 
 Machine:
@@ -20,43 +26,36 @@ cpu: Apple M2 Pro
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| Parse small | ~2,347 | 2,096 | 24 |
-| Parse policy | ~18,458 | 14,768 | 146 |
-| Scan small | ~1,038 | 0 | 0 |
-| Scan policy | ~9,795 | 0 | 0 |
-| Compile policy | ~26,405 | 27,158 | 315 |
-| Compile already-parsed policy | ~5,991 | 12,152 | 165 |
-| Validate policy | ~2,368 | 539 | 12 |
-| Format policy | ~29,309 | 40,284 | 266 |
-| Eval expression | ~45.70 | 0 | 0 |
-| Eval condition | ~196.4 | 0 | 0 |
-| Marshal struct | ~912.9 | 416 | 13 |
-| Unmarshal struct | ~2,269 | 4,483 | 34 |
-| Compile `example/main.bcl` | ~376,063 | 399 KB | 2,500 |
-| Compile detailed example | ~365,449 | 403 KB | 2,543 |
-| Normalized JSON export | ~16,587 | 11,612 | 139 |
-
-## Improvements From Baseline
-
-| Benchmark | Baseline | Current |
-|---|---:|---:|
-| Parse small allocs | 49 | 24 |
-| Parse policy bytes | 65,624 | 14,785 |
-| Parse policy allocs | 312 | 150 |
-| Compile policy bytes | 78,430 | 27,158 |
-| Compile policy allocs | 477 | 315 |
-| Validate policy bytes | 10,141 | 539 |
-| Validate policy allocs | 99 | 12 |
-| Format policy bytes | 69,171 | 40,283 |
-| Format policy allocs | 398 | 266 |
-| Eval expression | ~1,720 ns / 3,313 B / 25 allocs | ~45.66 ns / 0 B / 0 allocs |
-| Eval condition | ~3,445 ns / 4,882 B / 48 allocs | ~195.9 ns / 0 B / 0 allocs |
-| Unmarshal struct | ~3,560 ns / 5,703 B / 55 allocs | ~2,269 ns / 4,483 B / 34 allocs |
-| Compile `example/main.bcl` | ~429,000 ns / 580 KB / 3,553 allocs | ~376,063 ns / 399 KB / 2,500 allocs |
+| Parse small | ~2,774 | 2,129 | 25 |
+| Parse policy | ~23,858 | 27,842 | 144 |
+| Scan small | ~1,073 | 0 | 0 |
+| Scan policy | ~9,930 | 0 | 0 |
+| Compile policy | ~36,271 | 41,772 | 322 |
+| Compile already-parsed policy | ~9,868 | 13,545 | 178 |
+| Validate policy | ~11,413 | 11,358 | 115 |
+| Format policy | ~31,969 | 31,178 | 259 |
+| Eval expression | ~261 | 104 | 5 |
+| Eval condition | ~453 | 16 | 1 |
+| Marshal struct | ~933 | 408 | 13 |
+| Unmarshal struct | ~5,117 | 3,718 | 47 |
+| Evaluate decision table | ~1,445 | 1,544 | 15 |
+| Evaluate decision table (into) | ~1,330 | 984 | 13 |
+| Compile `example/main.bcl` | ~487,393 | 336 KB | 2,775 |
+| Compile detailed example | ~494,324 | 341 KB | 2,818 |
+| Normalized JSON export | ~17,406 | 11,611 | 139 |
 
 ## Optimization Notes
 
-- Lexer now slices identifiers/numbers/plain strings from the source string instead of building them rune by rune.
+- All scalar type conversions use `github.com/oarkflow/convert` for allocation-free paths.
+- `writeScalar` uses `convert.AppendString` with a stack-allocated buffer, replacing `fmt.Fprintf`.
+- `assignGoValue` uses `convert.ToString`/`ToInt64`/`ToFloat64`/`ToBool`/`ToUint64` instead of `fmt.Sprint` and manual type switches.
+- Expression builtins (`toInt`, `toFloat`, `toBool`) delegate to `convert` package.
+- `parseInlineNumber` uses `convert.ToInt64`/`ToFloat64` instead of `fmt.Sscan`.
+- `parseCSVScalar` and `parseYAMLScalar` use `convert` for int/float/bool parsing.
+- Numeric literal parsing in parser uses `convert` instead of `strconv.ParseInt`/`ParseFloat`.
+- `env.int`/`env.float`/`env.bool` compiler builtins use `convert`.
+- `numericInt`/`numericFloat` wrappers delegate to `convert.ToInt64`/`ToFloat64`.
+- Lexer slices identifiers/numbers/plain strings from the source string instead of building them rune by rune.
 - Token storage uses adaptive preallocation and a cleared scratch pool so parse/compile do not allocate a fresh token backing array on every call.
 - Expression nodes preserve raw source slices instead of first building temporary token-text slices.
 - `Scan`/`ScanFile`/`ScanString` provide a zero-allocation syntax gate for hot paths that do not need a materialized AST.
@@ -68,8 +67,22 @@ cpu: Apple M2 Pro
 - `Unmarshal` decodes directly from normalized maps into Go values instead of JSON round-tripping.
 - Normalization uses sized maps for known block/object shapes.
 - Formatter grows its output buffer from input size.
+- `isEmpty` uses typed type switches instead of `fmt.Sprint(v) == ""`.
+- `compare` converts both sides to string via type assertion before falling back to `fmt.Sprint`.
+- `equalLoose` uses typed type switches for string/int/int64/float64/float32/bool/nil instead of `reflect.DeepEqual`/`fmt.Sprint` fallback.
+- `setNormalized` replaces `strings.Split` with a single-pass `strings.IndexByte` loop to avoid the `[]string` allocation.
+- `collectRef`, `parseSpreadTarget`, `parseDottedAssignment`, `parseSchemaFieldName`, `parseSchemaType` replace `[]string`+`strings.Join` with `strings.Builder`.
+- `contains`/`containsValue` add fast string-vs-string paths to avoid `fmt.Sprint` allocation.
+- `sliceValues` uses index-assignment instead of `append` for pre-allocated slices.
+- `unique` uses a custom `typeAndString` key builder with `map[string]struct{}` instead of `fmt.Sprintf("%T:%v")` with `map[string]bool`.
+- Expression VM stack is pre-allocated with known program length.
+- `EvalOptions` is reused across `valueWithRedact`, `interpolate`, and decision `call` evaluation by embedding it in the `compiler` struct.
 
 ## Remaining Performance Work
 
-- Repeated `Eval` and condition evaluation are zero-allocation for the benchmarked common predicate shapes.
 - Full parse/compile will continue to allocate while it returns a rich AST and normalized map model; pushing it further needs arena-like reuse or a lower-level streaming API.
+- Expression VM `sliceValues` still allocates when converting `[]string` to `[]any` for runtime use — a typed VM stack would eliminate this.
+- `evalVars` creates a new `map[string]any` on every call; caching or reuse would reduce compile-time allocations.
+- `EvalOptions` is still heap-allocated via `&c.evalOpts` escape; a value receiver or passing by value could eliminate the pointer allocation.
+- Lexer token pooling could be refined for zero-alloc scan paths in hot parse loops.
+- AST node pooling would reduce GC pressure for repeated parse/compile cycles.

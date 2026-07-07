@@ -16,7 +16,7 @@ endif
 VSCODE_EXTENSIONS_DIR ?= $(HOME)/.vscode/extensions
 VSCODE_EXTENSION_LINK := $(VSCODE_EXTENSIONS_DIR)/$(EXT_ID)
 
-.PHONY: vscode-extension vscode-extension-deps vscode-extension-lsp vscode-extension-install vscode-extension-reload install-extension reload-vscode clean-extension-bin
+.PHONY: vscode-extension vscode-extension-deps vscode-extension-lsp vscode-extension-install vscode-extension-reload install-extension reload-vscode bench clean-extension-bin
 
 vscode-extension: vscode-extension-deps vscode-extension-lsp
 	cd $(EXT_DIR) && npm run compile
@@ -47,6 +47,9 @@ endif
 install-extension: vscode-extension-install vscode-extension-reload
 
 reload-vscode: vscode-extension-reload
+
+bench:
+	GOCACHE=/private/tmp/bcl-gocache GOMODCACHE=/private/tmp/bcl-gomodcache go test -run '^$$' -bench . -benchmem -count=3
 
 clean-extension-bin:
 	rm -rf $(EXT_DIR)/bin

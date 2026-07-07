@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/oarkflow/convert"
 )
 
 func Marshal(v any) ([]byte, error) {
@@ -789,33 +791,13 @@ func unwrapTypedScalar(v any) any {
 }
 
 func numericInt(v any) (int64, bool) {
-	switch x := v.(type) {
-	case int:
-		return int64(x), true
-	case int64:
-		return x, true
-	case float64:
-		return int64(x), true
-	case float32:
-		return int64(x), true
-	default:
-		return 0, false
-	}
+	i, err := convert.ToInt64(v)
+	return i, err == nil
 }
 
 func numericFloat(v any) (float64, bool) {
-	switch x := v.(type) {
-	case int:
-		return float64(x), true
-	case int64:
-		return float64(x), true
-	case float64:
-		return x, true
-	case float32:
-		return float64(x), true
-	default:
-		return 0, false
-	}
+	f, err := convert.ToFloat64(v)
+	return f, err == nil
 }
 
 func isZero(v reflect.Value) bool {

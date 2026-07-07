@@ -3,6 +3,8 @@ package bcl
 import (
 	"fmt"
 	"strings"
+
+	"github.com/oarkflow/convert"
 )
 
 type ResponsePlan struct {
@@ -120,7 +122,9 @@ func summarizeStatusAction(b *Block) string {
 }
 
 func intValueFromString(s string) int {
-	var out int
-	_, _ = fmt.Sscan(s, &out)
+	out, err := convert.ToInt(s)
+	if err != nil {
+		return 0
+	}
 	return out
 }

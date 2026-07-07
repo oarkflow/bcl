@@ -10,8 +10,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/oarkflow/convert"
 )
 
 type Options struct {
@@ -81,6 +84,7 @@ func Compile(doc *Document, opts *Options) (*Normalized, error) {
 		schemaDecls: map[string]*SchemaDecl{},
 		blockIndex:  map[string]*Block{},
 		spreadStack: map[string]bool{},
+		evalOpts:    EvalOptions{AllowEncoding: opts.AllowEncoding, AllowHash: opts.AllowHash, AllowTime: opts.AllowTime, Functions: opts.EvalFunctions, Now: opts.Now},
 	}
 	c.loadEnvFiles(doc.Span, nil)
 	items := doc.Items
@@ -127,6 +131,9 @@ type compiler struct {
 	lock        *Lockfile
 	result      *CompileResult
 	errs        ErrorList
+	evalOpts    EvalOptions
+	configWrap  map[string]any
+	vars        map[string]any
 }
 
 func (c *compiler) indexBlocks(nodes []Node) {
@@ -712,7 +719,8 @@ func (c *compiler) valueWithRedact(v Value, sensitive bool) any {
 		}
 		return m
 	case *Expr:
-		v, err := EvalExpr(x.Raw, &EvalOptions{Variables: c.evalVars(), AllowEncoding: c.opts.AllowEncoding, AllowHash: c.opts.AllowHash, AllowTime: c.opts.AllowTime, Functions: c.opts.EvalFunctions, Now: c.opts.Now})
+		c.evalOpts.Variables = c.evalVars()
+		v, err := EvalExpr(x.Raw, &c.evalOpts)
 		if err != nil {
 			c.errs = append(c.errs, Diagnostic{Severity: "error", Message: err.Error(), Span: x.Span})
 			return map[string]any{"$expr": x.Raw}
@@ -801,7 +809,8 @@ func (c *compiler) call(x *Call) any {
 		for _, a := range x.Args {
 			args = append(args, c.value(a))
 		}
-		v, err := EvalExpr(callToExpr(x.Name, args), &EvalOptions{Variables: c.evalVars(), AllowEncoding: c.opts.AllowEncoding, AllowHash: c.opts.AllowHash, AllowTime: c.opts.AllowTime, Functions: c.opts.EvalFunctions, Now: c.opts.Now})
+		c.evalOpts.Variables = c.evalVars()
+		v, err := EvalExpr(callToExpr(x.Name, args), &c.evalOpts)
 		if err == nil {
 			return v
 		}
@@ -945,32 +954,68 @@ func randomHex(n int) (string, error) {
 var interpolationPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
 func (c *compiler) interpolate(s string) string {
+	eopts := &c.evalOpts
 	return interpolationPattern.ReplaceAllStringFunc(s, func(match string) string {
 		expr := strings.TrimSuffix(strings.TrimPrefix(match, "${"), "}")
-		v, err := EvalExpr(expr, &EvalOptions{Variables: c.evalVars(), AllowEncoding: c.opts.AllowEncoding, AllowHash: c.opts.AllowHash, AllowTime: c.opts.AllowTime, Functions: c.opts.EvalFunctions})
+		eopts.Variables = c.evalVars()
+		v, err := EvalExpr(expr, eopts)
 		if err != nil || v == nil {
 			return match
 		}
-		return fmt.Sprint(v)
+		return sprintValue(v)
 	})
 }
 
+func sprintValue(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return x
+	case int:
+		return intToStr(x)
+	case int64:
+		return intToStr(int(x))
+	case float64:
+		return floatToStr(x)
+	case bool:
+		if x {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
 func (c *compiler) evalVars() map[string]any {
-	vars := map[string]any{
-		"config":  map[string]any{"app": c.out.Body},
-		"app":     c.out.Body,
-		"const":   c.out.Constants,
-		"sets":    c.out.Sets,
-		"context": c.opts.Context,
-		"session": c.opts.Session,
-	}
-	for k, v := range c.out.Body {
-		vars[k] = v
-	}
-	for k, v := range c.out.Constants {
-		vars[k] = v
-	}
+	vars := c.varsMap()
+	vars["config"] = c.configWrapper()
+	vars["app"] = c.out.Body
+	vars["const"] = c.out.Constants
+	vars["sets"] = c.out.Sets
+	vars["context"] = c.opts.Context
+	vars["session"] = c.opts.Session
+	vars["env"] = c.opts.Env
 	return vars
+}
+
+func (c *compiler) varsMap() map[string]any {
+	cap := len(c.out.Body) + len(c.out.Constants) + 6
+	if c.vars == nil {
+		c.vars = make(map[string]any, cap)
+	} else {
+		clear(c.vars)
+	}
+	return c.vars
+}
+
+func (c *compiler) configWrapper() map[string]any {
+	if c.configWrap != nil {
+		return c.configWrap
+	}
+	c.configWrap = map[string]any{"app": c.out.Body}
+	return c.configWrap
 }
 
 func callToExpr(name string, args []any) string {
@@ -982,9 +1027,9 @@ func callToExpr(name string, args []any) string {
 			b.WriteString(", ")
 		}
 		if s, ok := a.(string); ok {
-			b.WriteString(strconvQuote(s))
+			b.WriteString(strconv.Quote(s))
 		} else {
-			b.WriteString(fmt.Sprint(a))
+			b.WriteString(sprintValue(a))
 		}
 	}
 	b.WriteByte(')')
@@ -992,8 +1037,7 @@ func callToExpr(name string, args []any) string {
 }
 
 func strconvQuote(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
+	return strconv.Quote(s)
 }
 
 func (c *compiler) envCall(x *Call) any {
@@ -1015,15 +1059,20 @@ func (c *compiler) envCall(x *Call) any {
 	}
 	switch x.Name {
 	case "env.int":
-		var i int64
-		fmt.Sscan(val, &i)
-		return i
+		if i, err := convert.ToInt64(val); err == nil {
+			return i
+		}
+		return int64(0)
 	case "env.bool":
-		return val == "true" || val == "1" || val == "yes"
+		if b, err := convert.ToBool(val); err == nil {
+			return b
+		}
+		return false
 	case "env.float":
-		var f float64
-		fmt.Sscan(val, &f)
-		return f
+		if f, err := convert.ToFloat64(val); err == nil {
+			return f
+		}
+		return float64(0)
 	case "env.list":
 		sep := ","
 		if len(x.Args) > 1 {
@@ -1063,22 +1112,18 @@ func (c *compiler) scopeCall(scopeName string, scope map[string]any, x *Call) an
 		if i, ok := numericInt(val); ok {
 			return i
 		}
-		var i int64
-		fmt.Sscan(fmt.Sprint(val), &i)
-		return i
+		return int64(0)
 	case scopeName + ".bool":
 		if b, ok := val.(bool); ok {
 			return b
 		}
-		s := strings.ToLower(fmt.Sprint(val))
+		s := strings.ToLower(sprintValue(val))
 		return s == "true" || s == "1" || s == "yes"
 	case scopeName + ".float":
 		if f, ok := numericFloat(val); ok {
 			return f
 		}
-		var f float64
-		fmt.Sscan(fmt.Sprint(val), &f)
-		return f
+		return float64(0)
 	case scopeName + ".list":
 		switch xs := val.(type) {
 		case []any:
@@ -1096,11 +1141,11 @@ func (c *compiler) scopeCall(scopeName string, scope map[string]any, x *Call) an
 				sep = s
 			}
 		}
-		return strings.Split(fmt.Sprint(val), sep)
+		return strings.Split(sprintValue(val), sep)
 	case scopeName + ".duration":
-		return map[string]any{"$duration": fmt.Sprint(val)}
+		return map[string]any{"$duration": sprintValue(val)}
 	case scopeName + ".bytes":
-		return map[string]any{"$bytes": fmt.Sprint(val)}
+		return map[string]any{"$bytes": sprintValue(val)}
 	default:
 		return val
 	}
@@ -1586,10 +1631,17 @@ func cloneAny(v any) any {
 }
 
 func setNormalized(dst map[string]any, key string, value any) {
-	if strings.Contains(key, ".") {
-		parts := strings.Split(key, ".")
+	if dot := strings.IndexByte(key, '.'); dot >= 0 {
 		cur := dst
-		for _, part := range parts[:len(parts)-1] {
+		start := 0
+		for {
+			dot := strings.IndexByte(key[start:], '.')
+			if dot < 0 {
+				key = key[start:]
+				break
+			}
+			part := key[start : start+dot]
+			start += dot + 1
 			next, _ := cur[part].(map[string]any)
 			if next == nil {
 				next = map[string]any{}
@@ -1597,7 +1649,6 @@ func setNormalized(dst map[string]any, key string, value any) {
 			}
 			cur = next
 		}
-		key = parts[len(parts)-1]
 		dst = cur
 	}
 	if existing, ok := dst[key]; ok {

@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/oarkflow/convert"
 )
 
 func Validate(doc *Document, opts *Options) []Diagnostic {
@@ -683,6 +685,9 @@ func literalScalar(v Value) string {
 		return ""
 	}
 	if lit, ok := v.(*Literal); ok {
+		if s, err := convert.ToString(lit.Data); err == nil {
+			return s
+		}
 		return fmt.Sprint(lit.Data)
 	}
 	return literalString(v)

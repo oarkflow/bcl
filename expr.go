@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/oarkflow/convert"
 )
 
 type EvalOptions struct {
@@ -994,14 +996,14 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("unique requires a list")
 		}
-		seen := map[string]bool{}
+		seen := make(map[string]struct{}, len(xs))
 		out := make([]any, 0, len(xs))
 		for _, x := range xs {
-			key := fmt.Sprintf("%T:%v", x, x)
-			if seen[key] {
+			key := typeAndString(x)
+			if _, ok := seen[key]; ok {
 				continue
 			}
-			seen[key] = true
+			seen[key] = struct{}{}
 			out = append(out, x)
 		}
 		return out, nil
@@ -2532,13 +2534,11 @@ func parsePatternLiteral(pattern string) (any, bool) {
 		}
 	}
 	if strings.Contains(pattern, ".") {
-		var f float64
-		if _, err := fmt.Sscan(pattern, &f); err == nil {
+		if f, err := convert.ToFloat64(pattern); err == nil {
 			return f, true
 		}
 	} else {
-		var i int64
-		if _, err := fmt.Sscan(pattern, &i); err == nil {
+		if i, err := convert.ToInt64(pattern); err == nil {
 			return i, true
 		}
 	}
@@ -2609,9 +2609,9 @@ func sliceValues(v any) ([]any, bool) {
 	case []any:
 		return xs, true
 	case []string:
-		out := make([]any, 0, len(xs))
-		for _, x := range xs {
-			out = append(out, x)
+		out := make([]any, len(xs))
+		for i, x := range xs {
+			out[i] = x
 		}
 		return out, true
 	}
@@ -2619,9 +2619,9 @@ func sliceValues(v any) ([]any, bool) {
 	if !rv.IsValid() || rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
 		return nil, false
 	}
-	out := make([]any, 0, rv.Len())
+	out := make([]any, rv.Len())
 	for i := 0; i < rv.Len(); i++ {
-		out = append(out, rv.Index(i).Interface())
+		out[i] = rv.Index(i).Interface()
 	}
 	return out, true
 }
@@ -2786,10 +2786,18 @@ func containsValue(container, value any) bool {
 		}
 		return false
 	case []string:
-		needle := fmt.Sprint(value)
-		for _, v := range xs {
-			if v == needle {
-				return true
+		if vs, ok := value.(string); ok {
+			for _, v := range xs {
+				if v == vs {
+					return true
+				}
+			}
+		} else {
+			needle := fmt.Sprint(value)
+			for _, v := range xs {
+				if v == needle {
+					return true
+				}
 			}
 		}
 		return false
@@ -3231,63 +3239,15 @@ func median(values []float64) float64 {
 }
 
 func toInt(v any) (int, error) {
-	if i, ok := intScalarValue(v); ok {
-		return i, nil
-	}
-	switch x := v.(type) {
-	case string:
-		i, err := strconv.Atoi(strings.TrimSpace(x))
-		if err != nil {
-			return 0, err
-		}
-		return i, nil
-	case bool:
-		if x {
-			return 1, nil
-		}
-		return 0, nil
-	default:
-		return 0, fmt.Errorf("cannot convert %T to int", v)
-	}
+	return convert.ToInt(v)
 }
 
 func toFloat(v any) (float64, error) {
-	if f, ok := num(v); ok {
-		return f, nil
-	}
-	switch x := v.(type) {
-	case string:
-		f, err := strconv.ParseFloat(strings.TrimSpace(x), 64)
-		if err != nil {
-			return 0, err
-		}
-		return f, nil
-	case bool:
-		if x {
-			return 1, nil
-		}
-		return 0, nil
-	default:
-		return 0, fmt.Errorf("cannot convert %T to float", v)
-	}
+	return convert.ToFloat64(v)
 }
 
 func toBool(v any) (bool, error) {
-	switch x := v.(type) {
-	case bool:
-		return x, nil
-	case string:
-		b, err := strconv.ParseBool(strings.TrimSpace(x))
-		if err != nil {
-			return false, err
-		}
-		return b, nil
-	default:
-		if f, ok := num(v); ok {
-			return f != 0, nil
-		}
-		return truthy(v), nil
-	}
+	return convert.ToBool(v)
 }
 
 func equalLoose(a, b any) bool {
@@ -3310,6 +3270,22 @@ func equalLoose(a, b any) bool {
 		return ok && x == y
 	case nil:
 		return b == nil
+	case float64:
+		if y, ok := b.(float64); ok {
+			return x == y
+		}
+		if y, ok := b.(float32); ok {
+			return x == float64(y)
+		}
+		return false
+	case float32:
+		if y, ok := b.(float32); ok {
+			return x == y
+		}
+		if y, ok := b.(float64); ok {
+			return float64(x) == y
+		}
+		return false
 	}
 	switch y := b.(type) {
 	case string:
@@ -3325,8 +3301,24 @@ func equalLoose(a, b any) bool {
 		return ok && x == y
 	case nil:
 		return a == nil
+	case float64:
+		if x, ok := a.(float64); ok {
+			return x == y
+		}
+		if x, ok := a.(float32); ok {
+			return float64(x) == y
+		}
+		return false
+	case float32:
+		if x, ok := a.(float32); ok {
+			return x == y
+		}
+		if x, ok := a.(float64); ok {
+			return x == float64(y)
+		}
+		return false
 	}
-	return reflect.DeepEqual(a, b) || fmt.Sprint(a) == fmt.Sprint(b)
+	return false
 }
 
 func hasAny(container, needles any) bool {
@@ -3401,7 +3393,23 @@ func isEmpty(v any) bool {
 	if v == nil {
 		return true
 	}
-	return length(v) == 0 && fmt.Sprint(v) == ""
+	switch x := v.(type) {
+	case string:
+		return x == ""
+	case []any:
+		return len(x) == 0
+	case map[string]any:
+		return len(x) == 0
+	case int:
+		return x == 0
+	case int64:
+		return x == 0
+	case float64:
+		return x == 0
+	case float32:
+		return x == 0
+	}
+	return false
 }
 
 func truthy(v any) bool {
@@ -3432,6 +3440,11 @@ func compare(a, b any) int {
 		}
 		return 0
 	}
+	as, aIsStr := a.(string)
+	bs, bIsStr := b.(string)
+	if aIsStr && bIsStr {
+		return strings.Compare(as, bs)
+	}
 	return strings.Compare(fmt.Sprint(a), fmt.Sprint(b))
 }
 
@@ -3448,6 +3461,82 @@ func num(v any) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func typeAndString(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return "nil"
+	case string:
+		return "str:" + x
+	case int:
+		return "int:" + intToStr(x)
+	case int64:
+		return "int64:" + intToStr(int(x))
+	case float64:
+		return "float64:" + floatToStr(x)
+	case bool:
+		if x {
+			return "bool:true"
+		}
+		return "bool:false"
+	default:
+		return fmt.Sprintf("%T:%v", v, v)
+	}
+}
+
+func intToStr(x int) string {
+	var buf [20]byte
+	i := len(buf)
+	neg := x < 0
+	if neg {
+		x = -x
+	}
+	for {
+		i--
+		buf[i] = byte('0' + x%10)
+		x /= 10
+		if x == 0 {
+			break
+		}
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
+func floatToStr(f float64) string {
+	var buf [32]byte
+	i := len(buf)
+	if f < 0 {
+		i--
+		buf[i] = '-'
+		f = -f
+	}
+	intPart := int64(f)
+	fracPart := f - float64(intPart)
+	for {
+		i--
+		buf[i] = byte('0' + intPart%10)
+		intPart /= 10
+		if intPart == 0 {
+			break
+		}
+	}
+	if fracPart > 0 {
+		i--
+		buf[i] = '.'
+		for j := 0; j < 6; j++ {
+			fracPart *= 10
+			digit := int(fracPart)
+			i--
+			buf[i] = byte('0' + digit)
+			fracPart -= float64(digit)
+		}
+	}
+	return string(buf[i:])
 }
 
 func intScalarValue(v any) (int, bool) {

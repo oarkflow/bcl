@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/oarkflow/convert"
 )
 
 func LoadFile(path string, opts *Options) (*Document, error) {
@@ -604,10 +606,10 @@ func parseSimpleOperandLiteral(raw string) (any, bool) {
 		}
 	}
 	if strings.Contains(raw, ".") {
-		f, err := strconv.ParseFloat(raw, 64)
+		f, err := convert.ToFloat64(raw)
 		return f, err == nil
 	}
-	i, err := strconv.ParseInt(raw, 10, 64)
+	i, err := convert.ToInt64(raw)
 	return i, err == nil
 }
 
