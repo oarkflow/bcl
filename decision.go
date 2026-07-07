@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -199,6 +200,7 @@ type DecisionPlatformRequest struct {
 	IncludeGates    bool           `json:"include_gates,omitempty"`
 	Counterfactuals bool           `json:"counterfactuals,omitempty"`
 	IncludeFeatures bool           `json:"include_features,omitempty"`
+	IncludeExplain  bool           `json:"include_explain,omitempty"`
 	Strict          bool           `json:"strict,omitempty"`
 }
 
@@ -332,6 +334,10 @@ type DecisionOutcome struct {
 	Metadata    map[string]any   `json:"metadata,omitempty"`
 	Obligations []DecisionAction `json:"obligations,omitempty"`
 	Advice      []DecisionAction `json:"advice,omitempty"`
+}
+
+var decisionResultPool = sync.Pool{
+	New: func() any { return &DecisionResult{} },
 }
 
 func (r *DecisionResult) Reset() {
@@ -1610,6 +1616,7 @@ func evaluateDecisionIntoInternalWithStack(program *DecisionProgram, decision st
 	evalTime := decisionEvaluationTime(input, opts)
 	conditionOpts := decisionEvalOptions(opts, program, input, evalOpts, stack, result)
 	directSelect := strategy == "first_match" || strategy == "highest_priority"
+	firstMatch := strategy == "first_match"
 	var selectedDirect DecisionRule
 	hasSelectedDirect := false
 	var matchedPolicies []DecisionRule
@@ -1652,6 +1659,9 @@ func evaluateDecisionIntoInternalWithStack(program *DecisionProgram, decision st
 			if explain {
 				appendApplyTrace(result, rule, summary)
 			}
+			if firstMatch {
+				break
+			}
 			continue
 		}
 		if rule.Effect != "" {
@@ -1660,6 +1670,9 @@ func evaluateDecisionIntoInternalWithStack(program *DecisionProgram, decision st
 				if !hasSelectedDirect {
 					selectedDirect = rule
 					hasSelectedDirect = true
+				}
+				if firstMatch {
+					break
 				}
 			} else {
 				matchedPolicies = append(matchedPolicies, rule)
@@ -3833,10 +3846,11 @@ func EvaluateDecisionPlatform(program *DecisionProgram, req DecisionPlatformRequ
 	var result *DecisionResult
 	var err error
 	verbose := opts != nil && opts.Verbose
+	explain := req.IncludeExplain
 	if req.Counterfactuals {
 		result, err = CounterfactualDecision(program, req.Decision, req.Input, opts)
 	} else {
-		result, err = evaluateDecisionInternal(program, req.Decision, req.Input, opts, DecisionEvaluateOptions{Explain: true, ValidateInput: true, Strict: req.Strict, Verbose: verbose})
+		result, err = evaluateDecisionInternal(program, req.Decision, req.Input, opts, DecisionEvaluateOptions{Explain: explain, ValidateInput: true, Strict: req.Strict, Verbose: verbose})
 	}
 	if result != nil {
 		if result.Metadata == nil {
