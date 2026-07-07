@@ -507,8 +507,8 @@ func (p *parser) parseSchema() Node {
 	start := p.next()
 	name := p.expect(tokIdent, "expected schema name")
 	p.expect(tokLBrace, "expected schema body")
-	s := &SchemaDecl{Name: name.text, Span: spanJoin(start.span, name.span)}
-	fieldsByName := map[string]int{}
+	s := &SchemaDecl{Name: name.text, Span: spanJoin(start.span, name.span), Fields: make([]SchemaField, 0, 16)}
+	fieldsByName := make(map[string]int, 16)
 	for {
 		p.skipNewlines()
 		if p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
@@ -555,7 +555,7 @@ func (p *parser) parseSchema() Node {
 }
 
 func (p *parser) parseSchemaOptionsBlock() map[string]Value {
-	options := map[string]Value{}
+	options := make(map[string]Value, 8)
 	for {
 		p.skipNewlines()
 		if p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
@@ -577,7 +577,7 @@ func (p *parser) parseSchemaOptionsBlock() map[string]Value {
 }
 
 func (p *parser) parseSchemaFieldsSection() []SchemaField {
-	var fields []SchemaField
+	fields := make([]SchemaField, 0, 16)
 	for {
 		p.skipNewlines()
 		if p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
@@ -1746,5 +1746,3 @@ func isByteUnit(s string) bool {
 		return false
 	}
 }
-
-

@@ -36,6 +36,12 @@ func formatDocument(doc *Document, capacity int) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
+func writeIndent(b *bytes.Buffer, indent int) {
+	for i := 0; i < indent; i++ {
+		b.WriteString("  ")
+	}
+}
+
 func writeNodes(b *bytes.Buffer, nodes []Node, indent int) {
 	for i, n := range nodes {
 		if i > 0 {
@@ -46,51 +52,76 @@ func writeNodes(b *bytes.Buffer, nodes []Node, indent int) {
 }
 
 func writeNode(b *bytes.Buffer, n Node, indent int) {
-	pad := strings.Repeat("  ", indent)
 	switch x := n.(type) {
 	case *ImportDecl:
-		fmt.Fprintf(b, "%simport %q", pad, x.Path)
+		writeIndent(b, indent)
+		b.WriteString("import ")
+		b.WriteString(strconv.Quote(x.Path))
 		if x.Alias != "" {
-			fmt.Fprintf(b, " as %s", x.Alias)
+			b.WriteString(" as ")
+			b.WriteString(x.Alias)
 		}
 		b.WriteByte('\n')
 	case *ParamDecl:
-		fmt.Fprintf(b, "%sparam %s %s", pad, x.Name, x.Type)
+		writeIndent(b, indent)
+		b.WriteString("param ")
+		b.WriteString(x.Name)
+		b.WriteByte(' ')
+		b.WriteString(x.Type)
 		if x.Required || x.Default != nil || x.Description != "" {
 			b.WriteString(" {\n")
 			if x.Required {
-				fmt.Fprintf(b, "%s  required true\n", pad)
+				writeIndent(b, indent+1)
+				b.WriteString("required true\n")
 			}
 			if x.Default != nil {
-				fmt.Fprintf(b, "%s  default ", pad)
+				writeIndent(b, indent+1)
+				b.WriteString("default ")
 				writeValue(b, x.Default, indent+1)
 				b.WriteByte('\n')
 			}
 			if x.Description != "" {
-				fmt.Fprintf(b, "%s  description %s\n", pad, quoteBCLString(x.Description))
+				writeIndent(b, indent+1)
+				b.WriteString("description ")
+				b.WriteString(quoteBCLString(x.Description))
+				b.WriteByte('\n')
 			}
-			fmt.Fprintf(b, "%s}\n", pad)
+			writeIndent(b, indent)
+			b.WriteString("}\n")
 		} else {
 			b.WriteByte('\n')
 		}
 	case *ConstDecl:
-		fmt.Fprintf(b, "%sconst %s = ", pad, x.Name)
+		writeIndent(b, indent)
+		b.WriteString("const ")
+		b.WriteString(x.Name)
+		b.WriteString(" = ")
 		writeValue(b, x.Value, indent)
 		b.WriteByte('\n')
 	case *TypeDecl:
-		fmt.Fprintf(b, "%stype %s = %s\n", pad, x.Name, x.Type)
+		writeIndent(b, indent)
+		b.WriteString("type ")
+		b.WriteString(x.Name)
+		b.WriteString(" = ")
+		b.WriteString(x.Type)
+		b.WriteByte('\n')
 	case *SchemaDecl:
-		fmt.Fprintf(b, "%sschema %s {\n", pad, x.Name)
+		writeIndent(b, indent)
+		b.WriteString("schema ")
+		b.WriteString(x.Name)
+		b.WriteString(" {\n")
 		sectioned := len(x.Options) > 0 || len(x.Sections) > 0
 		if len(x.Options) > 0 {
 			writeSchemaOptions(b, x.Options, indent+1)
 		}
 		if sectioned {
-			fmt.Fprintf(b, "%s  fields {\n", pad)
+			writeIndent(b, indent+1)
+			b.WriteString("fields {\n")
 			for _, f := range x.Fields {
 				writeSchemaSectionField(b, f, indent+2)
 			}
-			fmt.Fprintf(b, "%s  }\n", pad)
+			writeIndent(b, indent+1)
+			b.WriteString("}\n")
 			for _, key := range sortedValueKeys(x.Sections) {
 				writeSchemaSection(b, key, x.Sections[key], indent+1)
 			}
@@ -99,38 +130,57 @@ func writeNode(b *bytes.Buffer, n Node, indent int) {
 				writeSchemaField(b, f, indent+1)
 			}
 		}
-		fmt.Fprintf(b, "%s}\n", pad)
+		writeIndent(b, indent)
+		b.WriteString("}\n")
 	case *Assignment:
 		if ref, ok := x.Value.(*Reference); ok && ref.Path == "" {
-			fmt.Fprintf(b, "%s%s\n", pad, x.Name)
+			writeIndent(b, indent)
+			b.WriteString(x.Name)
+			b.WriteByte('\n')
 			return
 		}
-		fmt.Fprintf(b, "%s%s ", pad, x.Name)
+		writeIndent(b, indent)
+		b.WriteString(x.Name)
+		b.WriteByte(' ')
 		writeValue(b, x.Value, indent)
 		b.WriteByte('\n')
 	case *Spread:
-		fmt.Fprintf(b, "%s&%s", pad, x.Target)
+		writeIndent(b, indent)
+		b.WriteByte('&')
+		b.WriteString(x.Target)
 		if len(x.Body) == 0 {
 			b.WriteByte('\n')
 			return
 		}
 		b.WriteString(" {\n")
 		writeNodes(b, x.Body, indent+1)
-		fmt.Fprintf(b, "%s}\n", pad)
+		writeIndent(b, indent)
+		b.WriteString("}\n")
 	case *Block:
+		writeIndent(b, indent)
 		if x.ID != "" {
 			if x.Type == "when" {
-				fmt.Fprintf(b, "%swhen %s {\n", pad, x.ID)
+				b.WriteString("when ")
+				b.WriteString(x.ID)
+				b.WriteString(" {\n")
 			} else if isBareBlockID(x.ID) {
-				fmt.Fprintf(b, "%s%s %s {\n", pad, x.Type, x.ID)
+				b.WriteString(x.Type)
+				b.WriteByte(' ')
+				b.WriteString(x.ID)
+				b.WriteString(" {\n")
 			} else {
-				fmt.Fprintf(b, "%s%s %q {\n", pad, x.Type, x.ID)
+				b.WriteString(x.Type)
+				b.WriteByte(' ')
+				b.WriteString(strconv.Quote(x.ID))
+				b.WriteString(" {\n")
 			}
 		} else {
-			fmt.Fprintf(b, "%s%s {\n", pad, x.Type)
+			b.WriteString(x.Type)
+			b.WriteString(" {\n")
 		}
 		writeNodes(b, x.Body, indent+1)
-		fmt.Fprintf(b, "%s}\n", pad)
+		writeIndent(b, indent)
+		b.WriteString("}\n")
 	}
 }
 
@@ -163,19 +213,24 @@ func hasComments(src []byte) bool {
 }
 
 func writeSchemaField(b *bytes.Buffer, f SchemaField, indent int) {
-	pad := strings.Repeat("  ", indent)
+	writeIndent(b, indent)
 	req := "optional"
 	if f.Required {
 		req = "required"
 	}
-	fmt.Fprintf(b, "%s%s %s %s", pad, req, f.Name, f.Type)
+	b.WriteString(req)
+	b.WriteByte(' ')
+	b.WriteString(f.Name)
+	b.WriteByte(' ')
+	b.WriteString(f.Type)
 	if len(f.Fields) > 0 {
 		b.WriteString(" {\n")
 		writeSchemaFieldBlockClauses(b, f, indent+1)
 		for _, child := range f.Fields {
 			writeSchemaField(b, child, indent+1)
 		}
-		fmt.Fprintf(b, "%s}\n", pad)
+		writeIndent(b, indent)
+		b.WriteString("}\n")
 		return
 	}
 	writeSchemaFieldInlineClauses(b, f, indent)
@@ -183,43 +238,54 @@ func writeSchemaField(b *bytes.Buffer, f SchemaField, indent int) {
 }
 
 func writeSchemaOptions(b *bytes.Buffer, options map[string]Value, indent int) {
-	pad := strings.Repeat("  ", indent)
-	fmt.Fprintf(b, "%soptions {\n", pad)
+	writeIndent(b, indent)
+	b.WriteString("options {\n")
 	for _, key := range sortedValueKeys(options) {
-		fmt.Fprintf(b, "%s  %s ", pad, key)
+		writeIndent(b, indent+1)
+		b.WriteString(key)
+		b.WriteByte(' ')
 		writeValue(b, options[key], indent+1)
 		b.WriteByte('\n')
 	}
-	fmt.Fprintf(b, "%s}\n", pad)
+	writeIndent(b, indent)
+	b.WriteString("}\n")
 }
 
 func writeSchemaSection(b *bytes.Buffer, name string, value Value, indent int) {
-	pad := strings.Repeat("  ", indent)
+	writeIndent(b, indent)
 	if obj, ok := value.(*Object); ok {
-		fmt.Fprintf(b, "%s%s {\n", pad, name)
+		b.WriteString(name)
+		b.WriteString(" {\n")
 		writeNodes(b, obj.Fields, indent+1)
-		fmt.Fprintf(b, "%s}\n", pad)
+		writeIndent(b, indent)
+		b.WriteString("}\n")
 		return
 	}
-	fmt.Fprintf(b, "%s%s ", pad, name)
+	b.WriteString(name)
+	b.WriteByte(' ')
 	writeValue(b, value, indent)
 	b.WriteByte('\n')
 }
 
 func writeSchemaSectionField(b *bytes.Buffer, f SchemaField, indent int) {
-	pad := strings.Repeat("  ", indent)
+	writeIndent(b, indent)
 	req := "optional"
 	if f.Required {
 		req = "required"
 	}
-	fmt.Fprintf(b, "%s%s %s %s", pad, f.Name, f.Type, req)
+	b.WriteString(f.Name)
+	b.WriteByte(' ')
+	b.WriteString(f.Type)
+	b.WriteByte(' ')
+	b.WriteString(req)
 	if len(f.Fields) > 0 {
 		b.WriteString(" {\n")
 		writeSchemaFieldBlockClauses(b, f, indent+1)
 		for _, child := range f.Fields {
 			writeSchemaField(b, child, indent+1)
 		}
-		fmt.Fprintf(b, "%s}\n", pad)
+		writeIndent(b, indent)
+		b.WriteString("}\n")
 		return
 	}
 	writeSchemaFieldInlineClauses(b, f, indent)
@@ -250,10 +316,12 @@ func writeSchemaFieldInlineClauses(b *bytes.Buffer, f SchemaField, indent int) {
 	writeSchemaInlineFlag(b, "nullable", f.Nullable)
 	writeSchemaInlineFlag(b, "unique_items", f.UniqueItems)
 	if f.ClosedSet {
-		fmt.Fprintf(b, " closed %t", f.Closed)
+		b.WriteString(" closed ")
+		b.WriteString(strconv.FormatBool(f.Closed))
 	}
 	if f.AdditionalProperties != nil {
-		fmt.Fprintf(b, " additional_properties %t", *f.AdditionalProperties)
+		b.WriteString(" additional_properties ")
+		b.WriteString(strconv.FormatBool(*f.AdditionalProperties))
 	}
 	for _, item := range []struct {
 		name  string
@@ -411,13 +479,19 @@ func writeSchemaFieldBlockClauses(b *bytes.Buffer, f SchemaField, indent int) {
 }
 
 func writeSchemaClauseValue(b *bytes.Buffer, indent int, name string, value Value) {
-	fmt.Fprintf(b, "%s%s ", strings.Repeat("  ", indent), name)
+	writeIndent(b, indent)
+	b.WriteString(name)
+	b.WriteByte(' ')
 	writeValue(b, value, indent)
 	b.WriteByte('\n')
 }
 
 func writeSchemaClauseString(b *bytes.Buffer, indent int, name, value string) {
-	fmt.Fprintf(b, "%s%s %s\n", strings.Repeat("  ", indent), name, quoteBCLString(value))
+	writeIndent(b, indent)
+	b.WriteString(name)
+	b.WriteByte(' ')
+	b.WriteString(quoteBCLString(value))
+	b.WriteByte('\n')
 }
 
 func writeSchemaClauseStringOptional(b *bytes.Buffer, indent int, name, value string) {
@@ -428,18 +502,28 @@ func writeSchemaClauseStringOptional(b *bytes.Buffer, indent int, name, value st
 
 func writeSchemaClauseTypeOptional(b *bytes.Buffer, indent int, name, value string) {
 	if value != "" {
-		fmt.Fprintf(b, "%s%s %s\n", strings.Repeat("  ", indent), name, value)
+		writeIndent(b, indent)
+		b.WriteString(name)
+		b.WriteByte(' ')
+		b.WriteString(value)
+		b.WriteByte('\n')
 	}
 }
 
 func writeSchemaClauseFlag(b *bytes.Buffer, indent int, name string, enabled bool) {
 	if enabled {
-		fmt.Fprintf(b, "%s%s\n", strings.Repeat("  ", indent), name)
+		writeIndent(b, indent)
+		b.WriteString(name)
+		b.WriteByte('\n')
 	}
 }
 
 func writeSchemaClauseBool(b *bytes.Buffer, indent int, name string, value bool) {
-	fmt.Fprintf(b, "%s%s %t\n", strings.Repeat("  ", indent), name, value)
+	writeIndent(b, indent)
+	b.WriteString(name)
+	b.WriteByte(' ')
+	b.WriteString(strconv.FormatBool(value))
+	b.WriteByte('\n')
 }
 
 func writeSchemaClauseStringListOptional(b *bytes.Buffer, indent int, name string, values []string) {
@@ -449,7 +533,9 @@ func writeSchemaClauseStringListOptional(b *bytes.Buffer, indent int, name strin
 }
 
 func writeSchemaClauseStringList(b *bytes.Buffer, indent int, name string, values []string) {
-	fmt.Fprintf(b, "%s%s [", strings.Repeat("  ", indent), name)
+	writeIndent(b, indent)
+	b.WriteString(name)
+	b.WriteString(" [")
 	for i, value := range values {
 		if i > 0 {
 			b.WriteString(", ")
@@ -467,7 +553,10 @@ func writeSchemaInlineValue(b *bytes.Buffer, name string, value Value, indent in
 }
 
 func writeSchemaInlineString(b *bytes.Buffer, name, value string) {
-	fmt.Fprintf(b, " %s %s", name, quoteBCLString(value))
+	b.WriteByte(' ')
+	b.WriteString(name)
+	b.WriteByte(' ')
+	b.WriteString(quoteBCLString(value))
 }
 
 func writeSchemaInlineStringOptional(b *bytes.Buffer, name, value string) {
@@ -478,7 +567,10 @@ func writeSchemaInlineStringOptional(b *bytes.Buffer, name, value string) {
 
 func writeSchemaInlineTypeOptional(b *bytes.Buffer, name, value string) {
 	if value != "" {
-		fmt.Fprintf(b, " %s %s", name, value)
+		b.WriteByte(' ')
+		b.WriteString(name)
+		b.WriteByte(' ')
+		b.WriteString(value)
 	}
 }
 
@@ -560,10 +652,10 @@ func writeValue(b *bytes.Buffer, v Value, indent int) {
 		}
 		b.WriteByte(']')
 	case *Object:
-		pad := strings.Repeat("  ", indent)
 		b.WriteString("{\n")
 		writeNodes(b, sortNodes(x.Fields), indent+1)
-		fmt.Fprintf(b, "%s}", pad)
+		writeIndent(b, indent)
+		b.WriteByte('}')
 	case *Condition:
 		if x.Expr != nil {
 			b.WriteString(x.Expr.Raw)
@@ -573,11 +665,11 @@ func writeValue(b *bytes.Buffer, v Value, indent int) {
 		b.WriteString(" {")
 		for _, child := range x.Children {
 			b.WriteByte('\n')
-			fmt.Fprintf(b, "%s  ", strings.Repeat("  ", indent))
+			writeIndent(b, indent+1)
 			writeValue(b, child, indent+1)
 		}
 		b.WriteByte('\n')
-		b.WriteString(strings.Repeat("  ", indent))
+		writeIndent(b, indent)
 		b.WriteByte('}')
 	}
 }

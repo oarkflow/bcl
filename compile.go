@@ -698,9 +698,9 @@ func (c *compiler) valueWithRedact(v Value, sensitive bool) any {
 		}
 		return map[string]any{"$ref": x.Path}
 	case *List:
-		out := make([]any, 0, len(x.Items))
-		for _, item := range x.Items {
-			out = append(out, c.value(item))
+		out := make([]any, len(x.Items))
+		for i, item := range x.Items {
+			out[i] = c.value(item)
 		}
 		return out
 	case *Object:
@@ -708,7 +708,69 @@ func (c *compiler) valueWithRedact(v Value, sensitive bool) any {
 		for _, n := range x.Fields {
 			switch y := n.(type) {
 			case *Assignment:
-				setNormalized(m, y.Name, c.assignmentValue(y))
+				// Fast-path common literal/reference assignments inline to avoid
+				// the extra function call and reduce allocations.
+				if strings.IndexByte(y.Name, '.') < 0 {
+					if y.Name == "$expr" {
+						if expr, ok := y.Value.(*Expr); ok {
+							m[y.Name] = map[string]any{"$expr": expr.Raw}
+							continue
+						}
+					}
+					switch v := y.Value.(type) {
+					case *Literal:
+						if y.Sensitive || v.Sensitive {
+							m[y.Name] = "****"
+							continue
+						}
+						if v.Type == "string" {
+							if s, ok := v.Data.(string); ok && c.opts.Interpolate {
+								m[y.Name] = c.interpolate(s)
+								continue
+							}
+						}
+						switch v.Type {
+						case "duration", "bytes", "date", "datetime":
+							m[y.Name] = map[string]any{"$" + v.Type: v.Data}
+							continue
+						}
+						m[y.Name] = v.Data
+						continue
+					case *Reference:
+						if v.Path == "" {
+							m[y.Name] = nil
+							continue
+						}
+						switch v.Path {
+						case "CURRENT_TIMESTAMP":
+							if !c.opts.AllowTime {
+								c.errs = append(c.errs, Diagnostic{Severity: "error", Message: "CURRENT_TIMESTAMP requires time capability", Span: v.Span})
+								m[y.Name] = nil
+								continue
+							}
+							m[y.Name] = optionsNow(c.opts).Format(time.RFC3339)
+							continue
+						case "CURRENT_DATE":
+							if !c.opts.AllowTime {
+								c.errs = append(c.errs, Diagnostic{Severity: "error", Message: "CURRENT_DATE requires time capability", Span: v.Span})
+								m[y.Name] = nil
+								continue
+							}
+							m[y.Name] = optionsNow(c.opts).Format("2006-01-02")
+							continue
+						}
+						if cv, ok := c.consts[v.Path]; ok {
+							m[y.Name] = c.value(cv)
+							continue
+						}
+						m[y.Name] = map[string]any{"$ref": v.Path}
+						continue
+					}
+					// fallback to general path for complex values
+					m[y.Name] = c.assignmentValue(y)
+				} else {
+					setNormalized(m, y.Name, c.assignmentValue(y))
+				}
 			case *Block:
 				m[y.Type] = appendBlock(m[y.Type], c.block(y))
 			case *Spread:
@@ -744,22 +806,23 @@ func (c *compiler) conditionToInterface(cond *Condition) any {
 		}
 		return map[string]any{"op": cond.Op, "expr": cond.Expr.Raw}
 	}
-	children := make([]any, 0, len(cond.Children))
-	for _, child := range cond.Children {
-		children = append(children, c.conditionToInterface(child))
+	children := make([]any, len(cond.Children))
+	for i, child := range cond.Children {
+		children[i] = c.conditionToInterface(child)
 	}
 	return map[string]any{"op": cond.Op, "children": children}
 }
 
 func predicateRefName(raw string) (string, bool) {
 	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, "predicate.") {
-		name := strings.TrimPrefix(raw, "predicate.")
-		if name != "" && !strings.ContainsAny(name, " \t\n\r()[]{}") {
-			return name, true
-		}
+	if !strings.HasPrefix(raw, "predicate.") {
+		return "", false
 	}
-	return "", false
+	name := strings.TrimPrefix(raw, "predicate.")
+	if name == "" || strings.ContainsAny(name, " \t\n\r()[]{}") {
+		return "", false
+	}
+	return name, true
 }
 
 func (c *compiler) call(x *Call) any {
@@ -778,9 +841,9 @@ func (c *compiler) call(x *Call) any {
 		if len(x.Args) == 1 {
 			if name, ok := c.value(x.Args[0]).(string); ok {
 				vals := c.sets[name]
-				out := make([]any, 0, len(vals))
-				for _, v := range vals {
-					out = append(out, c.value(v))
+				out := make([]any, len(vals))
+				for i, v := range vals {
+					out[i] = c.value(v)
 				}
 				return out
 			}
@@ -954,6 +1017,9 @@ func randomHex(n int) (string, error) {
 var interpolationPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
 func (c *compiler) interpolate(s string) string {
+	if !strings.Contains(s, "${") {
+		return s
+	}
 	eopts := &c.evalOpts
 	return interpolationPattern.ReplaceAllStringFunc(s, func(match string) string {
 		expr := strings.TrimSuffix(strings.TrimPrefix(match, "${"), "}")
@@ -1227,16 +1293,24 @@ func (c *compiler) applyOverrides() {
 }
 
 func schemaToMap(s *SchemaDecl, c *compiler) any {
-	m := map[string]any{"fields": schemaFieldsToMaps(s.Fields, c)}
+	count := 1
 	if len(s.Options) > 0 {
-		options := map[string]any{}
+		count++
+	}
+	if len(s.Sections) > 0 {
+		count++
+	}
+	m := make(map[string]any, count)
+	m["fields"] = schemaFieldsToMaps(s.Fields, c)
+	if len(s.Options) > 0 {
+		options := make(map[string]any, len(s.Options))
 		for _, key := range sortedValueKeys(s.Options) {
 			options[key] = c.value(s.Options[key])
 		}
 		m["options"] = options
 	}
 	if len(s.Sections) > 0 {
-		sections := map[string]any{}
+		sections := make(map[string]any, len(s.Sections))
 		for _, key := range sortedValueKeys(s.Sections) {
 			sections[key] = c.value(s.Sections[key])
 		}
@@ -1246,15 +1320,22 @@ func schemaToMap(s *SchemaDecl, c *compiler) any {
 }
 
 func schemaFieldsToMaps(schemaFields []SchemaField, c *compiler) []map[string]any {
-	fields := make([]map[string]any, 0, len(schemaFields))
-	for _, f := range schemaFields {
-		fields = append(fields, schemaFieldToMap(f, c))
+	fields := make([]map[string]any, len(schemaFields))
+	for i, f := range schemaFields {
+		fields[i] = schemaFieldToMap(f, c)
 	}
 	return fields
 }
 
 func schemaFieldToMap(f SchemaField, c *compiler) map[string]any {
-	m := map[string]any{"name": f.Name, "type": f.Type, "required": f.Required}
+	count := 8
+	if len(f.Extensions) > 0 {
+		count += len(f.Extensions)
+	}
+	m := make(map[string]any, count)
+	m["name"] = f.Name
+	m["type"] = f.Type
+	m["required"] = f.Required
 	if f.Ref != "" {
 		m["ref"] = f.Ref
 	}
@@ -1265,9 +1346,9 @@ func schemaFieldToMap(f SchemaField, c *compiler) map[string]any {
 		m["default"] = c.value(f.Default)
 	}
 	if len(f.Enum) > 0 {
-		var vals []any
-		for _, v := range f.Enum {
-			vals = append(vals, c.value(v))
+		vals := make([]any, len(f.Enum))
+		for i, v := range f.Enum {
+			vals[i] = c.value(v)
 		}
 		m["enum"] = vals
 	}
@@ -1278,7 +1359,9 @@ func schemaFieldToMap(f SchemaField, c *compiler) map[string]any {
 		m["items"] = f.Items
 	}
 	if len(f.PrefixItems) > 0 {
-		m["prefix_items"] = append([]string(nil), f.PrefixItems...)
+		out := make([]string, len(f.PrefixItems))
+		copy(out, f.PrefixItems)
+		m["prefix_items"] = out
 	}
 	if f.Contains != "" {
 		m["contains"] = f.Contains
@@ -1365,9 +1448,9 @@ func schemaFieldToMap(f SchemaField, c *compiler) map[string]any {
 		m["content_media_type"] = f.ContentMediaType
 	}
 	if len(f.Examples) > 0 {
-		vals := make([]any, 0, len(f.Examples))
-		for _, v := range f.Examples {
-			vals = append(vals, c.value(v))
+		vals := make([]any, len(f.Examples))
+		for i, v := range f.Examples {
+			vals[i] = c.value(v)
 		}
 		m["examples"] = vals
 	}

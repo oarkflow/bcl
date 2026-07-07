@@ -49,7 +49,7 @@ install-extension: vscode-extension-install vscode-extension-reload
 reload-vscode: vscode-extension-reload
 
 bench:
-	GOCACHE=/private/tmp/bcl-gocache GOMODCACHE=/private/tmp/bcl-gomodcache go test -run '^$$' -bench . -benchmem -count=3
+	GOCACHE=/private/tmp/bcl-gocache GOMODCACHE=/private/tmp/bcl-gomodcache go test -run '^$$' -bench . -benchmem -count=1
 
 clean-extension-bin:
 	rm -rf $(EXT_DIR)/bin
