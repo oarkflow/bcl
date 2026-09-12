@@ -29,4 +29,3 @@ rule "impossible-travel" {
     deny "Impossible travel detected"
   }
 }
-

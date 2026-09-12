@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,6 +145,9 @@ func openFileDecisionDataset(ctx context.Context, source DatasetSource, opts *Op
 	if opts != nil && opts.BaseDir != "" && !filepath.IsAbs(path) {
 		path = filepath.Join(opts.BaseDir, path)
 	}
+	if err := datasetPathAllowed(path, source, opts); err != nil {
+		return nil, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -189,14 +193,7 @@ func openHTTPDecisionDataset(ctx context.Context, source DatasetSource, opts *Op
 	for k, v := range stringMap(source.Config["headers"]) {
 		req.Header.Set(k, v)
 	}
-	client := http.DefaultClient
-	if opts != nil && opts.HTTPClient != nil {
-		client = opts.HTTPClient
-	} else if opts != nil && opts.ExternalTimeout > 0 {
-		client = &http.Client{Timeout: opts.ExternalTimeout}
-	} else if timeout := durationValue(source.Config["timeout"]); timeout > 0 {
-		client = &http.Client{Timeout: timeout}
-	}
+	client := externalHTTPClient(opts, durationValue(source.Config["timeout"]))
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -225,6 +222,95 @@ func openHTTPDecisionDataset(ctx context.Context, source DatasetSource, opts *Op
 	}
 }
 
+// DefaultExternalTimeout bounds an outbound request when neither the document nor
+// the embedder sets one. http.DefaultClient has no timeout at all, so an
+// unreachable host used to hang the caller indefinitely.
+const DefaultExternalTimeout = 30 * time.Second
+
+func externalHTTPClient(opts *Options, configured time.Duration) *http.Client {
+	if opts != nil && opts.HTTPClient != nil {
+		return opts.HTTPClient
+	}
+	timeout := DefaultExternalTimeout
+	switch {
+	case opts != nil && opts.ExternalTimeout > 0:
+		timeout = opts.ExternalTimeout
+	case configured > 0:
+		timeout = configured
+	}
+	return &http.Client{Timeout: timeout}
+}
+
+// datasetPathAllowed confines a file dataset to the directory of the document
+// that declared it. Without this a document could read any file the process can,
+// through an absolute path or "../", and return its contents in decision records.
+func datasetPathAllowed(path string, source DatasetSource, opts *Options) error {
+	var roots []string
+	if opts != nil {
+		for _, root := range opts.AllowedDatasetRoots {
+			if strings.TrimSpace(root) == "*" {
+				return nil
+			}
+			if root = strings.TrimSpace(root); root != "" {
+				roots = append(roots, root)
+			}
+		}
+	}
+	if len(roots) == 0 {
+		switch {
+		case source.Root != "":
+			roots = append(roots, source.Root)
+		case opts != nil && opts.BaseDir != "":
+			roots = append(roots, opts.BaseDir)
+		default:
+			// No document directory is known, so the process's own directory is the
+			// only boundary left that is not "anywhere".
+			if wd, err := os.Getwd(); err == nil {
+				roots = append(roots, wd)
+			}
+		}
+	}
+	if len(roots) == 0 {
+		return nil
+	}
+	target := resolvePathForContainment(path)
+	for _, root := range roots {
+		if pathContains(resolvePathForContainment(root), target) {
+			return nil
+		}
+	}
+	return fmt.Errorf("file dataset path %q is outside %s; add a directory to Options.AllowedDatasetRoots to permit it",
+		path, strings.Join(roots, ", "))
+}
+
+// resolvePathForContainment makes a path absolute and follows symlinks where it
+// can, so a link inside an allowed root cannot point outside it.
+func resolvePathForContainment(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved)
+	}
+	// The file may not exist yet; the parent still tells us where it would live.
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		return filepath.Join(filepath.Clean(parent), filepath.Base(abs))
+	}
+	return filepath.Clean(abs)
+}
+
+func pathContains(root, target string) bool {
+	if root == target {
+		return true
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func datasetAdapterAllowed(adapter string, opts *Options) bool {
 	if opts == nil || len(opts.AllowedDatasetAdapters) == 0 {
 		return true
@@ -239,10 +325,7 @@ func datasetAdapterAllowed(adapter string, opts *Options) bool {
 }
 
 func validateHTTPDatasetPolicy(rawURL, method string, opts *Options) error {
-	if opts == nil {
-		return nil
-	}
-	if len(opts.AllowedHTTPMethods) > 0 {
+	if opts != nil && len(opts.AllowedHTTPMethods) > 0 {
 		allowed := false
 		for _, candidate := range opts.AllowedHTTPMethods {
 			if strings.EqualFold(strings.TrimSpace(candidate), method) {
@@ -254,20 +337,23 @@ func validateHTTPDatasetPolicy(rawURL, method string, opts *Options) error {
 			return fmt.Errorf("http dataset method %q is not allowed", method)
 		}
 	}
-	if len(opts.AllowedHTTPHosts) == 0 {
-		return nil
+	// A document names the URL, so reaching the network needs the embedder's
+	// explicit consent rather than its explicit refusal.
+	if opts == nil || len(opts.AllowedHTTPHosts) == 0 {
+		return fmt.Errorf("http datasets are not enabled: list the hosts a document may reach in Options.AllowedHTTPHosts (or %q to allow any)", "*")
 	}
-	req, err := http.NewRequest(method, rawURL, nil)
+	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return err
 	}
-	host := strings.ToLower(req.URL.Hostname())
+	host := strings.ToLower(parsed.Hostname())
 	for _, allowed := range opts.AllowedHTTPHosts {
-		if strings.EqualFold(strings.TrimSpace(allowed), host) {
+		allowed = strings.TrimSpace(allowed)
+		if allowed == "*" || strings.EqualFold(allowed, host) {
 			return nil
 		}
 	}
-	return fmt.Errorf("http dataset host %q is not allowed", host)
+	return fmt.Errorf("http dataset host %q is not allowed; add it to Options.AllowedHTTPHosts", host)
 }
 
 type closeReader interface {

@@ -9,8 +9,10 @@ GOOS := $(shell go env GOOS)
 GOARCH := $(shell go env GOARCH)
 LSP_BIN_DIR := $(EXT_DIR)/bin/$(GOOS)-$(GOARCH)
 LSP_BIN := $(LSP_BIN_DIR)/bcl-lsp
+CLI_BIN := $(LSP_BIN_DIR)/bcl
 ifeq ($(GOOS),windows)
 LSP_BIN := $(LSP_BIN_DIR)/bcl-lsp.exe
+CLI_BIN := $(LSP_BIN_DIR)/bcl.exe
 endif
 
 VSCODE_EXTENSIONS_DIR ?= $(HOME)/.vscode/extensions
@@ -24,9 +26,12 @@ vscode-extension: vscode-extension-deps vscode-extension-lsp
 vscode-extension-deps:
 	cd $(EXT_DIR) && npm install
 
+# Both binaries are bundled so the extension works in any window, not only when
+# the BCL repository itself is the open folder.
 vscode-extension-lsp:
 	mkdir -p $(LSP_BIN_DIR)
 	go build -o $(LSP_BIN) ./cmd/bcl-lsp
+	go build -o $(CLI_BIN) ./cmd/bcl
 
 vscode-extension-install: vscode-extension
 	mkdir -p $(VSCODE_EXTENSIONS_DIR)

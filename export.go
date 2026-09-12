@@ -2,15 +2,19 @@ package bcl
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 type ExportOptions struct {
@@ -403,14 +407,39 @@ func MigrateDocument(doc *Document, targetVersion string) (*Document, []Diagnost
 type FetchOptions struct {
 	CacheDir string
 	Offline  bool
+	// Timeout bounds each individual fetch. Zero uses DefaultFetchTimeout: git and
+	// http both wait forever by default, and a module fetch that never returns
+	// hangs whatever is driving it.
+	Timeout time.Duration
+	// AllowedHosts optionally restricts which hosts modules may be fetched from.
+	// Empty allows any host, because fetching is something an operator runs
+	// deliberately against a lockfile they control.
+	AllowedHosts []string
 }
 
+// DefaultFetchTimeout bounds a single module fetch.
+const DefaultFetchTimeout = 2 * time.Minute
+
+// maxRegistryResponse caps what a registry may return, so an endless or hostile
+// response cannot exhaust memory.
+const maxRegistryResponse = 64 << 20
+
 func FetchRemoteModules(lock *Lockfile, opts FetchOptions) error {
+	return FetchRemoteModulesContext(context.Background(), lock, opts)
+}
+
+// FetchRemoteModulesContext fetches every remote module named by the lockfile,
+// and can be cancelled.
+func FetchRemoteModulesContext(ctx context.Context, lock *Lockfile, opts FetchOptions) error {
 	if lock == nil {
 		return nil
 	}
 	if opts.CacheDir == "" {
 		opts.CacheDir = filepath.Join(os.TempDir(), "bcl-mod-cache")
+	}
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = DefaultFetchTimeout
 	}
 	for _, entry := range lock.Modules {
 		switch entry.Kind {
@@ -422,18 +451,24 @@ func FetchRemoteModules(lock *Lockfile, opts FetchOptions) error {
 			if _, err := os.Stat(target); err == nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				return err
-			}
 			source := strings.TrimPrefix(entry.Resolved, "git::")
 			if source == "" {
 				source = strings.TrimPrefix(entry.Source, "git::")
 			}
-			if err := exec.Command("git", "clone", source, target).Run(); err != nil {
+			if err := validateGitSource(source, opts.AllowedHosts); err != nil {
+				return err
+			}
+			if entry.Revision != "" && !validGitRevision(entry.Revision) {
+				return fmt.Errorf("git module %s has an unusable revision %q", entry.Source, entry.Revision)
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			if err := runGit(ctx, timeout, "", "clone", "--", source, target); err != nil {
 				return err
 			}
 			if entry.Revision != "" {
-				if err := exec.Command("git", "-C", target, "checkout", entry.Revision).Run(); err != nil {
+				if err := runGit(ctx, timeout, target, "checkout", "--", entry.Revision); err != nil {
 					return err
 				}
 			}
@@ -441,17 +476,122 @@ func FetchRemoteModules(lock *Lockfile, opts FetchOptions) error {
 			if opts.Offline {
 				return fmt.Errorf("offline mode: cannot fetch registry module %s", entry.Source)
 			}
-			resp, err := http.Get(entry.Source)
-			if err != nil {
+			if err := checkFetchHost(entry.Source, opts.AllowedHosts); err != nil {
 				return err
 			}
-			resp.Body.Close()
-			if resp.StatusCode >= 400 {
-				return fmt.Errorf("registry fetch %s failed: %s", entry.Source, resp.Status)
+			if err := fetchRegistryEntry(ctx, entry.Source, timeout); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
+}
+
+func fetchRegistryEntry(ctx context.Context, source string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	// Drain a bounded prefix so the connection can be reused, without letting an
+	// endless body run the process out of memory.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxRegistryResponse))
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("registry fetch %s failed: %s", source, resp.Status)
+	}
+	return nil
+}
+
+// runGit runs one git command with a deadline and with prompting disabled, so a
+// repository that asks for credentials fails instead of blocking forever.
+func runGit(ctx context.Context, timeout time.Duration, dir string, args ...string) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "GCM_INTERACTIVE=never")
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("git %s timed out after %s", args[0], timeout)
+		}
+		return err
+	}
+	return nil
+}
+
+// validateGitSource rejects a source git would read as something other than a
+// repository. A leading "-" becomes a flag - "--upload-pack=<cmd>" runs <cmd> -
+// and the ext:: and fd:: transports execute a command by design.
+func validateGitSource(source string, allowedHosts []string) error {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return fmt.Errorf("git module source is empty")
+	}
+	if strings.HasPrefix(source, "-") {
+		return fmt.Errorf("git module source %q may not start with %q: git would read it as an option", source, "-")
+	}
+	lower := strings.ToLower(source)
+	for _, transport := range []string{"ext::", "fd::"} {
+		if strings.HasPrefix(lower, transport) {
+			return fmt.Errorf("git transport %q executes a command and is not allowed (module %q)", transport, source)
+		}
+	}
+	return checkFetchHost(source, allowedHosts)
+}
+
+// validGitRevision keeps a revision to the characters a ref or object id can
+// contain, so it can never be read as an option or a path.
+func validGitRevision(rev string) bool {
+	if rev == "" || strings.HasPrefix(rev, "-") {
+		return false
+	}
+	for _, r := range rev {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-' || r == '/' || r == '+':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func checkFetchHost(source string, allowedHosts []string) error {
+	if len(allowedHosts) == 0 {
+		return nil
+	}
+	host := fetchSourceHost(source)
+	for _, allowed := range allowedHosts {
+		allowed = strings.TrimSpace(allowed)
+		if allowed == "*" || strings.EqualFold(allowed, host) {
+			return nil
+		}
+	}
+	return fmt.Errorf("module host %q is not in FetchOptions.AllowedHosts", host)
+}
+
+// fetchSourceHost pulls the host out of either a URL or an scp-style git address
+// such as git@github.com:owner/repo.git.
+func fetchSourceHost(source string) string {
+	if parsed, err := url.Parse(source); err == nil && parsed.Host != "" {
+		return strings.ToLower(parsed.Hostname())
+	}
+	if at := strings.Index(source, "@"); at >= 0 {
+		rest := source[at+1:]
+		if colon := strings.IndexAny(rest, ":/"); colon > 0 {
+			return strings.ToLower(rest[:colon])
+		}
+		return strings.ToLower(rest)
+	}
+	return ""
 }
 
 func normalizedMap(n *Normalized) map[string]any {

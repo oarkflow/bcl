@@ -11,4 +11,3 @@ schema loan_eligibility {
     required amount number min 1
   }
 }
-

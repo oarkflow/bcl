@@ -39,6 +39,21 @@
       "notIn": [
         "string"
       ]
+    },
+    {
+      "open": "`",
+      "close": "`",
+      "notIn": [
+        "string",
+        "comment"
+      ]
+    },
+    {
+      "open": "/*",
+      "close": " */",
+      "notIn": [
+        "string"
+      ]
     }
   ],
   "surroundingPairs": [
@@ -57,16 +72,46 @@
     [
       "\"",
       "\""
+    ],
+    [
+      "`",
+      "`"
     ]
   ],
+  "autoCloseBefore": ";:.,=}])> \n\t",
   "folding": {
+    "offSide": false,
     "markers": {
       "start": "^\\s*#\\s*region\\b",
       "end": "^\\s*#\\s*endregion\\b"
     }
   },
   "indentationRules": {
-    "increaseIndentPattern": "^.*\\{\\s*$",
-    "decreaseIndentPattern": "^\\s*\\}"
-  }
+    "increaseIndentPattern": "^((?!(//|#)).)*(\\{[^}\\\"'`]*|\\[[^\\]\\\"'`]*|\\([^)\\\"'`]*)$",
+    "decreaseIndentPattern": "^\\s*[)}\\]]"
+  },
+  "onEnterRules": [
+    {
+      "beforeText": "^\\s*/\\*(?!.*\\*/).*$",
+      "afterText": "^\\s*\\*/$",
+      "action": {
+        "indent": "indentOutdent",
+        "appendText": " * "
+      }
+    },
+    {
+      "beforeText": "^\\s*/\\*(?!.*\\*/).*$",
+      "action": {
+        "indent": "none",
+        "appendText": " * "
+      }
+    },
+    {
+      "beforeText": "^(\\t|[ ])*[ ]\\*([^/]|$)",
+      "action": {
+        "indent": "none",
+        "appendText": "* "
+      }
+    }
+  ]
 }

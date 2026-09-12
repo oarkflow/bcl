@@ -27,4 +27,3 @@ profile "prod" {
 }
 
 active_profile env("APP_ENV", "dev")
-

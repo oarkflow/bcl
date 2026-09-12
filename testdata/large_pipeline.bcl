@@ -1,0 +1,380 @@
+# KYC Verification Platform: an applicant applies for account verification,
+# the engine runs real biometric/document/AML identity checks across THREE
+# distinct document types (passport, driver's license, national ID), an
+# externalized decision table (rules/kyc_risk_policy.bcl) routes the case to
+# auto-approval, a 3-reviewer compliance consensus review, or rejection.
+#
+# Real login/session/roles are provided by contrib/portal's `portal "..." {
+# ... }` block below.
+
+# --- Platform setup ---------------------------------------------------------
+server {
+  address ":8080"
+  read_timeout "30s"
+  write_timeout "60s"
+  idle_timeout "120s"
+  shutdown_timeout "30s"
+  # Page nodes here capture webcam photos and a recorded interview.
+  max_request_body_bytes 33554432
+}
+
+database {
+  driver "postgres"
+  dsn "postgres://postgres:postgres@localhost:5432/dagflow_kyc?sslmode=disable"
+  max_open_conns 32
+  max_idle_conns 8
+  conn_max_lifetime "30m"
+}
+
+notification_channel "applicant_notify" {
+  type email
+  from "kyc-platform@example.com"
+  smtp_host "smtp.example.com"
+  to ["applicant@example.com"]
+}
+// Delivers a signed external-verification link to a third party.
+notification_channel "ird_notify" {
+  type webhook
+  endpoint "https://example.invalid/hooks/ird-verification"
+  secret "ird-shared-secret"
+  timeout "5s"
+  retries 1
+}
+
+role "applicant" { permissions ["session.view", "session.submit"] }
+role "kyc_officer" { permissions ["session.view", "session.intake", "session.interview", "stage.start"] }
+role "scenario_admin" { permissions ["session.*", "stage.*"] }
+
+workspace "kyc-branch-alpha" {
+  name "Alpha Branch Verification Desk"
+  parent "kyc-hq"
+  active true
+  metadata { region "alpha" issuing_office "Alpha Branch Verification Desk" }
+  snippet "workspace_banner"
+}
+
+workspace_role "kyc_officer" { workspace "kyc-branch-alpha" permissions ["workflow:execute", "stage:advance", "session:intake"] }
+
+workspace_grant "municipal-oversight-all-branches" {
+  workspace "kyc-hq"
+  subject_kind role
+  subject "municipal_oversight"
+  permission "stage:advance"
+  resource "*"
+  include_descendants true
+}
+
+workspace_workflow "kyc-hq-reason-catalog" {
+  workspace "kyc-hq"
+  workflow "kyc_verification"
+  revision "reason-catalog-v1"
+  lookup "kyc_reason_codes" { options = [
+    { value = "Missing or illegible ID document", label = "Missing or illegible ID document" },
+    { value = "Photo/selfie capture failed", label = "Photo/selfie capture failed" },
+    { value = "Other - see notes", label = "Other - see notes" },
+  ] }
+}
+
+lookup "kyc_reason_codes" { source "workspace_reference" query "reason_codes" value_key "value" label_key "label" }
+
+schema "KYCSession" {
+  type "object"
+  field "id" { type "string" required true }
+  field "session_id" { type "string" required true }
+  field "risk_score" { type "number" }
+}
+
+resource "kyc_sessions" {
+  path "/kyc-sessions"
+  schema "KYCSession"
+  id_field "id"
+  searchable true
+  search_fields ["applicant_full_name", "overall_status", "session_id"]
+}
+
+portal "kyc_portal" {
+  workflow "kyc_verification"
+  session_cookie "kyc_session"
+  registrable_roles ["applicant", "kyc_officer"]
+  retry_roles ["compliance_supervisor"]
+  login_max_failures 5
+  login_failure_window "10m"
+  demo_users_enabled true
+  demo_password "KycDemoPass123!"
+
+  demo_user "applicant" { name "Ada Applicant" email "applicant@kyc-platform.example.com" role "applicant" }
+  demo_user "kyc_officer" { name "Otto Officer" email "officer@kyc-platform.example.com" role "kyc_officer" }
+}
+
+snippet "workspace_banner" {}
+
+snippet "foreign_id_guidance" {
+  title "Foreign national identification guidance"
+  action "provide_foreign_id_translation" {
+    label "Attach Certified Translation Reference"
+    variant "secondary"
+  }
+}
+
+condition "auto_approve_ok" {
+  description "identity verification cleared every threshold"
+  rules_definition "kyc_verification_risk_policy"
+  rules_decision "kyc_risk_policy"
+  rules_effects ["auto_approve"]
+}
+
+workflow "kyc_verification" {
+  name "KYC Verification Platform"
+  first "intake"
+  mode inline
+  tenant_policy {
+    required true
+    field "tenant_id"
+    strict true
+  }
+  task_lock {
+    enabled true
+    ttl "30m"
+  }
+
+  notification "session_suspended" {
+    enabled true
+    events ["task.support_entered"]
+    channels ["applicant_notify"]
+    title "KYC session {{task.id}} suspended pending more information"
+    message "Your KYC verification session has been paused."
+    severity "warning"
+  }
+
+  # --- Intake -----------------------------------------------------------
+  node "intake" {
+    type page
+    authz {
+      required_roles ["applicant", "kyc_officer", "scenario_admin"]
+      required_permissions ["session.view"]
+      on_deny "error"
+    }
+    page {
+      title "KYC Verification - Applicant Intake"
+      submit_label "Continue to Document Capture"
+      allowed_roles ["applicant", "kyc_officer", "scenario_admin"]
+      snippet "workspace_banner"
+      authz {
+        action "view" { roles ["applicant", "kyc_officer"] permissions ["session.view"] }
+        action "edit" { roles ["applicant"] permissions ["session.submit"] condition "task.status == 'waiting'" }
+      }
+      support_stage "suspend" {
+        label "Request More Information"
+        type suspend
+        variant "warning"
+        allowed_roles ["kyc_officer", "scenario_admin"]
+        require_note true
+        below {
+          title "Request More Information"
+          submit_label "Suspend Session"
+          field "suspend_reason" {
+            label "Reason"
+            type select
+            lookup "kyc_suspend_reason_codes"
+            required true
+          }
+        }
+      }
+
+      lookup "kyc_suspend_reason_codes" {
+        source "kyc_reason_codes_by_residency"
+        query "{{values.residency_status}}"
+        value_key "value"
+        label_key "label"
+        depends_on ["residency_status"]
+        refresh_on ["residency_status"]
+      }
+      sla {
+        enabled true
+        duration "30m"
+        warn_before "10m"
+        timeout_action "cancel"
+        timeout_status "abandoned"
+      }
+
+      field "full_name" {
+        label "Applicant Full Legal Name"
+        type text
+        required true
+      }
+      field "webcam_selfie" {
+        label "Live Selfie (Liveness Check)"
+        type webcam_photo
+        required true
+        capture_config {
+          max_size_mb 5.0
+          facing_mode "user"
+          format "image/jpeg"
+          quality 0.9
+        }
+      }
+
+      section "contact_details" {
+        title "Contact Details"
+        order 10
+        conditional_snippet "international_contact_fields" {
+          condition "residency_status == 'foreign'"
+        }
+        row "contact_row" {
+          columns 2
+          field "email" {
+            label "Email Address"
+            type email
+            required true
+          }
+        }
+      }
+
+      form "compliance_declarations" {
+        title "Compliance Declarations"
+        layout "accordion"
+        order 20
+        block "declarations_block" {
+          title "Declarations"
+          row "pep_row" {
+            columns 1
+            field "pep_status" {
+              label "Are you a politically exposed person (PEP)?"
+              type select
+              options ["no", "yes"]
+              required true
+            }
+          }
+        }
+        group "sanctions_group" {
+          title "Sanctions Self-Certification"
+          field "self_certified_no_sanctions" {
+            label "I certify I am not subject to any sanctions program"
+            type checkbox
+            required true
+          }
+        }
+      }
+    }
+  }
+  edge "intake_to_docs" {
+    from "intake"
+    to "document_capture"
+  }
+
+  node "prepare_license_ocr" {
+    type function
+    handler "kyc_prepare_license_ocr"
+    skip_when "result.no_drivers_license == true"
+  }
+
+  node "webcam_liveness" {
+    type liveness_check
+    params { min_liveness_score 0.80 min_face_match_score 0.75 }
+  }
+
+  edge "risk_to_auto_approve" {
+    from "risk_gate"
+    to "identity_interview"
+    type branch
+    condition "auto_approve_ok"
+  }
+
+  node "manual_review" {
+    type page
+    page {
+      title "Manual Compliance Review"
+      start_in_summary true
+      mode review
+      claimable true
+      max_claims_per_user 2
+      parallel_reviewers 3
+      consensus "majority"
+      allow_delegation true
+      show_review_history true
+      conditional_snippet "high_scrutiny_banner" {
+        condition "aml_risk_score >= 15"
+      }
+      action "request_supervisor_help" {
+        label "Request Supervisor Escalation"
+        variant "warning"
+      }
+      stage_data "header" { node "intake" label "Applicant" mode "summary" }
+      field "decision" {
+        label "Decision"
+        type select
+        options ["approve", "reject", "request_external_verification"]
+        required true
+      }
+    }
+  }
+
+  node "recording_verification" {
+    type page
+    authz { required_roles ["recording_reviewer", "scenario_admin"] deny_roles ["kyc_officer"] on_deny "error" }
+    page {
+      title "Interview Recording Verification"
+      button_group "recording_decision_actions" {
+        label "Verification Decision"
+        required true
+        button "approve" {
+          label "Confirm Recording"
+          variant "success"
+        }
+        button "needs_redo" {
+          label "Recording Unusable - Redo Interview"
+          variant "danger"
+          snippet {
+            title "Redo Interview"
+            layout "below"
+            submit_label "Send Back to Interview"
+            field "redo_reason" {
+              label "Reason"
+              type select
+              lookup "kyc_reason_codes"
+              required true
+            }
+          }
+        }
+      }
+    }
+  }
+
+  node "kyc_certificate_issued" {
+    type page
+    last true
+    page {
+      title "KYC Certificate Issued"
+      terminal true
+      mode summary
+      allowed_roles ["applicant", "kyc_registrar"]
+      stage_data "header" { node "intake" label "Applicant" mode "summary" }
+    }
+  }
+}
+
+workflow "kyc_dashboard" {
+  name "KYC Compliance Dashboard"
+  first "dashboard"
+  mode inline
+
+  node "dashboard" {
+    type page
+    last true
+    page {
+      title "Compliance Dashboard"
+      terminal true
+      allowed_roles ["compliance_supervisor", "kyc_registrar", "scenario_admin"]
+      field "sessions_by_status" {
+        label "Sessions by Status"
+        type chart
+        params {
+          resource "kyc_sessions"
+          group_by "overall_status"
+          agg "count"
+          chart_type "bar"
+        }
+      }
+    }
+  }
+}

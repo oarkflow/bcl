@@ -24,4 +24,3 @@ route "public-api" {
   upstream url("https://api.internal.example.com")
   timeout 3s
 }
-

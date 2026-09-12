@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,25 +59,112 @@ func main() {
 func runFmt(args []string) error {
 	fs := flag.NewFlagSet("fmt", flag.ExitOnError)
 	write := fs.Bool("w", false, "write result to source file")
+	list := fs.Bool("l", false, "list files whose formatting differs")
+	indent := fs.Int("indent", 2, "spaces per indent level")
+	tabs := fs.Bool("tabs", false, "indent with tabs")
+	canonical := fs.Bool("canonical", false, "rewrite from the AST (normalizes and sorts declarations, drops comments)")
 	fs.Parse(args)
-	for _, path := range fs.Args() {
+	// An explicit flag beats the project's .bclfmt; the file beats the defaults.
+	explicit := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	paths, err := formatTargets(fs.Args())
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		return fmt.Errorf("fmt requires at least one file or directory")
+	}
+	configs := map[string]bcl.FormatOptions{}
+	for _, path := range paths {
 		src, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		out, err := bcl.Format(src)
+		formatOpts, err := formatOptionsFor(path, configs, explicit, *indent, *tabs)
 		if err != nil {
 			return err
 		}
-		if *write {
+		var out []byte
+		if *canonical {
+			out, err = bcl.Canonicalize(src)
+		} else {
+			out, err = bcl.FormatWithOptions(src, formatOpts)
+		}
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		switch {
+		case *list:
+			if !bytes.Equal(src, out) {
+				fmt.Fprintln(os.Stdout, path)
+			}
+		case *write:
+			if bytes.Equal(src, out) {
+				continue
+			}
 			if err := os.WriteFile(path, out, 0644); err != nil {
 				return err
 			}
-		} else {
+		default:
 			os.Stdout.Write(out)
 		}
 	}
 	return nil
+}
+
+// formatOptionsFor resolves the formatting style for one file: the project's
+// .bclfmt if there is one, with any flag the user actually typed overriding it.
+// Results are cached per directory so a tree-wide format reads each config once.
+func formatOptionsFor(path string, cache map[string]bcl.FormatOptions, explicit map[string]bool, indent int, tabs bool) (bcl.FormatOptions, error) {
+	dir := filepath.Dir(path)
+	opts, cached := cache[dir]
+	if !cached {
+		found, configPath, err := bcl.FindFormatConfig(dir)
+		if err != nil {
+			return bcl.FormatOptions{}, fmt.Errorf("%s: %w", configPath, err)
+		}
+		opts = found
+		cache[dir] = opts
+	}
+	if explicit["indent"] || opts.IndentWidth == 0 && !opts.UseTabs {
+		opts.IndentWidth = indent
+	}
+	if explicit["tabs"] {
+		opts.UseTabs = tabs
+	}
+	return opts, nil
+}
+
+// formatTargets expands directory arguments into the BCL files beneath them so
+// "bcl fmt -w ." formats a whole tree.
+func formatTargets(args []string) ([]string, error) {
+	var out []string
+	for _, arg := range args {
+		if !isDir(arg) {
+			out = append(out, arg)
+			continue
+		}
+		err := filepath.WalkDir(arg, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if name := d.Name(); name != "." && (strings.HasPrefix(name, ".") || name == "node_modules") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			switch filepath.Ext(path) {
+			case ".bcl", ".schema":
+				out = append(out, path)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 func runLint(args []string) error {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
 
 type SyntaxToken struct {
@@ -147,12 +148,12 @@ func AnalyzeFile(name string, src []byte, opts *Options) (*Analysis, []Diagnosti
 	}
 	if err != nil {
 		if e, ok := err.(ErrorList); ok {
-			a.Diagnostics = e
+			a.Diagnostics = applyDiagnosticCodes(e)
 			a.Completions = DefaultCompletions()
 			return a, e
 		}
 		diag := Diagnostic{Severity: "error", Message: err.Error()}
-		a.Diagnostics = []Diagnostic{diag}
+		a.Diagnostics = applyDiagnosticCodes([]Diagnostic{diag})
 		a.Completions = DefaultCompletions()
 		return a, a.Diagnostics
 	}
@@ -163,14 +164,45 @@ func AnalyzeFile(name string, src []byte, opts *Options) (*Analysis, []Diagnosti
 		analysisDoc = resolved
 	}
 	a.Symbols = analyzeNodes(analysisDoc.Items, "", a)
-	a.Index = buildLanguageFeatureIndex(name, a)
-	a.Diagnostics = append(a.Diagnostics, Lint(analysisDoc, opts)...)
-	a.Completions = analysisCompletions(a)
+	// One flattened view of the symbol tree, shared by the feature index and the
+	// completion list: it is the widest allocation in analysis.
+	flat := flattenSymbols(a.Symbols)
+	a.Index = buildLanguageFeatureIndex(name, a, flat)
+	a.Diagnostics = applyDiagnosticCodes(append(a.Diagnostics, Lint(analysisDoc, opts)...))
+	if opts == nil || !opts.SkipCompletions {
+		a.Completions = analysisCompletions(a, flat)
+	}
 	return a, a.Diagnostics
 }
 
+// AnalysisCompletions computes the completion list for an analysis. Use it with
+// Options.SkipCompletions when completions are only needed on demand - an editor
+// analyzes on every edit but asks for completions rarely.
+func AnalysisCompletions(a *Analysis) []Completion {
+	if a == nil {
+		return DefaultCompletions()
+	}
+	if len(a.Completions) > 0 {
+		return a.Completions
+	}
+	return analysisCompletions(a, flattenSymbols(a.Symbols))
+}
+
+// DefaultCompletions returns the language's static completion items: keywords,
+// builtin functions, runtime values, schema clauses, and snippets. The list is
+// identical on every call, so it is built once and handed out as a copy - it used
+// to be rebuilt from the hint tables on every document analysis.
 func DefaultCompletions() []Completion {
-	var out []Completion
+	static := staticCompletions()
+	out := make([]Completion, len(static))
+	copy(out, static)
+	return out
+}
+
+var staticCompletions = sync.OnceValue(buildStaticCompletions)
+
+func buildStaticCompletions() []Completion {
+	out := make([]Completion, 0, len(keywordHints)+len(builtinFunctionHints)+len(runtimeValueHints)+len(schemaFieldHints)+16)
 	for _, item := range keywordHints {
 		out = append(out, Completion{Label: item.Name, Kind: "keyword", Detail: item.Signature, Documentation: item.Description})
 	}
@@ -216,7 +248,9 @@ func CompletionsAt(a *Analysis, src []byte, line, column int) ([]Completion, Com
 	ctx.EnclosingBlock = enclosingBlockName(src, line)
 	ctx.ExpectedValues = expectedValuesForContext(ctx)
 
-	out := append([]Completion(nil), a.Completions...)
+	// AnalysisCompletions covers the Options.SkipCompletions case, where the
+	// analysis deliberately left the list unbuilt until something asked for it.
+	out := append([]Completion(nil), AnalysisCompletions(a)...)
 	for _, v := range ctx.ExpectedValues {
 		out = append(out, Completion{Label: v, Kind: "value", Detail: "BCL value"})
 	}
@@ -605,8 +639,10 @@ func collectReferenceTargets(v Value) []string {
 	return uniqueStrings(out)
 }
 
-func analysisCompletions(a *Analysis) []Completion {
-	out := DefaultCompletions()
+func analysisCompletions(a *Analysis, flat []LanguageSymbol) []Completion {
+	static := staticCompletions()
+	out := make([]Completion, len(static), len(static)+len(flat)+len(a.Constants)+len(a.Sets)+len(a.Schemas)+len(a.Types)+len(decisionBlockNames)+len(decisionFieldNames)+len(patternHelperNames))
+	copy(out, static)
 	add := func(label, kind, detail string) {
 		out = append(out, Completion{Label: label, Kind: kind, Detail: detail})
 	}
@@ -634,7 +670,7 @@ func analysisCompletions(a *Analysis) []Completion {
 	for name, s := range a.Types {
 		add(name, "type", s.Detail)
 	}
-	for _, s := range flattenSymbols(a.Symbols) {
+	for _, s := range flat {
 		label := localSymbolName(s)
 		if label == "" || label == s.Detail || strings.Contains(label, ".") {
 			continue
@@ -670,12 +706,14 @@ func analysisCompletions(a *Analysis) []Completion {
 	return dedupeCompletions(out)
 }
 
-func buildLanguageFeatureIndex(file string, a *Analysis) WorkspaceIndex {
+func buildLanguageFeatureIndex(file string, a *Analysis, flat []LanguageSymbol) WorkspaceIndex {
 	idx := WorkspaceIndex{Files: map[string]*Analysis{}, ReverseDependencies: map[string][]string{}}
 	if file != "" {
 		idx.Files[file] = a
 	}
-	for _, sym := range flattenSymbols(a.Symbols) {
+	idx.Declarations = make([]Declaration, 0, len(flat))
+	idx.References = make([]LanguageReference, 0, len(a.References))
+	for _, sym := range flat {
 		canon := sym.Name
 		if canon == "" {
 			continue
@@ -731,7 +769,18 @@ func symbolFile(fallback string, sp Span) string {
 }
 
 func symbolMetadata(s LanguageSymbol) map[string]string {
-	m := map[string]string{}
+	size := 0
+	for _, v := range [...]string{s.Detail, s.ValueKind, s.Value} {
+		if v != "" {
+			size++
+		}
+	}
+	if size == 0 {
+		// Most symbols carry no metadata; allocating a map to throw it away was
+		// costing an allocation per symbol per analysis.
+		return nil
+	}
+	m := make(map[string]string, size)
 	if s.Detail != "" {
 		m["detail"] = s.Detail
 	}
@@ -740,9 +789,6 @@ func symbolMetadata(s LanguageSymbol) map[string]string {
 	}
 	if s.Value != "" {
 		m["value"] = s.Value
-	}
-	if len(m) == 0 {
-		return nil
 	}
 	return m
 }
@@ -882,16 +928,31 @@ func expectedValuesForContext(ctx CompletionContext) []string {
 	}
 }
 
+// flattenSymbols returns every symbol in the tree, depth first. LanguageSymbol is
+// a wide struct, so the slice is sized exactly up front: growing it by doubling
+// was the single largest allocation in document analysis.
 func flattenSymbols(in []LanguageSymbol) []LanguageSymbol {
-	var out []LanguageSymbol
-	var walk func([]LanguageSymbol)
-	walk = func(xs []LanguageSymbol) {
-		for _, s := range xs {
-			out = append(out, s)
-			walk(s.Children)
-		}
+	total := countSymbols(in)
+	if total == 0 {
+		return nil
 	}
-	walk(in)
+	out := make([]LanguageSymbol, 0, total)
+	return appendSymbols(out, in)
+}
+
+func countSymbols(in []LanguageSymbol) int {
+	n := len(in)
+	for i := range in {
+		n += countSymbols(in[i].Children)
+	}
+	return n
+}
+
+func appendSymbols(out []LanguageSymbol, in []LanguageSymbol) []LanguageSymbol {
+	for i := range in {
+		out = append(out, in[i])
+		out = appendSymbols(out, in[i].Children)
+	}
 	return out
 }
 

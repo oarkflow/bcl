@@ -1,0 +1,43 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - copyloopvar
+    - misspell
+    - unconvert
+    - wastedassign
+
+  settings:
+    staticcheck:
+      # ST1000 (package comment) and ST1003 (naming) would fire across the whole
+      # existing API surface; leave them off until that is a deliberate cleanup.
+      checks: ["all", "-ST1000", "-ST1003"]
+    errcheck:
+      # Diagnostics and traces are written on a best-effort basis; failing to
+      # write one must not change control flow.
+      exclude-functions:
+        - (io.Writer).Write
+        - fmt.Fprintln
+        - fmt.Fprintf
+
+  exclusions:
+    generated: lax
+    rules:
+      # Test helpers deliberately ignore errors while probing malformed input.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unused
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

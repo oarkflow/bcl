@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -163,7 +164,7 @@ func TestLSPSupportsSchemaFiles(t *testing.T) {
 			t.Fatalf("schema file should not warn about version declaration: %#v", a.Diagnostics)
 		}
 	}
-	edits := s.formatEdits(pathURI(schemaPath))
+	edits := s.formatEdits(pathURI(schemaPath), formattingOptions{TabSize: 2, InsertSpaces: true})
 	if len(edits) != 1 {
 		t.Fatalf("expected one formatting edit, got %#v", edits)
 	}
@@ -540,3 +541,307 @@ func lspCompletionLabelsContain(items []any, labels ...string) bool {
 type ioDiscard struct{}
 
 func (ioDiscard) Write(p []byte) (int, error) { return len(p), nil }
+
+func TestLSPFormattingKeepsCommentsAndHonoursEditorIndent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pipeline.bcl")
+	src := "# platform setup\nserver {\naddress \":8080\"\n  # keep me\nread_timeout \"30s\"\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{out: ioDiscard{}, files: map[string]string{}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+
+	edits := s.formatEdits(pathURI(path), formattingOptions{TabSize: 2, InsertSpaces: true})
+	if len(edits) != 1 {
+		t.Fatalf("expected one formatting edit, got %#v", edits)
+	}
+	got := edits[0].(map[string]any)["newText"].(string)
+	want := "# platform setup\nserver {\n  address \":8080\"\n  # keep me\n  read_timeout \"30s\"\n}\n"
+	if got != want {
+		t.Fatalf("formatted commented document = %q, want %q", got, want)
+	}
+
+	tabbed := s.formatEdits(pathURI(path), formattingOptions{TabSize: 4, InsertSpaces: false})
+	if !strings.Contains(tabbed[0].(map[string]any)["newText"].(string), "\n\taddress") {
+		t.Fatalf("editor tab settings ignored: %#v", tabbed[0])
+	}
+}
+
+func TestLSPRangeFormattingTouchesOnlySelectedLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pipeline.bcl")
+	src := "server {\naddress \":8080\"\nread_timeout \"30s\"\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{out: ioDiscard{}, files: map[string]string{}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+
+	edits := s.rangeFormatEdits(pathURI(path), rangeLSP{Start: position{Line: 1}, End: position{Line: 1, Character: 16}}, formattingOptions{TabSize: 2, InsertSpaces: true})
+	if len(edits) != 1 {
+		t.Fatalf("expected one range edit, got %#v", edits)
+	}
+	edit := edits[0].(map[string]any)
+	if got := edit["newText"].(string); got != "  address \":8080\"\n" {
+		t.Fatalf("range edit text = %q", got)
+	}
+	rng := edit["range"].(rangeLSP)
+	if rng.Start.Line != 1 || rng.End.Line != 2 {
+		t.Fatalf("range edit range = %#v", rng)
+	}
+}
+
+func TestLSPAppliesIncrementalDocumentChanges(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pipeline.bcl")
+	if err := os.WriteFile(path, []byte("server {\n  address \":8080\"\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uri := pathURI(path)
+	s := &server{out: ioDiscard{}, files: map[string]string{}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+	s.handle(rpcMessage{Method: "textDocument/didOpen", Params: json.RawMessage(
+		`{"textDocument":{"uri":"` + uri + `","text":"server {\n  address \":8080\"\n}\n"}}`)})
+
+	// Type " read_timeout \"30s\"\n" at the start of line 2, the way an editor
+	// sends it: a zero-length range plus the inserted text.
+	s.handle(rpcMessage{Method: "textDocument/didChange", Params: json.RawMessage(
+		`{"textDocument":{"uri":"` + uri + `"},"contentChanges":[{"range":{"start":{"line":2,"character":0},"end":{"line":2,"character":0}},"text":"  read_timeout \"30s\"\n"}]}`)})
+
+	want := "server {\n  address \":8080\"\n  read_timeout \"30s\"\n}\n"
+	if got := s.fileText(uri); got != want {
+		t.Fatalf("incremental change produced %q, want %q", got, want)
+	}
+
+	// A change without a range still replaces the whole document.
+	s.handle(rpcMessage{Method: "textDocument/didChange", Params: json.RawMessage(
+		`{"textDocument":{"uri":"` + uri + `"},"contentChanges":[{"text":"role \"x\" {}\n"}]}`)})
+	if got := s.fileText(uri); got != "role \"x\" {}\n" {
+		t.Fatalf("full replacement produced %q", got)
+	}
+}
+
+func TestApplyContentChangeCountsUTF16Columns(t *testing.T) {
+	// "😀" is one rune but two UTF-16 code units, so the closing quote of
+	// `title "😀"` sits at column 9 and end-of-line is column 10. Counting runes
+	// instead would splice one byte early and corrupt every later edit.
+	text := "title \"😀\"\nnext\n"
+	if got := applyContentChange(text, contentChange{
+		Range: &rangeLSP{Start: position{Line: 0, Character: 10}, End: position{Line: 0, Character: 10}},
+		Text:  " x 1",
+	}); got != "title \"😀\" x 1\nnext\n" {
+		t.Fatalf("splice at end of line produced %q", got)
+	}
+	if got := applyContentChange(text, contentChange{
+		Range: &rangeLSP{Start: position{Line: 0, Character: 7}, End: position{Line: 0, Character: 9}},
+		Text:  "ok",
+	}); got != "title \"ok\"\nnext\n" {
+		t.Fatalf("replacing the emoji produced %q", got)
+	}
+}
+
+func TestLSPSurvivesPanicInHandler(t *testing.T) {
+	s := &server{out: ioDiscard{}, files: map[string]string{}, index: map[string]*bcl.Analysis{}}
+	// A request whose params are not the expected shape must not kill the server.
+	s.handle(rpcMessage{ID: 1, Method: "textDocument/formatting", Params: json.RawMessage(`{"textDocument":{"uri":12}}`)})
+	s.handle(rpcMessage{ID: 2, Method: "textDocument/completion", Params: json.RawMessage(`null`)})
+	if s.files == nil {
+		t.Fatal("server state lost")
+	}
+}
+
+func TestReadMessageRecoversFromMalformedBody(t *testing.T) {
+	stream := "Content-Length: 7\r\n\r\n{oops!!" +
+		"Content-Length: 40\r\n\r\n{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}\n"
+	r := bufio.NewReader(strings.NewReader(stream))
+	if _, err := readMessage(r); !errors.Is(err, errBadMessageBody) {
+		t.Fatalf("expected a recoverable body error, got %v", err)
+	}
+	msg, err := readMessage(r)
+	if err != nil {
+		t.Fatalf("stream lost frame alignment: %v", err)
+	}
+	if msg.Method != "initialized" {
+		t.Fatalf("next message = %#v", msg)
+	}
+}
+
+// codeActionTitles runs a code-action request for one diagnostic and returns the
+// titles offered, so a fix can be tested by what the user would actually see.
+func codeActionTitles(t *testing.T, s *server, uri string, diag map[string]any) []string {
+	t.Helper()
+	params, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"range":        diag["range"],
+		"context":      map[string]any{"diagnostics": []any{diag}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var titles []string
+	for _, action := range s.codeActions(params) {
+		titles = append(titles, action.(map[string]any)["title"].(string))
+	}
+	return titles
+}
+
+func hasTitle(titles []string, want string) bool {
+	for _, title := range titles {
+		if strings.Contains(title, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestQuickFixesAreOfferedByDiagnosticCode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.bcl")
+	src := "const UNUSED = 1\nblock \"dupe\" {\n  a 1\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uri := pathURI(path)
+	s := &server{out: ioDiscard{}, files: map[string]string{uri: src}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+
+	cases := []struct {
+		name string
+		diag map[string]any
+		want string
+	}{
+		{
+			name: "unused declaration",
+			diag: map[string]any{"code": bcl.CodeUnused, "message": `unused constant "UNUSED"`,
+				"range": rangeLSP{Start: position{Line: 0}, End: position{Line: 0, Character: 16}}},
+			want: "Remove the unused declaration",
+		},
+		{
+			name: "duplicate declaration",
+			diag: map[string]any{"code": bcl.CodeDuplicateDeclaration, "message": `duplicate block "dupe"`,
+				"range": rangeLSP{Start: position{Line: 1}, End: position{Line: 1, Character: 12}}},
+			want: `Rename this declaration to "dupe_2"`,
+		},
+		{
+			name: "missing version",
+			diag: map[string]any{"code": bcl.CodeMissingVersion, "message": "missing bcl version declaration",
+				"range": rangeLSP{Start: position{Line: 0}, End: position{Line: 0, Character: 1}}},
+			want: "Insert BCL version declaration",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if titles := codeActionTitles(t, s, uri, tc.diag); !hasTitle(titles, tc.want) {
+				t.Fatalf("expected a %q fix, got %v", tc.want, titles)
+			}
+		})
+	}
+}
+
+// A diagnostic from an older server carries no code; the fix must still appear.
+func TestQuickFixesFallBackToMessageWithoutACode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.bcl")
+	src := "const UNUSED = 1\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uri := pathURI(path)
+	s := &server{out: ioDiscard{}, files: map[string]string{uri: src}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+	diag := map[string]any{"message": `unused constant "UNUSED"`,
+		"range": rangeLSP{Start: position{Line: 0}, End: position{Line: 0, Character: 16}}}
+	if titles := codeActionTitles(t, s, uri, diag); !hasTitle(titles, "Remove the unused declaration") {
+		t.Fatalf("expected the message fallback to offer the fix, got %v", titles)
+	}
+}
+
+func TestQuickFixEditsAreWellFormed(t *testing.T) {
+	uri := "file:///tmp/x.bcl"
+	text := "const UNUSED = 1\nkeep 2\n"
+
+	del := lineDeleteEdit(uri, 0, 0)["changes"].(map[string]any)[uri].([]any)[0].(map[string]any)
+	rng := del["range"].(rangeLSP)
+	if rng.Start.Line != 0 || rng.End.Line != 1 || del["newText"] != "" {
+		t.Fatalf("delete edit should remove the whole line: %#v", del)
+	}
+
+	ren := renameInLineEdit(text, uri, 0, "UNUSED", "UNUSED_2")["changes"].(map[string]any)[uri].([]any)[0].(map[string]any)
+	renRange := ren["range"].(rangeLSP)
+	if renRange.Start.Character != 6 || renRange.End.Character != 12 || ren["newText"] != "UNUSED_2" {
+		t.Fatalf("rename edit should replace just the name: %#v", ren)
+	}
+
+	// A name the line does not contain must produce no edit rather than a wrong one.
+	empty := renameInLineEdit(text, uri, 0, "ABSENT", "X")["changes"].(map[string]any)[uri].([]any)
+	if len(empty) != 0 {
+		t.Fatalf("expected no edit when the name is not on the line: %#v", empty)
+	}
+}
+
+func TestFoldingRangesAreZeroBasedAndKinded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.bcl")
+	src := "# one\n# two\nserver {\n  a 1\n  b 2\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uri := pathURI(path)
+	s := &server{out: ioDiscard{}, files: map[string]string{uri: src}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+
+	ranges := s.foldingRanges(uri)
+	if len(ranges) != 2 {
+		t.Fatalf("folding ranges = %#v", ranges)
+	}
+	comment := ranges[0].(map[string]any)
+	if comment["startLine"] != 0 || comment["endLine"] != 1 || comment["kind"] != "comment" {
+		t.Fatalf("comment fold = %#v", comment)
+	}
+	block := ranges[1].(map[string]any)
+	if block["startLine"] != 2 || block["endLine"] != 4 {
+		t.Fatalf("block fold = %#v", block)
+	}
+	if _, hasKind := block["kind"]; hasKind {
+		t.Fatalf("a block fold should carry no kind: %#v", block)
+	}
+}
+
+func TestDocumentLinksPointAtExistingImports(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "common.bcl"), []byte("shared 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "main.bcl")
+	src := "import \"./common.bcl\"\nimport \"./missing.bcl\"\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uri := pathURI(path)
+	s := &server{out: ioDiscard{}, files: map[string]string{uri: src}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+
+	links := s.documentLinks(uri)
+	if len(links) != 1 {
+		t.Fatalf("expected only the import that exists to be linked, got %#v", links)
+	}
+	link := links[0].(map[string]any)
+	if link["target"] != pathURI(filepath.Join(dir, "common.bcl")) {
+		t.Fatalf("link target = %#v", link["target"])
+	}
+}
+
+func TestProjectFormatConfigBeatsEditorSettings(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, bcl.FormatConfigName), []byte("indent 4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "doc.bcl")
+	src := "a {\nb 1\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uri := pathURI(path)
+	s := &server{out: ioDiscard{}, files: map[string]string{uri: src}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
+
+	// The editor asks for two spaces; the project says four.
+	edits := s.formatEdits(uri, formattingOptions{TabSize: 2, InsertSpaces: true})
+	got := edits[0].(map[string]any)["newText"].(string)
+	if got != "a {\n    b 1\n}\n" {
+		t.Fatalf("project config ignored: %q", got)
+	}
+}

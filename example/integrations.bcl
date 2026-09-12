@@ -171,4 +171,3 @@ command "backup-db" {
     redact ["password", "secret", "token"]
   }
 }
-

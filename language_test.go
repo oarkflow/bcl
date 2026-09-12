@@ -240,30 +240,37 @@ lifecycle "http_request" {
 	}
 }
 
-func TestAnalyzeCompletePlatformExampleHasCleanEditorDiagnostics(t *testing.T) {
-	path := "condition/examples/complete-platform/decision.bcl"
+// TestAnalyzeFullDecisionExampleHasCleanEditorDiagnostics keeps the editor honest
+// on a complete, shipped example: a full decision platform file must analyze with
+// no diagnostics at all and index every declaration an editor navigates to.
+// (It previously pointed at condition/examples, a subsystem since removed.)
+func TestAnalyzeFullDecisionExampleHasCleanEditorDiagnostics(t *testing.T) {
+	path := "examples/bcl_decision_platform/use_cases/iam-access/decision.bcl"
 	src, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	analysis, diags := AnalyzeFile(path, src, &Options{Strict: true, Partial: false, ResolveImports: true, BaseDir: filepath.Dir(path)})
+	// Partial mirrors how the language server analyzes a file that another
+	// document imports, which is how this example is consumed.
+	analysis, diags := AnalyzeFile(path, src, &Options{Strict: true, Partial: true, ResolveImports: true, BaseDir: filepath.Dir(path)})
 	if analysis == nil {
 		t.Fatal("missing analysis")
 	}
 	text := FormatDiagnostics(diags)
 	if strings.Contains(text, "expected declaration, assignment, or block") {
-		t.Fatalf("complete-platform example should not produce parser diagnostics:\n%s", text)
+		t.Fatalf("example should not produce parser diagnostics:\n%s", text)
 	}
 	if text != "" {
-		t.Fatalf("unexpected complete-platform diagnostics:\n%s", text)
+		t.Fatalf("unexpected diagnostics:\n%s", text)
 	}
 	for _, want := range []string{
-		"decision_table.login_observability",
-		"decision_table.response_observability",
-		"decision_table.admin_access",
-		"chain.account_risk_chain",
-		"lifecycle.http_request",
-		"lifecycle_test.json login failure emits failed login",
+		"decision_table.iam_access",
+		"decision_schema.iam_access",
+		"rule_set.iam_access",
+		"reason_code_catalog.iam_access",
+		"decision_bundle.iam_access_bundle",
+		"gate.iam_access_gate",
+		"module.iam-access-catalog",
 	} {
 		if _, ok := analysis.Declarations[want]; !ok {
 			t.Fatalf("missing indexed symbol %q", want)

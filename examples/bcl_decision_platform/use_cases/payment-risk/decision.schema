@@ -14,4 +14,3 @@ schema payment_risk {
     required trusted bool
   }
 }
-

@@ -102,6 +102,11 @@ type DatasetDefinition struct {
 type DatasetSource struct {
 	Adapter string         `json:"adapter,omitempty"`
 	Config  map[string]any `json:"config,omitempty"`
+	// Root is the directory of the document that declared this dataset. A file
+	// dataset is confined to it unless Options.AllowedDatasetRoots says otherwise.
+	// It is not serialized: it describes where the program was compiled, not what
+	// the program says.
+	Root string `json:"-"`
 }
 
 type DecisionCandidate struct {
@@ -1395,6 +1400,9 @@ func (b *decisionBuilder) resolveDatasetSource(source DatasetSource) DatasetSour
 	if !strings.EqualFold(source.Adapter, "file") || b == nil || b.opts == nil || b.opts.BaseDir == "" || source.Config == nil {
 		return source
 	}
+	// Remember where this document lives even for an absolute path: it is the
+	// boundary a file dataset is confined to when it is opened.
+	source.Root = b.opts.BaseDir
 	path := scalarString(source.Config["path"])
 	if path == "" || filepath.IsAbs(path) {
 		return source
@@ -1616,8 +1624,9 @@ func evaluateDecisionIntoInternalWithStack(program *DecisionProgram, decision st
 	explain := evalOpts.Explain
 	evalTime := decisionEvaluationTime(input, opts)
 	conditionOpts := decisionEvalOptions(opts, program, input, evalOpts, stack, result)
+	// first_match and highest_priority both pick one rule directly rather than
+	// combining every match through a policy strategy.
 	directSelect := strategy == "first_match" || strategy == "highest_priority"
-	firstMatch := strategy == "first_match"
 	var selectedDirect DecisionRule
 	hasSelectedDirect := false
 	var matchedPolicies []DecisionRule
@@ -1660,20 +1669,18 @@ func evaluateDecisionIntoInternalWithStack(program *DecisionProgram, decision st
 			if explain {
 				appendApplyTrace(result, rule, summary)
 			}
-			if firstMatch {
-				break
-			}
 			continue
 		}
 		if rule.Effect != "" {
 			matchedSelectable = append(matchedSelectable, rule)
 			if directSelect {
+				// first_match picks the first rule that decides, but evaluation
+				// keeps going: later scoring rules still contribute, a "unique"
+				// hit policy can only report a conflict if it sees every match, and
+				// the explain trace should say why the remaining rules did not fire.
 				if !hasSelectedDirect {
 					selectedDirect = rule
 					hasSelectedDirect = true
-				}
-				if firstMatch {
-					break
 				}
 			} else {
 				matchedPolicies = append(matchedPolicies, rule)

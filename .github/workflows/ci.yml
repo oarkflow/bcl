@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes the previous run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, go ${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        # The version in go.mod is the contract; "stable" catches breakage from
+        # newer toolchains before users hit it.
+        go: [mod, stable]
+        exclude:
+          - os: macos-latest
+            go: stable
+          - os: windows-latest
+            go: stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.go == 'mod' && 'go.mod' || '' }}
+          go-version: ${{ matrix.go == 'stable' && 'stable' || '' }}
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      # The race detector is the whole point of running tests twice: the library
+      # caches analysis and import graphs across goroutines.
+      - name: Test with race detector
+        if: matrix.os == 'ubuntu-latest' && matrix.go == 'mod'
+        run: go test -race ./...
+
+      - name: Benchmarks compile and run once
+        if: matrix.os == 'ubuntu-latest' && matrix.go == 'mod'
+        run: go test ./... -run XXX -bench . -benchtime 1x
+
+  formatting:
+    name: formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Go source is gofmt clean
+        run: |
+          unformatted="$(gofmt -l . | grep -v '^testdata/' || true)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed for:"; echo "$unformatted"; exit 1
+          fi
+
+      # BCL formats its own sources: if this fails, run "go run ./cmd/bcl fmt -w ."
+      - name: BCL sources are formatted
+        run: |
+          go run ./cmd/bcl fmt -w .
+          git diff --exit-code -- '*.bcl' '*.schema'
+
+  fuzz:
+    name: fuzz smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Short by design: the committed corpus under testdata/fuzz is replayed by
+      # "go test" on every run, and this adds fresh exploration on top.
+      - name: Fuzz the parse/format/compile pipeline
+        run: go test -run XXX -fuzz FuzzParseFormatCompile -fuzztime 90s .
+
+      - name: Upload failing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus
+          path: testdata/fuzz/
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    # Advisory until golangci-lint publishes a build targeting Go 1.26; it refuses
+    # to load a config for a Go version newer than the one it was built with.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  extension:
+    name: vscode extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+
+      - name: Build the bundled language server and CLI
+        run: make vscode-extension-lsp
+
+      - name: Type-check and compile the extension
+        working-directory: editors/vscode
+        run: |
+          npm ci
+          npx tsc -p ./ --noEmit
+          npm run compile

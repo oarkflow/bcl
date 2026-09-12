@@ -43,7 +43,11 @@ func formatDiagnostic(b *strings.Builder, d Diagnostic, contextLines int, cache 
 	if severity == "" {
 		severity = "error"
 	}
-	fmt.Fprintf(b, "%s: %s\n", severity, d.Message)
+	if d.Code != "" {
+		fmt.Fprintf(b, "%s[%s]: %s\n", severity, d.Code, d.Message)
+	} else {
+		fmt.Fprintf(b, "%s: %s\n", severity, d.Message)
+	}
 	if d.Span.Start.Line <= 0 {
 		if hint := diagnosticHint(d.Message); hint != "" {
 			fmt.Fprintf(b, "help: %s\n", hint)
@@ -121,36 +125,6 @@ func writeSourceExcerpt(b *strings.Builder, source []byte, sp Span, contextLines
 }
 
 func diagnosticHint(msg string) string {
-	switch {
-	case strings.Contains(msg, "expected declaration"):
-		return "Start statements with a name, for example `field \"value\"` or `block \"id\" { ... }`."
-	case strings.Contains(msg, "expected value"):
-		return "Add a scalar value, list, object, reference, or function call after the field name."
-	case strings.Contains(msg, "unterminated string"):
-		return "Close the string with the same quote style that opened it."
-	case strings.Contains(msg, "unterminated multiline string"):
-		return "Close the multiline string with triple double quotes: `\"\"\"`."
-	case strings.Contains(msg, "unterminated raw string"):
-		return "Close the raw string with a backtick."
-	case strings.Contains(msg, "unterminated heredoc"):
-		return "End the heredoc with its marker on a line by itself."
-	case strings.Contains(msg, "unterminated block comment"):
-		return "Close the block comment with `*/`."
-	case strings.Contains(msg, "env function requires AllowEnv"):
-		return "Enable environment access with Options.AllowEnv or the CLI `--allow-env` flag."
-	case strings.Contains(msg, "required env") && strings.Contains(msg, "is not set"):
-		return "Set the environment variable, provide an env file, or use `env(\"KEY\", default)`."
-	case strings.Contains(msg, "invalid expression"):
-		return "Check operator spelling, balanced brackets, and whether function capabilities are enabled."
-	case strings.Contains(msg, "unknown reference"):
-		return "Define the referenced block/constant/set, import it, or fix the reference path."
-	case strings.Contains(msg, "missing required field"):
-		return "Add the field or define a schema default."
-	case strings.Contains(msg, "duplicate"):
-		return "Rename one declaration or remove the duplicate definition."
-	case strings.Contains(msg, "missing lock entry"):
-		return "Run `bcl modules lock <file>` and commit the generated lockfile."
-	default:
-		return ""
-	}
+	_, hint := classifyDiagnostic(msg)
+	return hint
 }

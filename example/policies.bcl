@@ -81,4 +81,3 @@ policy "deny-sensitive-without-clearance" {
 override policy "document-owner-or-admin" {
   priority 150
 }
-

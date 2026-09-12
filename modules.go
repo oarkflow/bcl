@@ -170,7 +170,9 @@ func FetchModules(path string, lockfile string, opts *ModuleFetchOptions) error 
 		}
 	}
 	cacheDir := moduleCacheDir("")
-	client := http.DefaultClient
+	// http.DefaultClient has no timeout, so an unreachable registry hangs the fetch
+	// forever rather than failing.
+	client := &http.Client{Timeout: DefaultFetchTimeout}
 	if opts != nil {
 		if opts.CacheDir != "" {
 			cacheDir = opts.CacheDir
@@ -277,7 +279,16 @@ func readArchive(source string, client *http.Client) ([]byte, error) {
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, fmt.Errorf("fetch %s: %s", source, resp.Status)
 		}
-		return io.ReadAll(resp.Body)
+		// Bounded so a hostile or endless response cannot exhaust memory. The
+		// extra byte distinguishes "exactly at the cap" from "over it".
+		data, err := io.ReadAll(io.LimitReader(resp.Body, maxRegistryResponse+1))
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > maxRegistryResponse {
+			return nil, fmt.Errorf("module archive %s is larger than the %d byte limit", source, maxRegistryResponse)
+		}
+		return data, nil
 	}
 	return os.ReadFile(source)
 }

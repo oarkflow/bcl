@@ -43,6 +43,9 @@ const vscode = __importStar(require("vscode"));
 const node_1 = require("vscode-languageclient/node");
 let client;
 let outputChannel;
+let serverCrashes = 0;
+let extensionContext;
+const MAX_SERVER_RESTARTS = 3;
 const LANGUAGE_ID = 'bcl';
 const WATCHED_FILE_GLOBS = ['**/*.bcl', '**/*.schema'];
 const TRUSTED_COMMANDS = [
@@ -51,6 +54,7 @@ const TRUSTED_COMMANDS = [
     'bcl.restartLanguageServer'
 ];
 async function activate(context) {
+    extensionContext = context;
     outputChannel = vscode.window.createOutputChannel('BCL Language Server');
     context.subscriptions.push(outputChannel, vscode.commands.registerCommand('bcl.restartLanguageServer', async () => {
         await restartClient(context, true);
@@ -69,7 +73,7 @@ async function activate(context) {
         catch (error) {
             reportError('BCL recent symbols failed', error);
         }
-    }), vscode.commands.registerCommand('bcl.validateWorkspace', () => runBclCommand(['validate', '--strict', workspacePath()])), vscode.commands.registerCommand('bcl.compileCurrentFile', () => runCurrentFileCommand('compile')), vscode.commands.registerCommand('bcl.explainCurrentFile', () => runCurrentFileCommand('explain')), vscode.commands.registerCommand('bcl.condition.routeCoverage', () => runRouteCoverage()), vscode.commands.registerCommand('bcl.condition.lifecyclePlayground', () => runLifecyclePlayground()), vscode.commands.registerCommand('bcl.condition.compactState', () => runStateCompaction()), vscode.commands.registerCommand('bcl.condition.openRequestLifecycleExample', () => openWorkspaceFile('condition/examples/request-lifecycle/decision.bcl')), vscode.commands.registerCommand('bcl.condition.openHttpAuthGuardExample', () => openWorkspaceFile('condition/examples/http-auth-guard/decision.bcl')), vscode.languages.registerHoverProvider({ language: LANGUAGE_ID, scheme: 'file' }, {
+    }), vscode.commands.registerCommand('bcl.showLanguageServerLog', () => outputChannel?.show(true)), vscode.commands.registerCommand('bcl.formatFile', (resource) => formatFile(resource)), vscode.commands.registerCommand('bcl.formatSection', () => formatSection()), vscode.commands.registerCommand('bcl.formatFolder', (resource) => formatFolder(resource)), vscode.commands.registerCommand('bcl.validateWorkspace', () => runBclCommand(['validate', '--strict', workspacePath()])), vscode.commands.registerCommand('bcl.compileCurrentFile', () => runCurrentFileCommand('compile')), vscode.commands.registerCommand('bcl.explainCurrentFile', () => runCurrentFileCommand('explain')), vscode.commands.registerCommand('bcl.condition.routeCoverage', () => runRouteCoverage()), vscode.commands.registerCommand('bcl.condition.lifecyclePlayground', () => runLifecyclePlayground()), vscode.commands.registerCommand('bcl.condition.compactState', () => runStateCompaction()), vscode.languages.registerHoverProvider({ language: LANGUAGE_ID, scheme: 'file' }, {
         provideHover: async (document, position) => provideRichHover(document, position)
     }));
     await restartClient(context, false);
@@ -79,7 +83,11 @@ async function deactivate() {
 }
 async function startClient(context) {
     const command = resolveServerCommand(context);
-    output(`Starting BCL language server: ${command.command}${command.args ? ` ${command.args.join(' ')}` : ''}`);
+    if (!command.command) {
+        await reportServerUnavailable('No BCL language server could be found.', command);
+        return;
+    }
+    output(`Starting BCL language server: ${command.command}${command.args ? ` ${command.args.join(' ')}` : ''} (${command.source})`);
     const serverOptions = command.args
         ? { command: command.command, args: command.args, transport: node_1.TransportKind.stdio, options: { cwd: command.cwd } }
         : { command: command.command, transport: node_1.TransportKind.stdio };
@@ -95,10 +103,46 @@ async function startClient(context) {
             useCustomHoverDetail: true
         },
         outputChannel,
-        traceOutputChannel: outputChannel
+        traceOutputChannel: outputChannel,
+        // Without this, a server that dies is retried silently until the client gives
+        // up with "Cannot call write after a stream was destroyed" and no explanation.
+        errorHandler: {
+            error: (error, message, count) => {
+                output(`Language server error (${count ?? 0}): ${errorMessage(error)}${message ? ` while handling ${message.jsonrpc}` : ''}`);
+                return { action: (count ?? 0) < 3 ? node_1.ErrorAction.Continue : node_1.ErrorAction.Shutdown };
+            },
+            closed: () => {
+                serverCrashes++;
+                if (serverCrashes <= MAX_SERVER_RESTARTS) {
+                    output(`Language server exited unexpectedly (${serverCrashes}/${MAX_SERVER_RESTARTS}); restarting.`);
+                    return { action: node_1.CloseAction.Restart };
+                }
+                void reportServerUnavailable(`The BCL language server (${command.command}) keeps exiting.`, command);
+                return { action: node_1.CloseAction.DoNotRestart, handled: true };
+            }
+        }
     };
     client = new node_1.LanguageClient('bcl', 'BCL Language Server', serverOptions, clientOptions);
     await client.start();
+    serverCrashes = 0;
+    output('BCL language server is ready.');
+}
+/**
+ * Explains an unusable server once, with the two things that actually fix it.
+ * A silent dead server is the worst outcome: every feature stops with no reason.
+ */
+async function reportServerUnavailable(reason, command) {
+    const detail = command?.source === 'go-run'
+        ? 'It was started with "go run", which needs the Go toolchain on VS Code\'s PATH and the BCL repository as the open folder.'
+        : `No prebuilt server was found for ${process.platform}-${process.arch}.`;
+    output(`${reason} ${detail}`);
+    const choice = await vscode.window.showErrorMessage(`${reason} ${detail}`, 'Show Log', 'How to fix');
+    if (choice === 'Show Log') {
+        outputChannel?.show(true);
+    }
+    else if (choice === 'How to fix') {
+        void vscode.window.showInformationMessage('Build the server with "make vscode-extension-lsp" in the BCL repository, or set "bcl.languageServer.path" to an existing bcl-lsp binary.', { modal: true });
+    }
 }
 async function stopClient() {
     if (client) {
@@ -125,22 +169,240 @@ async function restartClient(context, notify) {
         reportError('BCL language server restart failed', error);
     }
 }
+/**
+ * Picks the language server to run, most specific first, and only falls back to
+ * "go run" when the open folder really is a BCL checkout with a Go toolchain
+ * available. Choosing "go run" blindly is how the server ends up failing to
+ * spawn at all, which surfaces as an unexplained connection error.
+ */
 function resolveServerCommand(context) {
     const configured = vscode.workspace.getConfiguration('bcl').get('languageServer.path') || '';
     if (configured) {
-        return { command: configured };
+        if (!isExecutableFile(configured)) {
+            output(`bcl.languageServer.path is set to "${configured}", which is not an executable file.`);
+        }
+        return { command: configured, source: 'setting' };
     }
-    const bundled = bundledServerPath(context);
-    if (bundled && fs.existsSync(bundled)) {
-        return { command: bundled };
+    for (const candidate of bundledServerPaths(context)) {
+        if (isExecutableFile(candidate)) {
+            return { command: candidate, source: 'bundled' };
+        }
+    }
+    const onPath = findOnPath(process.platform === 'win32' ? 'bcl-lsp.exe' : 'bcl-lsp');
+    if (onPath) {
+        return { command: onPath, source: 'path' };
     }
     const root = workspacePath();
-    return { command: 'go', args: ['run', './cmd/bcl-lsp'], cwd: root };
+    if (fs.existsSync(path.join(root, 'cmd', 'bcl-lsp'))) {
+        const go = findOnPath(process.platform === 'win32' ? 'go.exe' : 'go');
+        if (go) {
+            return { command: go, args: ['run', './cmd/bcl-lsp'], cwd: root, source: 'go-run' };
+        }
+        output('Found ./cmd/bcl-lsp but no "go" on PATH; cannot build the language server on the fly.');
+    }
+    return { command: '', source: 'go-run' };
 }
-function bundledServerPath(context) {
-    const platform = `${process.platform}-${process.arch}`;
-    const exe = process.platform === 'win32' ? 'bcl-lsp.exe' : 'bcl-lsp';
-    return context.asAbsolutePath(path.join('bin', platform, exe));
+/**
+ * Candidate binaries for this machine. The arch alias covers an Intel-VS Code
+ * (or Rosetta) process on an Apple Silicon host, where process.arch reports x64
+ * while the checked-in binary is arm64 - a mismatch that silently disables the
+ * whole extension.
+ */
+function bundledServerPaths(context) {
+    return bundledBinaryPaths(context, process.platform === 'win32' ? 'bcl-lsp.exe' : 'bcl-lsp');
+}
+function bundledBinaryPaths(context, exe) {
+    const archAliases = {
+        arm64: ['arm64', 'x64'],
+        x64: ['x64', 'arm64']
+    };
+    const arches = archAliases[process.arch] ?? [process.arch];
+    const candidates = arches.map((arch) => path.join('bin', `${process.platform}-${arch}`, exe));
+    candidates.push(path.join('bin', exe));
+    return candidates.map((relative) => context.asAbsolutePath(relative));
+}
+function isExecutableFile(candidate) {
+    try {
+        if (!fs.statSync(candidate).isFile()) {
+            return false;
+        }
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+function findOnPath(binary) {
+    const entries = (process.env.PATH || '').split(path.delimiter);
+    // VS Code on macOS is often launched from Finder with a minimal PATH, so the
+    // usual Go install locations are checked explicitly.
+    if (process.platform !== 'win32') {
+        entries.push('/usr/local/go/bin', '/opt/homebrew/bin', '/usr/local/bin', path.join(process.env.HOME || '', 'go', 'bin'));
+    }
+    for (const entry of entries) {
+        if (!entry) {
+            continue;
+        }
+        const candidate = path.join(entry, binary);
+        if (isExecutableFile(candidate)) {
+            return candidate;
+        }
+    }
+    return undefined;
+}
+/** Formats one BCL file: the given resource, or the active editor's document. */
+async function formatFile(resource) {
+    const uri = resource ?? vscode.window.activeTextEditor?.document.uri;
+    if (!uri) {
+        vscode.window.showWarningMessage('Open a BCL file first.');
+        return;
+    }
+    try {
+        const edited = await formatUri(uri);
+        if (!edited) {
+            vscode.window.showInformationMessage(`${path.basename(uri.fsPath)} is already formatted.`);
+        }
+    }
+    catch (error) {
+        reportError('BCL format file failed', error);
+    }
+}
+/**
+ * Formats the block the cursor sits in - the innermost `node`, `page`, `form`,
+ * `workflow`, ... declaration - leaving the rest of the file untouched. The
+ * enclosing range comes from the language server's own document symbols, so a
+ * "section" is always a real BCL declaration rather than a guess at indentation.
+ */
+async function formatSection() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== LANGUAGE_ID) {
+        vscode.window.showWarningMessage('Open a BCL file first.');
+        return;
+    }
+    const document = editor.document;
+    try {
+        const selection = editor.selection;
+        let range;
+        if (!selection.isEmpty) {
+            range = new vscode.Range(selection.start.line, 0, selection.end.line, document.lineAt(selection.end.line).text.length);
+        }
+        else {
+            range = await enclosingSymbolRange(document, selection.active);
+        }
+        if (!range) {
+            vscode.window.showInformationMessage('No enclosing BCL block found at the cursor; use Format File instead.');
+            return;
+        }
+        const edits = await vscode.commands.executeCommand('vscode.executeFormatRangeProvider', document.uri, range, formattingOptionsFor(document));
+        if (!edits || edits.length === 0) {
+            vscode.window.showInformationMessage('This section is already formatted.');
+            return;
+        }
+        const workspaceEdit = new vscode.WorkspaceEdit();
+        workspaceEdit.set(document.uri, edits);
+        await vscode.workspace.applyEdit(workspaceEdit);
+    }
+    catch (error) {
+        reportError('BCL format section failed', error);
+    }
+}
+/** Formats every BCL file under a folder, reporting how many changed. */
+async function formatFolder(resource) {
+    const folder = resource ?? (await pickFolder());
+    if (!folder) {
+        return;
+    }
+    const pattern = new vscode.RelativePattern(folder, '**/*.{bcl,schema}');
+    const files = await vscode.workspace.findFiles(pattern, '**/{node_modules,.git,out,dist,vendor}/**');
+    if (files.length === 0) {
+        vscode.window.showInformationMessage(`No BCL files found under ${path.basename(folder.fsPath)}.`);
+        return;
+    }
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Formatting ${files.length} BCL file(s)`, cancellable: true }, async (progress, token) => {
+        let changed = 0;
+        let failed = 0;
+        for (const [index, file] of files.entries()) {
+            if (token.isCancellationRequested) {
+                break;
+            }
+            progress.report({ message: path.basename(file.fsPath), increment: 100 / files.length });
+            try {
+                if (await formatUri(file)) {
+                    changed++;
+                }
+            }
+            catch (error) {
+                failed++;
+                output(`Format failed for ${file.fsPath}: ${errorMessage(error)}`);
+            }
+            void index;
+        }
+        const summary = `Formatted ${changed} of ${files.length} BCL file(s)${failed ? `, ${failed} failed` : ''}.`;
+        if (failed) {
+            vscode.window.showWarningMessage(`${summary} See the BCL Language Server output for details.`);
+        }
+        else {
+            vscode.window.showInformationMessage(summary);
+        }
+    });
+}
+/** Formats one document through the language server and saves it. Returns true when it changed. */
+async function formatUri(uri) {
+    const document = await vscode.workspace.openTextDocument(uri);
+    const edits = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', uri, formattingOptionsFor(document));
+    if (!edits || edits.length === 0) {
+        return false;
+    }
+    const workspaceEdit = new vscode.WorkspaceEdit();
+    workspaceEdit.set(uri, edits);
+    if (!(await vscode.workspace.applyEdit(workspaceEdit))) {
+        return false;
+    }
+    if (document.isDirty) {
+        await document.save();
+    }
+    return true;
+}
+async function enclosingSymbolRange(document, at) {
+    const symbols = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', document.uri);
+    let best;
+    const visit = (items) => {
+        for (const item of items) {
+            const range = 'range' in item ? item.range : item.location.range;
+            if (!range.contains(at)) {
+                continue;
+            }
+            if (!best || range.start.isAfterOrEqual(best.start)) {
+                best = range;
+            }
+            const children = item.children;
+            if (children && children.length > 0) {
+                visit(children);
+            }
+        }
+    };
+    visit(symbols ?? []);
+    return best;
+}
+function formattingOptionsFor(document) {
+    const config = vscode.workspace.getConfiguration('editor', document.uri);
+    return {
+        tabSize: config.get('tabSize') ?? 2,
+        insertSpaces: config.get('insertSpaces') ?? true
+    };
+}
+async function pickFolder() {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length === 1) {
+        return folders[0].uri;
+    }
+    if (folders.length > 1) {
+        const picked = await vscode.window.showQuickPick(folders.map((folder) => ({ label: folder.name, description: folder.uri.fsPath, uri: folder.uri })), { placeHolder: 'Format BCL files in which folder?' });
+        return picked?.uri;
+    }
+    const chosen = await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectFiles: false, canSelectMany: false });
+    return chosen?.[0];
 }
 function runCurrentFileCommand(command) {
     const editor = vscode.window.activeTextEditor;
@@ -151,10 +413,34 @@ function runCurrentFileCommand(command) {
     runBclCommand([command, editor.document.uri.fsPath]);
 }
 function runBclCommand(args) {
-    const cli = vscode.workspace.getConfiguration('bcl').get('cli.path') || 'bcl';
+    const cli = resolveCli();
+    if (!cli) {
+        void vscode.window.showErrorMessage('No BCL CLI found. Set "bcl.cli.path", or build one with "make vscode-extension-lsp" in the BCL repository.');
+        return;
+    }
     const terminal = vscode.window.createTerminal({ name: 'BCL' });
     terminal.show();
     terminal.sendText([shellQuote(cli), ...args.map(shellQuote)].join(' '));
+}
+/**
+ * Finds the bcl CLI: the setting, then the binary bundled with the extension,
+ * then PATH. Resolving the bundled copy is what lets compile/validate/explain
+ * work in a window that is not a BCL checkout.
+ */
+function resolveCli() {
+    const configured = vscode.workspace.getConfiguration('bcl').get('cli.path') || '';
+    if (configured && configured !== 'bcl') {
+        return configured;
+    }
+    if (extensionContext) {
+        const exe = process.platform === 'win32' ? 'bcl.exe' : 'bcl';
+        for (const candidate of bundledBinaryPaths(extensionContext, exe)) {
+            if (isExecutableFile(candidate)) {
+                return candidate;
+            }
+        }
+    }
+    return findOnPath(process.platform === 'win32' ? 'bcl.exe' : 'bcl') ?? (configured || undefined);
 }
 async function runRouteCoverage() {
     const definition = await promptDefinitionName();
@@ -240,11 +526,6 @@ async function runStateCompaction() {
     catch (error) {
         reportError('Condition state compaction failed', error);
     }
-}
-async function openWorkspaceFile(relativePath) {
-    const uri = vscode.Uri.file(path.join(workspacePath(), relativePath));
-    const document = await vscode.workspace.openTextDocument(uri);
-    await vscode.window.showTextDocument(document);
 }
 async function conditionRequest(method, pathPart, body) {
     const cfg = conditionConfig();

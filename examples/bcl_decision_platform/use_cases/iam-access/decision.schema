@@ -14,4 +14,3 @@ schema iam_access {
     required action string
   }
 }
-

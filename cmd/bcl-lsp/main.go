@@ -10,10 +10,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+	"unicode/utf8"
 
 	"github.com/oarkflow/bcl"
 )
@@ -27,6 +30,59 @@ type server struct {
 	recent                []string
 	rootURI               string
 	customHoverDetailMode bool
+
+	// deps maps an analyzed document to the files it pulls in, and importers is
+	// its inverse. Keeping the graph in memory is what makes a keystroke cost one
+	// file's analysis instead of re-parsing every indexed file from disk.
+	deps      map[string][]string
+	importers map[string][]string
+	// owners caches ownerEntrypoint per path: resolving it walks parent
+	// directories parsing candidate entrypoints, far too expensive per keystroke.
+	owners map[string]string
+	// pending holds debounce timers so a burst of keystrokes analyzes once.
+	pending map[string]*time.Timer
+	// suppressVersion caches whether a file is exempt from the missing-version
+	// warning, a question that used to re-parse the workspace on every edit.
+	suppressVersion map[string]bool
+}
+
+// initMaps makes a directly-constructed server usable. Callers hold s.mu.
+func (s *server) initMaps() {
+	if s.files == nil {
+		s.files = map[string]string{}
+	}
+	if s.index == nil {
+		s.index = map[string]*bcl.Analysis{}
+	}
+	if s.deps == nil {
+		s.deps = map[string][]string{}
+	}
+	if s.importers == nil {
+		s.importers = map[string][]string{}
+	}
+	if s.owners == nil {
+		s.owners = map[string]string{}
+	}
+	if s.pending == nil {
+		s.pending = map[string]*time.Timer{}
+	}
+	if s.suppressVersion == nil {
+		s.suppressVersion = map[string]bool{}
+	}
+}
+
+func newServer(in io.Reader, out io.Writer) *server {
+	return &server{
+		in:              bufio.NewReader(in),
+		out:             out,
+		files:           map[string]string{},
+		index:           map[string]*bcl.Analysis{},
+		deps:            map[string][]string{},
+		importers:       map[string][]string{},
+		owners:          map[string]string{},
+		pending:         map[string]*time.Timer{},
+		suppressVersion: map[string]bool{},
+	}
 }
 
 type rpcMessage struct {
@@ -58,7 +114,7 @@ type rangeLSP struct {
 }
 
 func main() {
-	s := &server{in: bufio.NewReader(os.Stdin), out: os.Stdout, files: map[string]string{}, index: map[string]*bcl.Analysis{}}
+	s := newServer(os.Stdin, os.Stdout)
 	if err := s.serve(); err != nil && err != io.EOF {
 		fmt.Fprintln(os.Stderr, err)
 	}
@@ -68,6 +124,12 @@ func (s *server) serve() error {
 	for {
 		msg, err := readMessage(s.in)
 		if err != nil {
+			// A single unparseable body must not take the server down: the frame was
+			// consumed, so the stream is still aligned and the next message is fine.
+			if errors.Is(err, errBadMessageBody) {
+				logf("skipping unparseable message: %v", err)
+				continue
+			}
 			return err
 		}
 		if msg.Method == "" {
@@ -77,7 +139,29 @@ func (s *server) serve() error {
 	}
 }
 
+// handle runs one message with a panic guard. An editor keeps the server alive
+// for a whole session, so a panic on one half-typed document must degrade to a
+// single failed request instead of killing the process and every open file's
+// diagnostics with it.
 func (s *server) handle(msg rpcMessage) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		logf("recovered panic handling %s: %v\n%s", msg.Method, r, debug.Stack())
+		if msg.ID != nil {
+			s.respondError(msg.ID, -32603, fmt.Sprintf("internal error handling %s", msg.Method))
+		}
+	}()
+	s.handleMessage(msg)
+}
+
+func logf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "bcl-lsp: "+format+"\n", args...)
+}
+
+func (s *server) handleMessage(msg rpcMessage) {
 	switch msg.Method {
 	case "initialize":
 		var p struct {
@@ -91,16 +175,19 @@ func (s *server) handle(msg rpcMessage) {
 		s.customHoverDetailMode = p.InitializationOptions.UseCustomHoverDetail
 		s.respond(msg.ID, map[string]any{
 			"capabilities": map[string]any{
-				"textDocumentSync":           2,
-				"completionProvider":         map[string]any{"resolveProvider": false, "triggerCharacters": []string{".", "\"", " "}},
-				"hoverProvider":              true,
-				"definitionProvider":         true,
-				"referencesProvider":         true,
-				"renameProvider":             true,
-				"documentSymbolProvider":     true,
-				"workspaceSymbolProvider":    true,
-				"documentFormattingProvider": true,
-				"codeActionProvider":         true,
+				"textDocumentSync":                2,
+				"completionProvider":              map[string]any{"resolveProvider": false, "triggerCharacters": []string{".", "\"", " "}},
+				"hoverProvider":                   true,
+				"definitionProvider":              true,
+				"referencesProvider":              true,
+				"renameProvider":                  true,
+				"documentSymbolProvider":          true,
+				"workspaceSymbolProvider":         true,
+				"documentFormattingProvider":      true,
+				"documentRangeFormattingProvider": true,
+				"foldingRangeProvider":            true,
+				"documentLinkProvider":            map[string]any{"resolveProvider": false},
+				"codeActionProvider":              true,
 				"semanticTokensProvider": map[string]any{
 					"legend": map[string]any{
 						"tokenTypes":     semanticTokenTypes,
@@ -129,20 +216,25 @@ func (s *server) handle(msg rpcMessage) {
 	case "textDocument/didChange":
 		var p struct {
 			TextDocument   textDocumentIdentifier `json:"textDocument"`
-			ContentChanges []struct {
-				Text string `json:"text"`
-			} `json:"contentChanges"`
+			ContentChanges []contentChange        `json:"contentChanges"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
-		if len(p.ContentChanges) > 0 {
-			s.setFile(p.TextDocument.URI, p.ContentChanges[len(p.ContentChanges)-1].Text)
+		if len(p.ContentChanges) == 0 {
+			return
 		}
+		text := s.fileText(p.TextDocument.URI)
+		for _, change := range p.ContentChanges {
+			text = applyContentChange(text, change)
+		}
+		s.storeFile(p.TextDocument.URI, text)
+		s.scheduleAnalysis(p.TextDocument.URI)
 	case "textDocument/didSave":
 		var p struct {
 			TextDocument textDocumentIdentifier `json:"textDocument"`
 			Text         string                 `json:"text,omitempty"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
+		s.invalidateDiskCaches()
 		if p.Text != "" {
 			s.setFile(p.TextDocument.URI, p.Text)
 		} else {
@@ -205,9 +297,30 @@ func (s *server) handle(msg rpcMessage) {
 	case "textDocument/formatting":
 		var p struct {
 			TextDocument textDocumentIdentifier `json:"textDocument"`
+			Options      formattingOptions      `json:"options"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
-		s.respond(msg.ID, s.formatEdits(p.TextDocument.URI))
+		s.respond(msg.ID, s.formatEdits(p.TextDocument.URI, p.Options))
+	case "textDocument/rangeFormatting":
+		var p struct {
+			TextDocument textDocumentIdentifier `json:"textDocument"`
+			Range        rangeLSP               `json:"range"`
+			Options      formattingOptions      `json:"options"`
+		}
+		_ = json.Unmarshal(msg.Params, &p)
+		s.respond(msg.ID, s.rangeFormatEdits(p.TextDocument.URI, p.Range, p.Options))
+	case "textDocument/foldingRange":
+		var p struct {
+			TextDocument textDocumentIdentifier `json:"textDocument"`
+		}
+		_ = json.Unmarshal(msg.Params, &p)
+		s.respond(msg.ID, s.foldingRanges(p.TextDocument.URI))
+	case "textDocument/documentLink":
+		var p struct {
+			TextDocument textDocumentIdentifier `json:"textDocument"`
+		}
+		_ = json.Unmarshal(msg.Params, &p)
+		s.respond(msg.ID, s.documentLinks(p.TextDocument.URI))
 	case "textDocument/rename":
 		s.rename(msg)
 	case "textDocument/codeAction":
@@ -218,8 +331,18 @@ func (s *server) handle(msg rpcMessage) {
 		}
 		_ = json.Unmarshal(msg.Params, &p)
 		s.respond(msg.ID, map[string]any{"data": s.semanticTokens(p.TextDocument.URI)})
+	case "workspace/didChangeWatchedFiles":
+		// A BCL file changed outside the editor; everything derived from disk is stale.
+		s.invalidateDiskCaches()
 	case "bcl/recentSymbols":
 		s.respond(msg.ID, s.recentSymbols())
+	case "bcl/analyzeNow":
+		// Internal: a debounced analysis firing. Routed through handle so it gets
+		// the same panic guard as any client request.
+		var uri string
+		_ = json.Unmarshal(msg.Params, &uri)
+		s.analyzeURI(uri)
+		s.reanalyzeDependents(uri)
 	default:
 		if msg.ID != nil {
 			s.respondError(msg.ID, -32601, "method not found")
@@ -228,11 +351,42 @@ func (s *server) handle(msg rpcMessage) {
 }
 
 func (s *server) setFile(uri, text string) {
-	s.mu.Lock()
-	s.files[uri] = text
-	s.mu.Unlock()
+	s.storeFile(uri, text)
 	s.analyzeURI(uri)
 	s.reanalyzeDependents(uri)
+}
+
+// storeFile records the new text without analyzing it. Typing must never wait on
+// analysis: the document is what later requests read, and analysis is scheduled.
+func (s *server) storeFile(uri, text string) {
+	s.mu.Lock()
+	s.initMaps()
+	s.files[uri] = text
+	delete(s.owners, uriPath(uri))
+	s.mu.Unlock()
+}
+
+// analysisDebounce is how long a document rests before it is analyzed. Editors
+// send one change per character; analyzing each one wastes the whole budget on
+// intermediate states nobody sees.
+const analysisDebounce = 150 * time.Millisecond
+
+// scheduleAnalysis coalesces a burst of edits into a single analysis pass.
+// On-demand requests (completion, hover, formatting) still analyze synchronously,
+// so a debounced document is never stale when something actually reads it.
+func (s *server) scheduleAnalysis(uri string) {
+	s.mu.Lock()
+	s.initMaps()
+	if timer, ok := s.pending[uri]; ok {
+		timer.Stop()
+	}
+	s.pending[uri] = time.AfterFunc(analysisDebounce, func() {
+		s.mu.Lock()
+		delete(s.pending, uri)
+		s.mu.Unlock()
+		s.handle(rpcMessage{Method: "bcl/analyzeNow", Params: json.RawMessage(strconv.Quote(uri))})
+	})
+	s.mu.Unlock()
 }
 
 func (s *server) analyzeURI(uri string) *bcl.Analysis {
@@ -259,7 +413,9 @@ func (s *server) analyzeURI(uri string) *bcl.Analysis {
 	if !samePath(analysisPath, path) {
 		partial = true
 	}
-	a, diags := bcl.AnalyzeFile(analysisPath, []byte(text), &bcl.Options{Strict: true, Partial: partial, ResolveImports: true, BaseDir: filepath.Dir(analysisPath)})
+	// Completions are skipped here and computed when the client actually asks:
+	// analysis runs on every edit, completion requests are comparatively rare.
+	a, diags := bcl.AnalyzeFile(analysisPath, []byte(text), &bcl.Options{Strict: true, Partial: partial, ResolveImports: true, BaseDir: filepath.Dir(analysisPath), SkipCompletions: true})
 	includeDiags := missingIncludeDiagnostics(analysisPath, []byte(text))
 	if len(includeDiags) > 0 {
 		diags = replaceRawMissingFileDiagnostics(diags, includeDiags)
@@ -267,13 +423,38 @@ func (s *server) analyzeURI(uri string) *bcl.Analysis {
 		a.Diagnostics = diags
 	}
 	s.mu.Lock()
+	s.initMaps()
 	s.index[uri] = a
 	if analysisURI != uri {
 		s.index[analysisURI] = a
 	}
 	s.mu.Unlock()
-	s.publishDiagnostics(analysisURI, diags, append([]string{path}, sourceGraphPaths(analysisPath)...))
+	graph := sourceGraphPaths(analysisPath)
+	s.recordDependencies(uri, graph)
+	if analysisURI != uri {
+		s.recordDependencies(analysisURI, graph)
+	}
+	s.publishDiagnostics(analysisURI, diags, append([]string{path}, graph...))
 	return a
+}
+
+// maxIndexedFiles bounds the startup scan. Indexing exists to make workspace
+// symbols and cross-file references work, not to parse an entire monorepo before
+// the editor becomes responsive.
+const maxIndexedFiles = 2000
+
+// skippedIndexDirs are never worth walking: they hold dependencies and build
+// output, not the workspace's own BCL sources.
+var skippedIndexDirs = map[string]bool{
+	"node_modules": true,
+	"vendor":       true,
+	"dist":         true,
+	"out":          true,
+	"target":       true,
+}
+
+func skipIndexDir(name string) bool {
+	return strings.HasPrefix(name, ".") || skippedIndexDirs[name]
 }
 
 func (s *server) indexWorkspace() {
@@ -281,10 +462,25 @@ func (s *server) indexWorkspace() {
 	if root == "" {
 		return
 	}
+	indexed := 0
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !isBCLSourceFile(path) {
+		if err != nil {
+			return nil //nolint:nilerr // an unreadable subtree is skipped, not fatal
+		}
+		if d.IsDir() {
+			if path != root && skipIndexDir(d.Name()) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
+		if !isBCLSourceFile(path) {
+			return nil
+		}
+		if indexed >= maxIndexedFiles {
+			logf("workspace index stopped at %d files; workspace symbols may be incomplete", maxIndexedFiles)
+			return filepath.SkipAll
+		}
+		indexed++
 		s.analyzeURI(pathURI(path))
 		return nil
 	})
@@ -304,12 +500,16 @@ func (s *server) publishDiagnostics(uri string, diags []bcl.Diagnostic, clearPat
 	for target, targetDiags := range byURI {
 		items := make([]any, 0, len(targetDiags))
 		for _, d := range targetDiags {
-			items = append(items, map[string]any{
+			item := map[string]any{
 				"range":    lspRange(d.Span),
 				"severity": severity(d.Severity),
 				"source":   "bcl",
 				"message":  d.Message,
-			})
+			}
+			if d.Code != "" {
+				item["code"] = d.Code
+			}
+			items = append(items, item)
 		}
 		s.notify("textDocument/publishDiagnostics", map[string]any{"uri": target, "diagnostics": items})
 	}
@@ -319,6 +519,25 @@ func (s *server) ownerEntrypoint(path string) string {
 	if path == "" || !isBCLSourceFile(path) {
 		return ""
 	}
+	s.mu.Lock()
+	s.initMaps()
+	cached, ok := s.owners[path]
+	s.mu.Unlock()
+	if ok {
+		return cached
+	}
+	owner := s.resolveOwnerEntrypoint(path)
+	s.mu.Lock()
+	s.initMaps()
+	s.owners[path] = owner
+	s.mu.Unlock()
+	return owner
+}
+
+// resolveOwnerEntrypoint finds the entrypoint document that pulls in path, by
+// walking up to the workspace root and parsing each candidate's source graph.
+// Expensive, hence the cache in ownerEntrypoint.
+func (s *server) resolveOwnerEntrypoint(path string) string {
 	abs, err := filepath.Abs(path)
 	if err == nil {
 		path = abs
@@ -456,14 +675,134 @@ func (s *server) rename(msg rpcMessage) {
 	s.respond(msg.ID, map[string]any{"changes": out})
 }
 
-func (s *server) formatEdits(uri string) []any {
+// formattingOptions is the subset of the LSP FormattingOptions the formatter
+// understands, so a document follows the editor's own indentation settings.
+type formattingOptions struct {
+	TabSize      int  `json:"tabSize"`
+	InsertSpaces bool `json:"insertSpaces"`
+}
+
+func (o formattingOptions) format() bcl.FormatOptions {
+	return bcl.FormatOptions{IndentWidth: o.TabSize, UseTabs: o.TabSize > 0 && !o.InsertSpaces}
+}
+
+// formatOptionsFor prefers the project's .bclfmt over the editor's own settings:
+// a file checked into the repository is a deliberate decision by the team, while
+// the editor's tab size is a personal one, and formatting is shared output.
+func (s *server) formatOptionsFor(uri string, client formattingOptions) bcl.FormatOptions {
+	opts := client.format()
+	project, path, err := bcl.FindFormatConfig(filepath.Dir(uriPath(uri)))
+	if err != nil {
+		logf("ignoring %s: %v", path, err)
+		return opts
+	}
+	if path == "" {
+		return opts
+	}
+	if project.IndentWidth > 0 {
+		opts.IndentWidth = project.IndentWidth
+	}
+	opts.UseTabs = project.UseTabs
+	opts.KeepBlankLines = project.KeepBlankLines
+	return opts
+}
+
+func (s *server) formatEdits(uri string, opts formattingOptions) []any {
 	text := s.fileText(uri)
-	out, err := bcl.Format([]byte(text))
+	out, err := bcl.FormatWithOptions([]byte(text), s.formatOptionsFor(uri, opts))
 	if err != nil {
 		return nil
 	}
 	lines := strings.Count(text, "\n") + 1
 	return []any{map[string]any{"range": map[string]any{"start": position{}, "end": position{Line: lines, Character: 0}}, "newText": string(out)}}
+}
+
+// rangeFormatEdits formats only the lines the selection touches. Formatting is
+// line-order preserving, so each output line carries the source line it came
+// from and the edit covers exactly the source lines that produced the selection.
+func (s *server) rangeFormatEdits(uri string, rng rangeLSP, opts formattingOptions) []any {
+	text := s.fileText(uri)
+	lines, err := bcl.FormatLines([]byte(text), s.formatOptionsFor(uri, opts))
+	if err != nil {
+		return nil
+	}
+	first, last := rng.Start.Line+1, rng.End.Line+1
+	if rng.End.Character == 0 && last > first {
+		last--
+	}
+	var selected []string
+	startLine, endLine := 0, 0
+	for _, ln := range lines {
+		if ln.End < first || ln.Start > last {
+			continue
+		}
+		if startLine == 0 || ln.Start < startLine {
+			startLine = ln.Start
+		}
+		if ln.End > endLine {
+			endLine = ln.End
+		}
+		selected = append(selected, ln.Text)
+	}
+	if len(selected) == 0 {
+		return nil
+	}
+	eol := bcl.LineEnding([]byte(text))
+	newText := strings.Join(selected, eol) + eol
+	return []any{map[string]any{
+		"range":   rangeLSP{Start: position{Line: startLine - 1}, End: position{Line: endLine}},
+		"newText": newText,
+	}}
+}
+
+// foldingRanges folds by real block structure rather than by indentation, so a
+// one-line block is not foldable and a block whose body is indented oddly still
+// is. LSP line numbers are zero-based.
+func (s *server) foldingRanges(uri string) []any {
+	ranges := bcl.FoldingRanges([]byte(s.fileText(uri)))
+	out := make([]any, 0, len(ranges))
+	for _, r := range ranges {
+		item := map[string]any{"startLine": r.Start - 1, "endLine": r.End - 1}
+		if r.Kind == bcl.FoldComment || r.Kind == bcl.FoldImports {
+			item["kind"] = string(r.Kind)
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// documentLinks makes every import path clickable. It reads the tokens rather
+// than the analysis because import resolution replaces each import with the
+// nodes it pulled in, leaving nothing to link; tokens also keep working while
+// the document is mid-edit. A glob or a missing file yields no link rather than
+// a broken one.
+func (s *server) documentLinks(uri string) []any {
+	path := uriPath(uri)
+	toks, _ := bcl.TokenizeFile(path, []byte(s.fileText(uri)))
+	base := filepath.Dir(path)
+	var out []any
+	for i, tok := range toks {
+		if tok.Text != "import" || i+1 >= len(toks) {
+			continue
+		}
+		next := toks[i+1]
+		target := next.Text
+		if target == "" || strings.ContainsAny(target, "*?[") {
+			continue
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(base, target)
+		}
+		if info, err := os.Stat(target); err != nil || info.IsDir() {
+			continue
+		}
+		out = append(out, map[string]any{
+			"range":   lspRange(next.Span),
+			"target":  pathURI(target),
+			"tooltip": "Open " + filepath.Base(target),
+		})
+	}
+	return out
 }
 
 func (s *server) semanticTokens(uri string) []int {
@@ -666,29 +1005,58 @@ func lspContains(sp bcl.Span, line, col int) bool {
 	return true
 }
 
+// reanalyzeDependents re-runs only the documents that actually import the changed
+// file, using the dependency graph recorded when each document was analyzed.
 func (s *server) reanalyzeDependents(changedURI string) {
 	changed := uriPath(changedURI)
 	s.mu.Lock()
-	uris := make([]string, 0, len(s.index))
-	for uri := range s.index {
-		if uri != changedURI {
-			uris = append(uris, uri)
+	targets := make([]string, 0, 4)
+	seen := map[string]bool{changedURI: true}
+	for dep, uris := range s.importers {
+		if !samePath(changed, dep) && !pathWithin(changed, dep) {
+			continue
+		}
+		for _, uri := range uris {
+			if !seen[uri] {
+				seen[uri] = true
+				targets = append(targets, uri)
+			}
 		}
 	}
 	s.mu.Unlock()
-	for _, uri := range uris {
-		path := uriPath(uri)
-		doc, err := bcl.ParsePath(path)
-		if err != nil {
-			continue
-		}
-		base := filepath.Dir(path)
-		for _, dep := range append(importedPaths(doc.Items, base), moduleSourceDirs(doc.Items, base)...) {
-			if samePath(changed, dep) || pathWithin(changed, dep) {
-				s.analyzeURI(uri)
-				break
+	for _, uri := range targets {
+		s.analyzeURI(uri)
+	}
+}
+
+// recordDependencies stores the files an analyzed document pulls in, replacing
+// whatever the previous pass recorded for it.
+func (s *server) recordDependencies(uri string, deps []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.initMaps()
+	for _, old := range s.deps[uri] {
+		if list := s.importers[old]; len(list) > 0 {
+			kept := list[:0]
+			for _, candidate := range list {
+				if candidate != uri {
+					kept = append(kept, candidate)
+				}
+			}
+			if len(kept) == 0 {
+				delete(s.importers, old)
+			} else {
+				s.importers[old] = kept
 			}
 		}
+	}
+	if len(deps) == 0 {
+		delete(s.deps, uri)
+		return
+	}
+	s.deps[uri] = deps
+	for _, dep := range deps {
+		s.importers[dep] = append(s.importers[dep], uri)
 	}
 }
 
@@ -704,14 +1072,28 @@ func pathWithinOrSame(path, dir string) bool {
 	return pathWithin(path, dir)
 }
 
+// lspDiagnostic is the subset of a client-sent diagnostic the code actions need.
+// Code is what a fix keys on: message wording may change, a code may not.
+type lspDiagnostic struct {
+	Message string   `json:"message"`
+	Range   rangeLSP `json:"range"`
+	Code    string   `json:"code"`
+}
+
+// is reports whether the diagnostic carries this code, falling back to the
+// message for a diagnostic that has not been classified yet.
+func (d lspDiagnostic) is(code string, messageFallback string) bool {
+	if d.Code != "" {
+		return d.Code == code
+	}
+	return messageFallback != "" && strings.Contains(d.Message, messageFallback)
+}
+
 func (s *server) codeActions(raw json.RawMessage) []any {
 	var p struct {
 		TextDocument textDocumentIdentifier `json:"textDocument"`
 		Context      struct {
-			Diagnostics []struct {
-				Message string   `json:"message"`
-				Range   rangeLSP `json:"range"`
-			} `json:"diagnostics"`
+			Diagnostics []lspDiagnostic `json:"diagnostics"`
 		} `json:"context"`
 	}
 	_ = json.Unmarshal(raw, &p)
@@ -721,7 +1103,7 @@ func (s *server) codeActions(raw json.RawMessage) []any {
 	}
 	appendLine := strings.Count(s.fileText(p.TextDocument.URI), "\n") + 1
 	for _, d := range p.Context.Diagnostics {
-		if strings.Contains(d.Message, "missing required input") {
+		if d.is(bcl.CodeModuleInputs, "missing required input") {
 			if input := quotedTail(d.Message); input != "" {
 				actions = append(actions, map[string]any{
 					"title":       fmt.Sprintf("Add module input %q", input),
@@ -731,7 +1113,7 @@ func (s *server) codeActions(raw json.RawMessage) []any {
 				})
 			}
 		}
-		if strings.Contains(d.Message, "unknown reference") {
+		if d.is(bcl.CodeUnknownReference, "unknown reference") {
 			if ref := quotedTail(d.Message); ref != "" {
 				actions = append(actions, createReferenceAction(p.TextDocument.URI, ref, d, appendLine))
 			}
@@ -746,7 +1128,7 @@ func (s *server) codeActions(raw json.RawMessage) []any {
 				actions = append(actions, appendBlockAction(p.TextDocument.URI, fmt.Sprintf("Create reason code %q", code), fmt.Sprintf("\nreason_code_catalog \"default\" {\n  code %q { description \"description\" }\n}\n", code), d, appendLine))
 			}
 		}
-		if strings.Contains(d.Message, "missing required field") {
+		if d.is(bcl.CodeMissingRequiredField, "missing required field") && strings.Contains(d.Message, "missing required field") {
 			if field := quotedTail(d.Message); field != "" {
 				actions = append(actions, map[string]any{
 					"title":       fmt.Sprintf("Insert required field %q", field),
@@ -755,6 +1137,50 @@ func (s *server) codeActions(raw json.RawMessage) []any {
 					"edit":        lineInsertEdit(p.TextDocument.URI, d.Range.End.Line+1, fmt.Sprintf("  %s value\n", field)),
 				})
 			}
+		}
+		if d.is(bcl.CodeUnused, "unused") {
+			actions = append(actions, map[string]any{
+				"title":       "Remove the unused declaration",
+				"kind":        "quickfix",
+				"diagnostics": []any{d},
+				"edit":        lineDeleteEdit(p.TextDocument.URI, d.Range.Start.Line, d.Range.End.Line),
+			})
+		}
+		if d.is(bcl.CodeUnknownField, "unknown field") {
+			actions = append(actions, map[string]any{
+				"title":       "Remove the unknown field",
+				"kind":        "quickfix",
+				"diagnostics": []any{d},
+				"edit":        lineDeleteEdit(p.TextDocument.URI, d.Range.Start.Line, d.Range.End.Line),
+			})
+		}
+		if d.is(bcl.CodeDuplicateDeclaration, "duplicate") {
+			if name := quotedTail(d.Message); name != "" {
+				// Renaming keeps both declarations: whichever one is wrong, the author
+				// can see it. Deleting would silently discard whatever it held.
+				actions = append(actions, map[string]any{
+					"title":       fmt.Sprintf("Rename this declaration to %q", name+"_2"),
+					"kind":        "quickfix",
+					"diagnostics": []any{d},
+					"edit":        renameInLineEdit(s.fileText(p.TextDocument.URI), p.TextDocument.URI, d.Range.Start.Line, name, name+"_2"),
+				})
+			}
+		}
+		if d.is(bcl.CodeDeprecated, "deprecated") {
+			actions = append(actions, map[string]any{
+				"title":       "Add replaced_by",
+				"kind":        "quickfix",
+				"diagnostics": []any{d},
+				"edit":        lineInsertEdit(p.TextDocument.URI, d.Range.Start.Line+1, "  replaced_by \"\"\n"),
+			})
+		}
+		if d.is(bcl.CodeMatchNoCatchAll, "no catch-all case") {
+			actions = append(actions, map[string]any{
+				"title":       "Add a catch-all case",
+				"kind":        "quickfix",
+				"diagnostics": []any{d},
+				"edit":        lineInsertEdit(p.TextDocument.URI, d.Range.End.Line+1, "  case ANY => null\n"),
+			})
 		}
 		if strings.Contains(d.Message, "sensitive") {
 			actions = append(actions, map[string]any{
@@ -765,7 +1191,7 @@ func (s *server) codeActions(raw json.RawMessage) []any {
 			})
 		}
 	}
-	if hasDiagnostic(p.Context.Diagnostics, "missing bcl version declaration") {
+	if hasCode(p.Context.Diagnostics, bcl.CodeMissingVersion, "missing bcl version declaration") {
 		edit := map[string]any{
 			"changes": map[string]any{
 				p.TextDocument.URI: []any{
@@ -784,6 +1210,40 @@ func (s *server) codeActions(raw json.RawMessage) []any {
 		}}, actions...)
 	}
 	return actions
+}
+
+// lineDeleteEdit removes whole lines, which is what "remove this declaration"
+// means for a line-oriented language: leaving an empty line behind would be a
+// second edit the author has to make.
+func lineDeleteEdit(uri string, startLine, endLine int) map[string]any {
+	if endLine < startLine {
+		endLine = startLine
+	}
+	return map[string]any{"changes": map[string]any{
+		uri: []any{map[string]any{
+			"range":   rangeLSP{Start: position{Line: startLine, Character: 0}, End: position{Line: endLine + 1, Character: 0}},
+			"newText": "",
+		}},
+	}}
+}
+
+// renameInLineEdit replaces the first occurrence of old on one line. The
+// diagnostic points at the declaration, so that occurrence is its name.
+func renameInLineEdit(text, uri string, line int, old, replacement string) map[string]any {
+	lines := strings.Split(text, "\n")
+	if line < 0 || line >= len(lines) {
+		return map[string]any{"changes": map[string]any{uri: []any{}}}
+	}
+	col := strings.Index(lines[line], old)
+	if col < 0 {
+		return map[string]any{"changes": map[string]any{uri: []any{}}}
+	}
+	return map[string]any{"changes": map[string]any{
+		uri: []any{map[string]any{
+			"range":   rangeLSP{Start: position{Line: line, Character: col}, End: position{Line: line, Character: col + len(old)}},
+			"newText": replacement,
+		}},
+	}}
 }
 
 func createReferenceAction(uri, ref string, diag any, line int) map[string]any {
@@ -837,12 +1297,9 @@ func quotedTail(s string) string {
 	}
 }
 
-func hasDiagnostic(diags []struct {
-	Message string   `json:"message"`
-	Range   rangeLSP `json:"range"`
-}, message string) bool {
+func hasCode(diags []lspDiagnostic, code, messageFallback string) bool {
 	for _, d := range diags {
-		if d.Message == message {
+		if d.is(code, messageFallback) {
 			return true
 		}
 	}
@@ -925,8 +1382,65 @@ func readMessage(r *bufio.Reader) (rpcMessage, error) {
 		return rpcMessage{}, err
 	}
 	var msg rpcMessage
-	err := json.Unmarshal(body, &msg)
-	return msg, err
+	if err := json.Unmarshal(body, &msg); err != nil {
+		return rpcMessage{}, fmt.Errorf("%w: %v", errBadMessageBody, err)
+	}
+	return msg, nil
+}
+
+// errBadMessageBody marks a frame whose header was read correctly but whose JSON
+// body was not, which is recoverable: the stream is still frame-aligned.
+var errBadMessageBody = errors.New("malformed message body")
+
+// contentChange is one textDocument/didChange delta. Range is nil for a
+// whole-document replacement.
+type contentChange struct {
+	Range *rangeLSP `json:"range"`
+	Text  string    `json:"text"`
+}
+
+// applyContentChange applies one incremental change to text. The server
+// advertises incremental sync, so every keystroke arrives as a range delta and
+// must be spliced into the document rather than replacing it.
+func applyContentChange(text string, change contentChange) string {
+	if change.Range == nil {
+		return change.Text
+	}
+	start := offsetAt(text, change.Range.Start)
+	end := offsetAt(text, change.Range.End)
+	if end < start {
+		start, end = end, start
+	}
+	var b strings.Builder
+	b.Grow(len(text) - (end - start) + len(change.Text))
+	b.WriteString(text[:start])
+	b.WriteString(change.Text)
+	b.WriteString(text[end:])
+	return b.String()
+}
+
+// offsetAt converts an LSP position to a byte offset. LSP columns count UTF-16
+// code units, so anything outside the BMP (an emoji in a description string)
+// advances the column by two.
+func offsetAt(text string, pos position) int {
+	i := 0
+	for line := 0; line < pos.Line; line++ {
+		nl := strings.IndexByte(text[i:], '\n')
+		if nl < 0 {
+			return len(text)
+		}
+		i += nl + 1
+	}
+	for units := 0; units < pos.Character && i < len(text) && text[i] != '\n'; {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		i += size
+		if r > 0xFFFF {
+			units += 2
+		} else {
+			units++
+		}
+	}
+	return i
 }
 
 func (s *server) respond(id any, result any) {
@@ -974,11 +1488,36 @@ func pathURI(path string) string {
 	return u.String()
 }
 
+// suppressVersionWarning decides whether "missing bcl version declaration" makes
+// sense for this file. The answer only changes when files change on disk, so it
+// is memoized: computing it used to walk and re-parse the whole workspace on
+// every keystroke, which dominated the cost of editing a document.
 func (s *server) suppressVersionWarning(path string) bool {
 	if filepath.Ext(path) == ".schema" {
 		return true
 	}
-	return s.isPartialBCLFile(path) || s.importsVersionDeclaration(path)
+	s.mu.Lock()
+	cached, ok := s.suppressVersion[path]
+	s.mu.Unlock()
+	if ok {
+		return cached
+	}
+	result := s.isPartialBCLFile(path) || s.importsVersionDeclaration(path)
+	s.mu.Lock()
+	s.initMaps()
+	s.suppressVersion[path] = result
+	s.mu.Unlock()
+	return result
+}
+
+// invalidateDiskCaches drops everything derived from files on disk. Called when a
+// document is saved or the workspace changes underneath us.
+func (s *server) invalidateDiskCaches() {
+	s.mu.Lock()
+	s.suppressVersion = map[string]bool{}
+	s.owners = map[string]string{}
+	s.mu.Unlock()
+	sourceGraphCache.Clear()
 }
 
 func (s *server) isPartialBCLFile(path string) bool {
@@ -998,9 +1537,28 @@ func (s *server) isPartialBCLFile(path string) bool {
 			return true
 		}
 	}
+	// The dependency graph already records what every analyzed document pulls in,
+	// so consult it before falling back to walking the workspace.
+	s.mu.Lock()
+	for dep := range s.importers {
+		if samePath(abs, dep) {
+			s.mu.Unlock()
+			return true
+		}
+	}
+	s.mu.Unlock()
 	var partial bool
 	_ = filepath.WalkDir(root, func(candidate string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !isBCLSourceFile(candidate) || partial {
+		if err != nil || partial {
+			return nil
+		}
+		if d.IsDir() {
+			if candidate != root && skipIndexDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !isBCLSourceFile(candidate) {
 			return nil
 		}
 		doc, err := bcl.ParsePath(candidate)
@@ -1102,7 +1660,46 @@ func sourceGraphContains(rootPath, targetPath string) bool {
 	return false
 }
 
+// sourceGraphCache memoizes import-graph walks. The walk reads files from disk,
+// so its result only changes when a file on disk changes - not on every
+// keystroke in an unsaved buffer, which is when it used to be recomputed.
+var sourceGraphCache sync.Map // rootPath -> *sourceGraphEntry
+
+type sourceGraphEntry struct {
+	stamp string
+	paths []string
+}
+
+// graphStamp fingerprints every file the previous walk visited, so an edit to
+// any of them invalidates the entry.
+func graphStamp(paths []string) string {
+	var b strings.Builder
+	for _, path := range paths {
+		b.WriteString(path)
+		if info, err := os.Stat(path); err == nil {
+			b.WriteByte(':')
+			b.WriteString(strconv.FormatInt(info.ModTime().UnixNano(), 10))
+			b.WriteByte(':')
+			b.WriteString(strconv.FormatInt(info.Size(), 10))
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 func sourceGraphPaths(rootPath string) []string {
+	if cached, ok := sourceGraphCache.Load(rootPath); ok {
+		entry := cached.(*sourceGraphEntry)
+		if entry.stamp == graphStamp(entry.paths) {
+			return entry.paths
+		}
+	}
+	paths := walkSourceGraph(rootPath)
+	sourceGraphCache.Store(rootPath, &sourceGraphEntry{stamp: graphStamp(paths), paths: paths})
+	return paths
+}
+
+func walkSourceGraph(rootPath string) []string {
 	seen := map[string]bool{}
 	var out []string
 	var walk func(string)

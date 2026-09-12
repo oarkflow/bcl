@@ -3250,7 +3250,43 @@ func toBool(v any) (bool, error) {
 	return convert.ToBool(v)
 }
 
+// equalLoose compares two values the way a configuration language should: across
+// numeric widths, and structurally for sequences and maps. Comparing sequences
+// element-wise matters because a list written in BCL arrives as []any while the
+// value it is compared against is typically a concrete []string - identical
+// content that a type-strict comparison would call different.
 func equalLoose(a, b any) bool {
+	if seqA, ok := valueSequence(a); ok {
+		seqB, ok := valueSequence(b)
+		if !ok || len(seqA) != len(seqB) {
+			return false
+		}
+		for i := range seqA {
+			if !equalLoose(seqA[i], seqB[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	if _, ok := valueSequence(b); ok {
+		return false
+	}
+	if mapA, ok := valueStringMap(a); ok {
+		mapB, ok := valueStringMap(b)
+		if !ok || len(mapA) != len(mapB) {
+			return false
+		}
+		for key, av := range mapA {
+			bv, present := mapB[key]
+			if !present || !equalLoose(av, bv) {
+				return false
+			}
+		}
+		return true
+	}
+	if _, ok := valueStringMap(b); ok {
+		return false
+	}
 	switch x := a.(type) {
 	case string:
 		y, ok := b.(string)
@@ -3319,6 +3355,48 @@ func equalLoose(a, b any) bool {
 		return false
 	}
 	return false
+}
+
+// valueSequence views any slice or array (except []byte, which reads as a scalar
+// blob) as []any without copying element values.
+func valueSequence(v any) ([]any, bool) {
+	switch x := v.(type) {
+	case nil:
+		return nil, false
+	case []any:
+		return x, true
+	case string, []byte:
+		return nil, false
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		out := make([]any, rv.Len())
+		for i := range out {
+			out[i] = rv.Index(i).Interface()
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// valueStringMap views any string-keyed map as map[string]any.
+func valueStringMap(v any) (map[string]any, bool) {
+	if v == nil {
+		return nil, false
+	}
+	if m, ok := v.(map[string]any); ok {
+		return m, true
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Map || rv.Type().Key().Kind() != reflect.String {
+		return nil, false
+	}
+	out := make(map[string]any, rv.Len())
+	for _, key := range rv.MapKeys() {
+		out[key.String()] = rv.MapIndex(key).Interface()
+	}
+	return out, true
 }
 
 func hasAny(container, needles any) bool {

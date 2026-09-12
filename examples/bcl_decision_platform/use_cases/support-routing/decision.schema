@@ -10,4 +10,3 @@ schema support_routing {
     required plan string enum ["free", "pro", "enterprise"]
   }
 }
-

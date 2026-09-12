@@ -23,8 +23,13 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 	aliases := map[string]string{}
 	predicates := map[string]*Block{}
 	refs := map[string][]Span{}
-	var walk func([]Node, int, string)
-	walk = func(nodes []Node, depth int, currentType string) {
+	// insideValue is set while descending through an object literal whose value was
+	// already walked by validateValueAdvanced. The structural descent still has to
+	// happen (blocks and spreads can be declared inside an object), but re-running
+	// the value walk on every nested assignment made this pass quadratic in nesting
+	// depth: linting 800 levels of nesting took over a second.
+	var walk func(nodes []Node, depth int, currentType string, insideValue bool)
+	walk = func(nodes []Node, depth int, currentType string, insideValue bool) {
 		for _, n := range nodes {
 			switch x := n.(type) {
 			case *ConstDecl:
@@ -68,7 +73,7 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 					}
 					predicates[x.ID] = x
 				}
-				walk(x.Body, depth+1, x.Type)
+				walk(x.Body, depth+1, x.Type, false)
 			case *Spread:
 				target := x.Target
 				if target != "" && !strings.Contains(target, ".") && currentType != "" {
@@ -77,16 +82,18 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 				if target != "" {
 					refs[target] = append(refs[target], x.Span)
 				}
-				walk(x.Body, depth, currentType)
+				walk(x.Body, depth, currentType, false)
 			case *Assignment:
-				validateValueAdvanced(x.Value, &diags, refs, constUses, setUses)
+				if !insideValue {
+					validateValueAdvanced(x.Value, &diags, refs, constUses, setUses)
+				}
 				if o, ok := x.Value.(*Object); ok {
-					walk(o.Fields, depth, currentType)
+					walk(o.Fields, depth, currentType, true)
 				}
 			}
 		}
 	}
-	walk(doc.Items, 0, "")
+	walk(doc.Items, 0, "", false)
 	validateSchemas(doc.Items, schemas, aliases, &diags)
 	validateReferences(blocks, refs, &diags)
 	validateCycles(blocks, refs, &diags)
@@ -99,7 +106,7 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 		diags = append(diags, strictDiagnostics(doc, opts)...)
 		validateUnknownSchemaFields(doc.Items, schemas, &diags)
 	}
-	return diags
+	return applyDiagnosticCodes(diags)
 }
 
 func collectSchemaNames(nodes []Node) map[string]bool {
@@ -136,20 +143,38 @@ func shouldCheckGlobalBlockDuplicate(blockType string, depth int, schemaNames ma
 func validatePredicates(nodes []Node, predicates map[string]*Block, diags *[]Diagnostic) {
 	graph := map[string][]string{}
 	var walk func([]Node, string)
+	// nestedBlocks finds blocks declared inside an object literal. It deliberately
+	// does not revisit assignment values: collectPredicateRefs already walked the
+	// whole value tree, and doing both made this pass quadratic in nesting depth.
+	var nestedBlocks func([]Node, string)
+	blockOwner := func(x *Block, owner string) string {
+		if x.Type == "predicate" {
+			return x.ID
+		}
+		return owner
+	}
 	walk = func(nodes []Node, owner string) {
 		for _, n := range nodes {
 			switch x := n.(type) {
 			case *Assignment:
 				collectPredicateRefs(x.Value, owner, predicates, graph, diags)
 				if obj, ok := x.Value.(*Object); ok {
-					walk(obj.Fields, owner)
+					nestedBlocks(obj.Fields, owner)
 				}
 			case *Block:
-				nextOwner := owner
-				if x.Type == "predicate" {
-					nextOwner = x.ID
+				walk(x.Body, blockOwner(x, owner))
+			}
+		}
+	}
+	nestedBlocks = func(nodes []Node, owner string) {
+		for _, n := range nodes {
+			switch x := n.(type) {
+			case *Assignment:
+				if obj, ok := x.Value.(*Object); ok {
+					nestedBlocks(obj.Fields, owner)
 				}
-				walk(x.Body, nextOwner)
+			case *Block:
+				walk(x.Body, blockOwner(x, owner))
 			}
 		}
 	}
@@ -708,7 +733,7 @@ func Lint(doc *Document, opts *Options) []Diagnostic {
 		diags = append(diags, Diagnostic{Severity: "warning", Message: "missing bcl version declaration", Span: doc.Span})
 	}
 	if opts != nil && opts.Partial {
-		return diags
+		return applyDiagnosticCodes(diags)
 	}
 	decls, uses := declarationUsage(doc)
 	for name, sp := range decls.consts {
@@ -721,34 +746,16 @@ func Lint(doc *Document, opts *Options) []Diagnostic {
 			diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("unused set %q", name), Span: sp})
 		}
 	}
-	return diags
+	return applyDiagnosticCodes(diags)
 }
 
-func validateValue(v Value, diags *[]Diagnostic) {
-	switch x := v.(type) {
-	case *Expr:
-		if x.Raw == "" {
-			*diags = append(*diags, Diagnostic{Severity: "error", Message: "empty expression", Span: x.Span})
-		}
-	case *List:
-		for _, item := range x.Items {
-			validateValue(item, diags)
-		}
-	case *Object:
-		for _, item := range x.Fields {
-			if a, ok := item.(*Assignment); ok {
-				validateValue(a.Value, diags)
-			}
-		}
-	case *Call:
-		for _, arg := range x.Args {
-			validateValue(arg, diags)
-		}
-	}
-}
-
+// validateValueAdvanced walks a value once, collecting reference and set usage
+// alongside the diagnostics. It deliberately does not delegate to a second
+// recursive pass: doing so re-walked every node's whole subtree at every level,
+// which made linting a deeply nested document cubic in its depth - 800 levels of
+// nesting (under 5 KB of source) took 1.2 seconds, and an editor lints on
+// every edit.
 func validateValueAdvanced(v Value, diags *[]Diagnostic, refs map[string][]Span, constUses map[string]int, setUses map[string]int) {
-	validateValue(v, diags)
 	switch x := v.(type) {
 	case *Reference:
 		if x.Path != "" {
@@ -756,6 +763,9 @@ func validateValueAdvanced(v Value, diags *[]Diagnostic, refs map[string][]Span,
 			constUses[x.Path]++
 		}
 	case *Expr:
+		if x.Raw == "" {
+			*diags = append(*diags, Diagnostic{Severity: "error", Message: "empty expression", Span: x.Span})
+		}
 		if _, err := CompileExpression(x.Raw); err != nil && !strings.Contains(err.Error(), "unexpected expression token") {
 			*diags = append(*diags, Diagnostic{Severity: "error", Message: "invalid expression: " + err.Error(), Span: x.Span})
 		}
@@ -1498,22 +1508,37 @@ func hasBlockPathPrefix(blocks map[string]*Block, ref string) bool {
 
 func validateCycles(blocks map[string]*Block, _ map[string][]Span, diags *[]Diagnostic) {
 	graph := map[string][]string{}
-	for id, b := range blocks {
-		localRefs := map[string][]Span{}
-		var dummy []Diagnostic
-		var walkVals func([]Node)
-		walkVals = func(nodes []Node) {
-			for _, n := range nodes {
-				switch x := n.(type) {
-				case *Assignment:
-					validateValueAdvanced(x.Value, &dummy, localRefs, map[string]int{}, map[string]int{})
-				case *Block:
-					walkVals(x.Body)
+	// A block's references include everything its nested blocks reference, so the
+	// subtree result is memoized and reused by ancestors. Recomputing it per block
+	// re-walked the same nodes once per enclosing level, which is quadratic on a
+	// deeply nested document.
+	subtreeRefs := map[*Block]map[string]bool{}
+	var dummy []Diagnostic
+	var refsOf func(*Block) map[string]bool
+	refsOf = func(b *Block) map[string]bool {
+		if cached, ok := subtreeRefs[b]; ok {
+			return cached
+		}
+		out := map[string]bool{}
+		subtreeRefs[b] = out // guards against a cyclic block graph revisiting b
+		for _, n := range b.Body {
+			switch x := n.(type) {
+			case *Assignment:
+				localRefs := map[string][]Span{}
+				validateValueAdvanced(x.Value, &dummy, localRefs, map[string]int{}, map[string]int{})
+				for ref := range localRefs {
+					out[ref] = true
+				}
+			case *Block:
+				for ref := range refsOf(x) {
+					out[ref] = true
 				}
 			}
 		}
-		walkVals(b.Body)
-		for ref := range localRefs {
+		return out
+	}
+	for id, b := range blocks {
+		for ref := range refsOf(b) {
 			if blocks[ref] != nil {
 				graph[id] = append(graph[id], ref)
 			}
@@ -1668,6 +1693,18 @@ func documentStrict(doc *Document) bool {
 	return false
 }
 
+// declaresInlineContent reports whether a block defines declarations of its own,
+// as opposed to only carrying scalar settings such as version or metadata.
+func declaresInlineContent(b *Block) bool {
+	for _, n := range b.Body {
+		switch n.(type) {
+		case *Block, *SchemaDecl, *ConstDecl, *TypeDecl, *ParamDecl:
+			return true
+		}
+	}
+	return false
+}
+
 func strictDiagnostics(doc *Document, _ *Options) []Diagnostic {
 	var diags []Diagnostic
 	var walk func([]Node)
@@ -1675,8 +1712,11 @@ func strictDiagnostics(doc *Document, _ *Options) []Diagnostic {
 		for _, n := range nodes {
 			switch x := n.(type) {
 			case *Block:
-				if x.Type == "module" && blockString(x, "source") == "" {
-					diags = append(diags, Diagnostic{Severity: "error", Message: "module requires source in strict mode", Span: x.Span})
+				// "source" points at a module to load. A module that declares its
+				// contents inline is complete on its own - requiring source there
+				// flagged every inline module in the language's own examples.
+				if x.Type == "module" && blockString(x, "source") == "" && !declaresInlineContent(x) {
+					diags = append(diags, Diagnostic{Severity: "error", Message: "module requires source or an inline body in strict mode", Span: x.Span})
 				}
 				if hasBoolField(x, "deprecated", true) && blockString(x, "replaced_by") == "" {
 					diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("%s %q is deprecated without replaced_by", x.Type, x.ID), Span: x.Span})

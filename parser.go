@@ -1,6 +1,7 @@
 package bcl
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -23,7 +24,7 @@ func ParseFile(name string, src []byte) (*Document, error) {
 	doc := &Document{File: name}
 	doc.Items = p.parseNodes(tokEOF)
 	if len(p.errs) > 0 {
-		return nil, p.errs
+		return nil, ErrorList(applyDiagnosticCodes(p.errs))
 	}
 	if len(doc.Items) > 0 {
 		doc.Span.Start = doc.Items[0].GetSpan().Start
@@ -87,15 +88,48 @@ func ParsePath(path string) (*Document, error) {
 	return ParseFile(path, b)
 }
 
+// MaxNestingDepth is the deepest a document may nest blocks, objects, lists and
+// calls. The parser recurses once per level, so without a bound a large enough
+// file crashes the process outright: at 200,000 levels (a 1.2 MB file) Go exceeds
+// its 1 GB goroutine stack and dies with an unrecoverable fatal error, taking any
+// host - a language server, a config loader in a service - with it. Real
+// configuration nests in the tens of levels; 512 leaves enormous headroom while
+// turning a crash into an ordinary diagnostic.
+const MaxNestingDepth = 512
+
 type parser struct {
 	file   string
 	source string
 	toks   []token
 	pos    int
 	errs   ErrorList
+	depth  int
+	// aborted stops the parse after the depth limit is reported. peek then yields
+	// EOF, so every loop in the recursive descent unwinds instead of spinning on
+	// input it has refused to descend into.
+	aborted bool
 }
 
+// enter records one level of nesting, reporting the depth limit exactly once.
+func (p *parser) enter(t token) bool {
+	p.depth++
+	if p.depth <= MaxNestingDepth {
+		return true
+	}
+	if !p.aborted {
+		p.error(t, fmt.Sprintf("nesting is deeper than the %d level limit", MaxNestingDepth))
+		p.aborted = true
+	}
+	return false
+}
+
+func (p *parser) leave() { p.depth-- }
+
 func (p *parser) parseNodes(until tokenKind) []Node {
+	if !p.enter(p.peek()) {
+		return nil
+	}
+	defer p.leave()
 	nodes := make([]Node, 0, p.nodeCapacity(until))
 	for {
 		p.skipNodeSeparators()
@@ -829,6 +863,10 @@ func mergeSchemaField(base, next SchemaField) SchemaField {
 }
 
 func (p *parser) parseSchemaField() SchemaField {
+	if !p.enter(p.peek()) {
+		return SchemaField{}
+	}
+	defer p.leave()
 	req := p.expect(tokIdent, "expected required or optional")
 	field := SchemaField{Required: req.text == "required", Span: req.span}
 	name := p.parseSchemaFieldName()
@@ -1414,6 +1452,10 @@ func (p *parser) parseValue() Value {
 }
 
 func (p *parser) parseList(start token) Value {
+	if !p.enter(start) {
+		return &Literal{Type: "null", Data: nil, Span: start.span}
+	}
+	defer p.leave()
 	items := make([]Value, 0, 4)
 	for {
 		p.skipNewlines()
@@ -1435,6 +1477,10 @@ func (p *parser) parseList(start token) Value {
 }
 
 func (p *parser) parseCall(name token) Value {
+	if !p.enter(name) {
+		return &Literal{Type: "null", Data: nil, Span: name.span}
+	}
+	defer p.leave()
 	p.next()
 	call := &Call{Name: name.text, Args: make([]Value, 0, 2), Span: name.span}
 	for {
@@ -1670,7 +1716,7 @@ func (p *parser) next() token {
 }
 
 func (p *parser) peek() token {
-	if p.pos >= len(p.toks) {
+	if p.aborted || p.pos >= len(p.toks) {
 		return token{kind: tokEOF}
 	}
 	return p.toks[p.pos]

@@ -94,11 +94,15 @@ func putTokenScratch(toks []token) {
 	tokenScratchPool.Put(toks[:0])
 }
 
+// estimatedTokenCount sizes the token slice up front. Real BCL averages 4.5-8.5
+// bytes per token depending on how heavily commented it is, so n/6 lands close
+// for both: overshooting wastes memory on every lex (the slice is 88 bytes per
+// entry), while undershooting costs at most one regrowth.
 func estimatedTokenCount(n int) int {
 	if n <= 0 {
 		return 1
 	}
-	est := n / 4
+	est := n / 6
 	if n < 256 {
 		est = n / 8
 	}

@@ -269,12 +269,23 @@ func TestDecisionDatasetHTTPAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	report, err := EvaluateDecisionDataset(prog, "demo", "http_batch", nil)
+	// Reaching the network needs the embedder's consent: the document names the
+	// URL, so the host list is what makes it allowed.
+	if _, err := EvaluateDecisionDataset(prog, "demo", "http_batch", nil); err == nil {
+		t.Fatal("expected an http dataset to be refused without an allowed host")
+	}
+
+	opts := &Options{AllowedHTTPHosts: []string{"127.0.0.1"}}
+	report, err := EvaluateDecisionDataset(prog, "demo", "http_batch", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if report.EffectCounts["allow"] != 1 || report.EffectCounts["deny"] != 1 {
 		t.Fatalf("http report = %#v", report.EffectCounts)
+	}
+
+	if _, err := EvaluateDecisionDataset(prog, "demo", "http_batch", &Options{AllowedHTTPHosts: []string{"example.com"}}); err == nil {
+		t.Fatal("expected a host outside the allowlist to be refused")
 	}
 }
 

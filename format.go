@@ -8,14 +8,31 @@ import (
 	"strings"
 )
 
+// Format reformats BCL source in place: nested blocks are re-indented, the
+// whitespace between tokens is normalized, and runs of blank lines are
+// collapsed. Comments, declaration order, and every token's original text are
+// preserved, so formatting never changes what a document means. It works on any
+// lexically valid file, including one the parser or validator still rejects.
+//
+// Use Canonicalize for the AST-driven rewrite, which normalizes and sorts
+// declarations but drops comments.
 func Format(src []byte) ([]byte, error) {
-	if hasComments(src) {
-		out := append([]byte(nil), src...)
-		if len(out) == 0 || out[len(out)-1] != '\n' {
-			out = append(out, '\n')
-		}
-		return out, nil
+	return FormatWithOptions(src, FormatOptions{})
+}
+
+// FormatWithOptions is Format with an explicit indentation style.
+func FormatWithOptions(src []byte, opts FormatOptions) ([]byte, error) {
+	lines, err := FormatLines(src, opts)
+	if err != nil {
+		return nil, err
 	}
+	return renderFormattedLines(lines, LineEnding(src), len(src)+len(src)/8+1), nil
+}
+
+// Canonicalize rewrites src from its parsed AST, normalizing every declaration
+// into canonical form and sorting block bodies. Unlike Format it requires src to
+// parse, and it discards comments because the AST does not carry them.
+func Canonicalize(src []byte) ([]byte, error) {
 	doc, err := Parse(src)
 	if err != nil {
 		return nil, err
@@ -182,34 +199,6 @@ func writeNode(b *bytes.Buffer, n Node, indent int) {
 		writeIndent(b, indent)
 		b.WriteString("}\n")
 	}
-}
-
-func hasComments(src []byte) bool {
-	inString := byte(0)
-	for i := 0; i < len(src); i++ {
-		c := src[i]
-		if inString != 0 {
-			if c == '\\' && inString != '`' {
-				i++
-				continue
-			}
-			if c == inString {
-				inString = 0
-			}
-			continue
-		}
-		switch c {
-		case '"', '\'', '`':
-			inString = c
-		case '#':
-			return true
-		case '/':
-			if i+1 < len(src) && (src[i+1] == '/' || src[i+1] == '*') {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func writeSchemaField(b *bytes.Buffer, f SchemaField, indent int) {

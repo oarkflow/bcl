@@ -13,15 +13,17 @@
   "activationEvents": [
     "onLanguage:bcl",
     "onCommand:bcl.restartLanguageServer",
+    "onCommand:bcl.showLanguageServerLog",
+    "onCommand:bcl.formatFile",
+    "onCommand:bcl.formatSection",
+    "onCommand:bcl.formatFolder",
     "onCommand:bcl.showRecentSymbols",
     "onCommand:bcl.validateWorkspace",
     "onCommand:bcl.compileCurrentFile",
     "onCommand:bcl.explainCurrentFile",
     "onCommand:bcl.condition.routeCoverage",
     "onCommand:bcl.condition.lifecyclePlayground",
-    "onCommand:bcl.condition.compactState",
-    "onCommand:bcl.condition.openRequestLifecycleExample",
-    "onCommand:bcl.condition.openHttpAuthGuardExample"
+    "onCommand:bcl.condition.compactState"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -63,6 +65,25 @@
         "title": "BCL: Restart Language Server"
       },
       {
+        "command": "bcl.showLanguageServerLog",
+        "title": "BCL: Show Language Server Log"
+      },
+      {
+        "command": "bcl.formatFile",
+        "title": "BCL: Format File",
+        "category": "BCL"
+      },
+      {
+        "command": "bcl.formatSection",
+        "title": "BCL: Format Section",
+        "category": "BCL"
+      },
+      {
+        "command": "bcl.formatFolder",
+        "title": "BCL: Format Folder",
+        "category": "BCL"
+      },
+      {
         "command": "bcl.showRecentSymbols",
         "title": "BCL: Show Recent Symbols"
       },
@@ -89,14 +110,6 @@
       {
         "command": "bcl.condition.compactState",
         "title": "Condition: Compact State"
-      },
-      {
-        "command": "bcl.condition.openRequestLifecycleExample",
-        "title": "Condition: Open Request Lifecycle Example"
-      },
-      {
-        "command": "bcl.condition.openHttpAuthGuardExample",
-        "title": "Condition: Open HTTP Auth Guard Example"
       }
     ],
     "configuration": {
@@ -110,7 +123,7 @@
         "bcl.cli.path": {
           "type": "string",
           "default": "bcl",
-          "description": "Path to the BCL CLI used by compile, validate, and explain commands."
+          "description": "Path to the BCL CLI used by compile, validate, and explain commands. When left as \"bcl\", the extension prefers its own bundled binary and then PATH."
         },
         "bcl.trace.server": {
           "type": "string",
@@ -138,7 +151,51 @@
           "description": "Default lifecycle ID for Condition lifecycle playground requests."
         }
       }
-    }
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "bcl.formatSection",
+          "when": "editorLangId == bcl",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "bcl.formatFile",
+          "when": "editorLangId == bcl",
+          "group": "1_modification@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "bcl.formatFile",
+          "when": "resourceLangId == bcl",
+          "group": "7_modification@1"
+        },
+        {
+          "command": "bcl.formatFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "7_modification@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "bcl.formatFile",
+          "when": "editorLangId == bcl || resourceLangId == bcl"
+        },
+        {
+          "command": "bcl.formatSection",
+          "when": "editorLangId == bcl"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "bcl.formatSection",
+        "key": "ctrl+k ctrl+f",
+        "mac": "cmd+k cmd+f",
+        "when": "editorLangId == bcl && editorTextFocus"
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p ./",

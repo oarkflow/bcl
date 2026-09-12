@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,21 +19,25 @@ import (
 )
 
 type Options struct {
-	Profile                 string
-	Env                     func(string) (string, bool)
-	EnvFiles                []string
-	Context                 map[string]any
-	Session                 map[string]any
-	AllowEnv                bool
-	AllowTime               bool
-	AllowHash               bool
-	AllowEncoding           bool
-	ResolveImports          bool
-	ResolveModules          bool
-	Interpolate             bool
-	DisableInterpolation    bool
-	Partial                 bool
-	Strict                  bool
+	Profile              string
+	Env                  func(string) (string, bool)
+	EnvFiles             []string
+	Context              map[string]any
+	Session              map[string]any
+	AllowEnv             bool
+	AllowTime            bool
+	AllowHash            bool
+	AllowEncoding        bool
+	ResolveImports       bool
+	ResolveModules       bool
+	Interpolate          bool
+	DisableInterpolation bool
+	Partial              bool
+	Strict               bool
+	// SkipCompletions leaves Analysis.Completions empty. AnalyzeFile builds the
+	// completion list eagerly by default; editors that only need it when the user
+	// asks can skip it and call AnalysisCompletions on demand.
+	SkipCompletions         bool
 	Verbose                 bool
 	LockfilePath            string
 	BaseDir                 string
@@ -44,10 +49,24 @@ type Options struct {
 	HTTPClient              *http.Client
 	DecisionInputValidator  DecisionInputValidator
 	Now                     func() time.Time
-	AllowedDatasetAdapters  []string
-	AllowedHTTPHosts        []string
-	AllowedHTTPMethods      []string
-	ExternalTimeout         time.Duration
+	// AllowedDatasetAdapters restricts which dataset adapters a document may use.
+	// Empty allows any registered adapter; "inline" never needs permission.
+	AllowedDatasetAdapters []string
+	// AllowedHTTPHosts lists the hosts an http/https dataset may reach. A document
+	// can name any URL it likes, so this list is required for network access:
+	// with no entry, an http dataset is refused. Use "*" to allow any host.
+	AllowedHTTPHosts []string
+	// AllowedHTTPMethods restricts the methods an http dataset may use. Empty
+	// allows any method.
+	AllowedHTTPMethods []string
+	// AllowedDatasetRoots lists directories a file dataset may read from. Empty
+	// confines it to the directory of the document that declared it, so a document
+	// cannot read arbitrary files through an absolute or "../" path. Use "*" to
+	// allow any path.
+	AllowedDatasetRoots []string
+	// ExternalTimeout bounds an outbound dataset request. Zero uses
+	// DefaultExternalTimeout rather than waiting forever.
+	ExternalTimeout time.Duration
 }
 
 func Compile(doc *Document, opts *Options) (*Normalized, error) {
@@ -113,6 +132,7 @@ func Compile(doc *Document, opts *Options) (*Normalized, error) {
 	c.applyProfile()
 	c.applyOverrides()
 	if len(c.errs) > 0 {
+		c.errs = ErrorList(applyDiagnosticCodes(c.errs))
 		c.out.Diagnostics = append(c.out.Diagnostics, c.errs...)
 		return c.out, c.errs
 	}
@@ -1066,13 +1086,18 @@ func (c *compiler) evalVars() map[string]any {
 	return vars
 }
 
+// varsMap returns the reusable expression scope, repopulated from the document's
+// own top-level values and constants so a bare sibling reference ("port + 1000")
+// resolves the same way the qualified form ("app.port + 1000") does.
 func (c *compiler) varsMap() map[string]any {
-	cap := len(c.out.Body) + len(c.out.Constants) + 6
+	capacity := len(c.out.Body) + len(c.out.Constants) + 8
 	if c.vars == nil {
-		c.vars = make(map[string]any, cap)
+		c.vars = make(map[string]any, capacity)
 	} else {
 		clear(c.vars)
 	}
+	maps.Copy(c.vars, c.out.Body)
+	maps.Copy(c.vars, c.out.Constants)
 	return c.vars
 }
 

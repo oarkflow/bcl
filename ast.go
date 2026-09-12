@@ -20,6 +20,10 @@ type Diagnostic struct {
 	Severity string `json:"severity"`
 	Message  string `json:"message"`
 	Span     Span   `json:"span,omitempty"`
+	// Code is a stable identifier for this class of problem, such as "BCL0100".
+	// Message text may be reworded; a code keeps its meaning, so tooling can
+	// suppress, explain, or offer a fix for it. See codes.go.
+	Code string `json:"code,omitempty"`
 }
 
 type ErrorList []Diagnostic

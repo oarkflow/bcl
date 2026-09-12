@@ -113,7 +113,7 @@ func TestStringQuoteForms(t *testing.T) {
 	if n.Body["raw"] != `subject.roles has_any ["admin", "superadmin"]` {
 		t.Fatalf("raw string = %#v", n.Body["raw"])
 	}
-	formatted, err := Format([]byte("expr \"subject.status != \\\"blocked\\\"\"\n"))
+	formatted, err := Canonicalize([]byte("expr \"subject.status != \\\"blocked\\\"\"\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ roles { admin
 superadmin
 }
 `)
-	out, err := Format(src)
+	out, err := Canonicalize(src)
 	if err != nil {
 		t.Fatal(err)
 	}
