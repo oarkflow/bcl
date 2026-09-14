@@ -41,9 +41,6 @@ type server struct {
 	owners map[string]string
 	// pending holds debounce timers so a burst of keystrokes analyzes once.
 	pending map[string]*time.Timer
-	// suppressVersion caches whether a file is exempt from the missing-version
-	// warning, a question that used to re-parse the workspace on every edit.
-	suppressVersion map[string]bool
 }
 
 // initMaps makes a directly-constructed server usable. Callers hold s.mu.
@@ -66,22 +63,18 @@ func (s *server) initMaps() {
 	if s.pending == nil {
 		s.pending = map[string]*time.Timer{}
 	}
-	if s.suppressVersion == nil {
-		s.suppressVersion = map[string]bool{}
-	}
 }
 
 func newServer(in io.Reader, out io.Writer) *server {
 	return &server{
-		in:              bufio.NewReader(in),
-		out:             out,
-		files:           map[string]string{},
-		index:           map[string]*bcl.Analysis{},
-		deps:            map[string][]string{},
-		importers:       map[string][]string{},
-		owners:          map[string]string{},
-		pending:         map[string]*time.Timer{},
-		suppressVersion: map[string]bool{},
+		in:        bufio.NewReader(in),
+		out:       out,
+		files:     map[string]string{},
+		index:     map[string]*bcl.Analysis{},
+		deps:      map[string][]string{},
+		importers: map[string][]string{},
+		owners:    map[string]string{},
+		pending:   map[string]*time.Timer{},
 	}
 }
 
@@ -409,7 +402,7 @@ func (s *server) analyzeURI(uri string) *bcl.Analysis {
 			text = string(b)
 		}
 	}
-	partial := s.suppressVersionWarning(analysisPath)
+	partial := s.isPartialBCLFile(analysisPath)
 	if !samePath(analysisPath, path) {
 		partial = true
 	}
@@ -1488,33 +1481,10 @@ func pathURI(path string) string {
 	return u.String()
 }
 
-// suppressVersionWarning decides whether "missing bcl version declaration" makes
-// sense for this file. The answer only changes when files change on disk, so it
-// is memoized: computing it used to walk and re-parse the whole workspace on
-// every keystroke, which dominated the cost of editing a document.
-func (s *server) suppressVersionWarning(path string) bool {
-	if filepath.Ext(path) == ".schema" {
-		return true
-	}
-	s.mu.Lock()
-	cached, ok := s.suppressVersion[path]
-	s.mu.Unlock()
-	if ok {
-		return cached
-	}
-	result := s.isPartialBCLFile(path) || s.importsVersionDeclaration(path)
-	s.mu.Lock()
-	s.initMaps()
-	s.suppressVersion[path] = result
-	s.mu.Unlock()
-	return result
-}
-
 // invalidateDiskCaches drops everything derived from files on disk. Called when a
 // document is saved or the workspace changes underneath us.
 func (s *server) invalidateDiskCaches() {
 	s.mu.Lock()
-	s.suppressVersion = map[string]bool{}
 	s.owners = map[string]string{}
 	s.mu.Unlock()
 	sourceGraphCache.Clear()
@@ -1584,27 +1554,6 @@ func (s *server) isPartialBCLFile(path string) bool {
 	return partial
 }
 
-func (s *server) importsVersionDeclaration(path string) bool {
-	if path == "" || !isBCLSourceFile(path) {
-		return false
-	}
-	doc, err := bcl.ParsePath(path)
-	if err != nil {
-		return false
-	}
-	base := filepath.Dir(path)
-	for _, imported := range importedPaths(doc.Items, base) {
-		importedDoc, err := bcl.ParsePath(imported)
-		if err != nil {
-			continue
-		}
-		if hasBCLVersionBlock(importedDoc.Items) {
-			return true
-		}
-	}
-	return false
-}
-
 func isBCLSourceFile(path string) bool {
 	switch filepath.Ext(path) {
 	case ".bcl", ".schema":
@@ -1612,19 +1561,6 @@ func isBCLSourceFile(path string) bool {
 	default:
 		return false
 	}
-}
-
-func hasBCLVersionBlock(nodes []bcl.Node) bool {
-	for _, n := range nodes {
-		b, ok := n.(*bcl.Block)
-		if !ok || b.Type != "bcl" {
-			continue
-		}
-		if blockStringAssignment(b, "version") != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func importedPaths(nodes []bcl.Node, base string) []string {

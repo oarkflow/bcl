@@ -59,6 +59,23 @@ func TestExamplesCompileEntryPoints(t *testing.T) {
 	}
 }
 
+func TestMainExampleHasCleanEditorDiagnostics(t *testing.T) {
+	path := "example/main.bcl"
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, diags := AnalyzeFile(path, src, &Options{
+		Strict:          true,
+		ResolveImports:  true,
+		BaseDir:         filepath.Dir(path),
+		SkipCompletions: true,
+	})
+	if text := FormatDiagnostics(diags); text != "" {
+		t.Fatalf("main example should have clean editor diagnostics:\n%s", text)
+	}
+}
+
 func TestFeatureExamplesCompile(t *testing.T) {
 	env := func(key string) (string, bool) {
 		values := map[string]string{

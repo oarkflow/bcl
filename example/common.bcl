@@ -44,6 +44,8 @@ schema policy {
   optional actions list<string>
   optional resources list<string>
   optional when expression
+  optional deny_message string
+  optional reason_code string
   optional meta map
 }
 

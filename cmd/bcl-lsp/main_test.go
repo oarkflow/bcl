@@ -110,14 +110,10 @@ func TestLSPTreatsImportedBCLAsPartialForVersionWarning(t *testing.T) {
 	}
 }
 
-func TestLSPSuppressesVersionWarningWhenImportedFileDeclaresVersion(t *testing.T) {
+func TestLSPDoesNotRequireVersionDeclaration(t *testing.T) {
 	dir := t.TempDir()
 	mainPath := filepath.Join(dir, "main.bcl")
-	commonPath := filepath.Join(dir, "common.bcl")
-	if err := os.WriteFile(mainPath, []byte("import \"./common.bcl\"\npolicy \"p\" {\n  effect allow\n}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(commonPath, []byte("bcl {\n  version \"1.0\"\n}\n"), 0o644); err != nil {
+	if err := os.WriteFile(mainPath, []byte("policy \"p\" {\n  effect allow\n}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s := &server{out: ioDiscard{}, files: map[string]string{}, index: map[string]*bcl.Analysis{}, rootURI: pathURI(dir)}
@@ -125,7 +121,7 @@ func TestLSPSuppressesVersionWarningWhenImportedFileDeclaresVersion(t *testing.T
 	a := s.analyzeURI(pathURI(mainPath))
 	for _, d := range a.Diagnostics {
 		if d.Message == "missing bcl version declaration" {
-			t.Fatalf("main file should accept imported version declaration: %#v", a.Diagnostics)
+			t.Fatalf("bcl version is optional: %#v", a.Diagnostics)
 		}
 	}
 }

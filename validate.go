@@ -13,13 +13,16 @@ import (
 func Validate(doc *Document, opts *Options) []Diagnostic {
 	var diags []Diagnostic
 	seen := map[string]Span{}
+	seenConsts := map[string]bool{}
+	seenSchemas := map[string]bool{}
+	seenSets := map[string]bool{}
+	seenPredicates := map[string]bool{}
 	blocks := map[string]*Block{}
 	consts := map[string]bool{}
 	constUses := map[string]int{}
 	sets := map[string]bool{}
 	setUses := map[string]int{}
 	schemas := map[string]*SchemaDecl{}
-	schemaNames := collectSchemaNames(doc.Items)
 	aliases := map[string]string{}
 	predicates := map[string]*Block{}
 	refs := map[string][]Span{}
@@ -28,20 +31,24 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 	// happen (blocks and spreads can be declared inside an object), but re-running
 	// the value walk on every nested assignment made this pass quadratic in nesting
 	// depth: linting 800 levels of nesting took over a second.
-	var walk func(nodes []Node, depth int, currentType string, insideValue bool)
-	walk = func(nodes []Node, depth int, currentType string, insideValue bool) {
+	var walk func(nodes []Node, currentType string, insideValue bool, scope string)
+	walk = func(nodes []Node, currentType string, insideValue bool, scope string) {
 		for _, n := range nodes {
 			switch x := n.(type) {
 			case *ConstDecl:
-				if consts[x.Name] {
+				declKey := scope + "\x00" + x.Name
+				if seenConsts[declKey] {
 					diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("duplicate constant %q", x.Name), Span: x.Span})
 				}
+				seenConsts[declKey] = true
 				consts[x.Name] = true
 				validateValueAdvanced(x.Value, &diags, refs, constUses, setUses)
 			case *SchemaDecl:
-				if schemas[x.Name] != nil {
+				declKey := scope + "\x00" + x.Name
+				if seenSchemas[declKey] {
 					diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("duplicate schema %q", x.Name), Span: x.Span})
 				}
+				seenSchemas[declKey] = true
 				schemas[x.Name] = x
 			case *ParamDecl:
 				if x.Default != nil {
@@ -52,28 +59,34 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 			case *Block:
 				if x.ID != "" {
 					key := x.Type + "." + x.ID
-					if old, ok := seen[key]; ok && shouldCheckGlobalBlockDuplicate(x.Type, depth, schemaNames) {
+					declKey := scope + "\x00" + key
+					if old, ok := seen[declKey]; ok && shouldCheckBlockDuplicate(x.Type) {
 						_ = old
 						diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("duplicate block %s", key), Span: x.Span})
 					}
 					if _, ok := blocks[key]; !ok {
-						seen[key] = x.Span
 						blocks[key] = x
 					}
+					seen[declKey] = x.Span
 				}
 				if x.Type == "set" && x.ID != "" {
-					if sets[x.ID] {
+					declKey := scope + "\x00" + x.ID
+					if seenSets[declKey] {
 						diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("duplicate set %q", x.ID), Span: x.Span})
 					}
+					seenSets[declKey] = true
 					sets[x.ID] = true
 				}
 				if x.Type == "predicate" && x.ID != "" {
-					if predicates[x.ID] != nil {
+					declKey := scope + "\x00" + x.ID
+					if seenPredicates[declKey] {
 						diags = append(diags, Diagnostic{Severity: "error", Message: fmt.Sprintf("duplicate predicate %q", x.ID), Span: x.Span})
 					}
+					seenPredicates[declKey] = true
 					predicates[x.ID] = x
 				}
-				walk(x.Body, depth+1, x.Type, false)
+				childScope := declarationChildScope(scope, "block", x.Type, x.ID)
+				walk(x.Body, x.Type, false, childScope)
 			case *Spread:
 				target := x.Target
 				if target != "" && !strings.Contains(target, ".") && currentType != "" {
@@ -82,18 +95,19 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 				if target != "" {
 					refs[target] = append(refs[target], x.Span)
 				}
-				walk(x.Body, depth, currentType, false)
+				walk(x.Body, currentType, false, scope)
 			case *Assignment:
 				if !insideValue {
 					validateValueAdvanced(x.Value, &diags, refs, constUses, setUses)
 				}
 				if o, ok := x.Value.(*Object); ok {
-					walk(o.Fields, depth, currentType, true)
+					childScope := declarationChildScope(scope, "field", x.Name, "")
+					walk(o.Fields, currentType, true, childScope)
 				}
 			}
 		}
 	}
-	walk(doc.Items, 0, "", false)
+	walk(doc.Items, "", false, "")
 	validateSchemas(doc.Items, schemas, aliases, &diags)
 	validateReferences(blocks, refs, &diags)
 	validateCycles(blocks, refs, &diags)
@@ -109,35 +123,16 @@ func Validate(doc *Document, opts *Options) []Diagnostic {
 	return applyDiagnosticCodes(diags)
 }
 
-func collectSchemaNames(nodes []Node) map[string]bool {
-	out := map[string]bool{}
-	var walk func([]Node)
-	walk = func(nodes []Node) {
-		for _, n := range nodes {
-			switch x := n.(type) {
-			case *SchemaDecl:
-				out[x.Name] = true
-			case *Block:
-				walk(x.Body)
-			case *Assignment:
-				if o, ok := x.Value.(*Object); ok {
-					walk(o.Fields)
-				}
-			}
-		}
-	}
-	walk(nodes)
-	return out
+func shouldCheckBlockDuplicate(blockType string) bool {
+	return blockType != "override"
 }
 
-func shouldCheckGlobalBlockDuplicate(blockType string, depth int, schemaNames map[string]bool) bool {
-	if blockType == "override" {
-		return false
+func declarationChildScope(scope, kind, name, id string) string {
+	scope += "\x00" + kind + "." + name
+	if id != "" {
+		scope += "." + id
 	}
-	if depth == 0 {
-		return true
-	}
-	return !schemaNames[blockType]
+	return scope
 }
 
 func validatePredicates(nodes []Node, predicates map[string]*Block, diags *[]Diagnostic) {
@@ -723,30 +718,25 @@ func Lint(doc *Document, opts *Options) []Diagnostic {
 	diags = append(diags, routeCatalogDiagnostics(doc)...)
 	diags = append(diags, lifecycleReferenceDiagnostics(doc)...)
 	diags = append(diags, resultReferenceDiagnostics(doc)...)
-	var hasVersion bool
-	for _, n := range doc.Items {
-		if b, ok := n.(*Block); ok && b.Type == "bcl" {
-			hasVersion = true
-		}
-	}
-	if !hasVersion && (opts == nil || !opts.Partial) {
-		diags = append(diags, Diagnostic{Severity: "warning", Message: "missing bcl version declaration", Span: doc.Span})
-	}
 	if opts != nil && opts.Partial {
 		return applyDiagnosticCodes(diags)
 	}
 	decls, uses := declarationUsage(doc)
 	for name, sp := range decls.consts {
-		if uses.consts[name] == 0 {
+		if sameSourceFile(sp.File, doc.File) && uses.consts[name] == 0 {
 			diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("unused constant %q", name), Span: sp})
 		}
 	}
 	for name, sp := range decls.sets {
-		if uses.sets[name] == 0 {
+		if sameSourceFile(sp.File, doc.File) && uses.sets[name] == 0 {
 			diags = append(diags, Diagnostic{Severity: "warning", Message: fmt.Sprintf("unused set %q", name), Span: sp})
 		}
 	}
 	return applyDiagnosticCodes(diags)
+}
+
+func sameSourceFile(a, b string) bool {
+	return a == b || a == "" || b == "" || a == "<input>" || b == "<input>"
 }
 
 // validateValueAdvanced walks a value once, collecting reference and set usage
@@ -1378,7 +1368,7 @@ func valueInterface(v Value) any {
 func typeMatches(want string, v Value) bool {
 	want = resolveBuiltinAlias(want)
 	if strings.HasPrefix(want, "list") {
-		return v.Kind() == "list"
+		return v.Kind() == "list" || isSetExpandedCollection(v)
 	}
 	if strings.HasPrefix(want, "map") {
 		return v.Kind() == "object"
@@ -1418,6 +1408,31 @@ func typeMatches(want string, v Value) bool {
 	default:
 		return true
 	}
+}
+
+// isSetExpandedCollection recognizes a brace collection that mixes bare values
+// with a reusable set expansion, such as actions { read; use set("writes") }.
+// blockValue retains that mixed form as an object, but it is a list at the schema
+// boundary.
+func isSetExpandedCollection(v Value) bool {
+	obj, ok := v.(*Object)
+	if !ok || len(obj.Fields) == 0 {
+		return false
+	}
+	for _, node := range obj.Fields {
+		a, ok := node.(*Assignment)
+		if !ok {
+			return false
+		}
+		if ref, ok := a.Value.(*Reference); ok && ref.Path == "" {
+			continue
+		}
+		call, ok := a.Value.(*Call)
+		if !ok || a.Name != "use" || call.Name != "set" || len(call.Args) != 1 {
+			return false
+		}
+	}
+	return true
 }
 
 func resolveAlias(s string, aliases map[string]string) string {

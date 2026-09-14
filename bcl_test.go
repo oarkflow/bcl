@@ -369,6 +369,22 @@ policy "a" {}
 	}
 }
 
+func TestLintDoesNotRequireVersionDeclaration(t *testing.T) {
+	doc, err := Parse([]byte(`
+workflow "optional-version" {
+  node "start" {}
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range Lint(doc, nil) {
+		if d.Message == "missing bcl version declaration" {
+			t.Fatalf("bcl version is optional: %#v", d)
+		}
+	}
+}
+
 func TestValidateAllowsMultipleScopedOverridesForSameTarget(t *testing.T) {
 	doc, err := Parse([]byte(`
 engine {
@@ -648,6 +664,57 @@ Migration "b" {
 			t.Fatalf("schema-backed nested command blocks should be scoped: %#v", d)
 		}
 	}
+}
+
+func TestNestedBlockDuplicatesUseOwningObjectPath(t *testing.T) {
+	doc, err := Parse([]byte(`
+workflow "project_lifecycle" {
+  node "planning" {
+    page {
+      section "budget" {
+        row "list" {}
+      }
+    }
+  }
+  node "implementation" {
+    page {
+      section "budget" {
+        row "list" {}
+      }
+    }
+  }
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range Validate(doc, nil) {
+		if strings.Contains(d.Message, "duplicate block") {
+			t.Fatalf("same child IDs in different owning objects are not duplicates: %#v", d)
+		}
+	}
+}
+
+func TestNestedBlockDuplicateInSameObjectIsReported(t *testing.T) {
+	doc, err := Parse([]byte(`
+workflow "project_lifecycle" {
+  node "planning" {
+    page {
+      section "budget" {}
+      section "budget" {}
+    }
+  }
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range Validate(doc, nil) {
+		if strings.Contains(d.Message, "duplicate block section.budget") {
+			return
+		}
+	}
+	t.Fatal("duplicate child block in the same owning object was not reported")
 }
 
 func TestDeepDomainPathUnderExistingBlockIsNotUnknownReference(t *testing.T) {
