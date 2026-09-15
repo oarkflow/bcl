@@ -200,7 +200,7 @@ function resolveServerCommand(context) {
         }
         output('Found ./cmd/bcl-lsp but no "go" on PATH; cannot build the language server on the fly.');
     }
-    return { command: '', source: 'go-run' };
+    return { command: '', source: 'unavailable' };
 }
 /**
  * Candidate binaries for this machine. The arch alias covers an Intel-VS Code
@@ -213,8 +213,8 @@ function bundledServerPaths(context) {
 }
 function bundledBinaryPaths(context, exe) {
     const archAliases = {
-        arm64: ['arm64', 'x64'],
-        x64: ['x64', 'arm64']
+        arm64: ['arm64', 'x64', 'amd64'],
+        x64: ['x64', 'amd64', 'arm64']
     };
     const arches = archAliases[process.arch] ?? [process.arch];
     const candidates = arches.map((arch) => path.join('bin', `${process.platform}-${arch}`, exe));

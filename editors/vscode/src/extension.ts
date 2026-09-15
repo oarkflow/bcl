@@ -170,7 +170,7 @@ interface ServerCommand {
   command: string;
   args?: string[];
   cwd?: string;
-  source: 'setting' | 'bundled' | 'path' | 'go-run';
+  source: 'setting' | 'bundled' | 'path' | 'go-run' | 'unavailable';
 }
 
 /**
@@ -207,7 +207,7 @@ function resolveServerCommand(context: vscode.ExtensionContext): ServerCommand {
     }
     output('Found ./cmd/bcl-lsp but no "go" on PATH; cannot build the language server on the fly.');
   }
-  return { command: '', source: 'go-run' };
+  return { command: '', source: 'unavailable' };
 }
 
 /**
@@ -222,8 +222,8 @@ function bundledServerPaths(context: vscode.ExtensionContext): string[] {
 
 function bundledBinaryPaths(context: vscode.ExtensionContext, exe: string): string[] {
   const archAliases: Record<string, string[]> = {
-    arm64: ['arm64', 'x64'],
-    x64: ['x64', 'arm64']
+    arm64: ['arm64', 'x64', 'amd64'],
+    x64: ['x64', 'amd64', 'arm64']
   };
   const arches = archAliases[process.arch] ?? [process.arch];
   const candidates = arches.map((arch) => path.join('bin', `${process.platform}-${arch}`, exe));
