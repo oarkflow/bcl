@@ -1530,9 +1530,9 @@ func evalOp(op string, a, b any) (any, error) {
 	case "less_or_equal":
 		return evalOp("<=", a, b)
 	case "==":
-		return reflect.DeepEqual(a, b), nil
+		return equalLoose(a, b), nil
 	case "!=":
-		return !reflect.DeepEqual(a, b), nil
+		return !equalLoose(a, b), nil
 	case "+":
 		if af, ok := num(a); ok {
 			if bf, bok := num(b); bok {
@@ -3313,6 +3313,9 @@ func equalLoose(a, b any) bool {
 		if y, ok := b.(float32); ok {
 			return x == float64(y)
 		}
+		if y, ok := intScalarValue(b); ok {
+			return x == float64(y)
+		}
 		return false
 	case float32:
 		if y, ok := b.(float32); ok {
@@ -3320,6 +3323,9 @@ func equalLoose(a, b any) bool {
 		}
 		if y, ok := b.(float64); ok {
 			return float64(x) == y
+		}
+		if y, ok := intScalarValue(b); ok {
+			return float64(x) == float64(y)
 		}
 		return false
 	}
@@ -3344,6 +3350,9 @@ func equalLoose(a, b any) bool {
 		if x, ok := a.(float32); ok {
 			return float64(x) == y
 		}
+		if x, ok := intScalarValue(a); ok {
+			return float64(x) == y
+		}
 		return false
 	case float32:
 		if x, ok := a.(float32); ok {
@@ -3351,6 +3360,9 @@ func equalLoose(a, b any) bool {
 		}
 		if x, ok := a.(float64); ok {
 			return x == float64(y)
+		}
+		if x, ok := intScalarValue(a); ok {
+			return float64(x) == float64(y)
 		}
 		return false
 	}

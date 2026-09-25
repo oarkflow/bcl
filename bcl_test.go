@@ -884,3 +884,66 @@ predicate_suite {
 		t.Fatalf("unmarshal singular case blocks into plural Cases failed: %#v", out)
 	}
 }
+
+// TestEqualityAcrossNumericJSONWidths guards against the regression where "=="
+// used reflect.DeepEqual, so an int64 literal never matched a float64 value
+// decoded from JSON (e.g. input.qty == 2 was always false for JSON input).
+func TestEqualityAcrossNumericJSONWidths(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b any
+	}{
+		{"float64 vs int64", float64(2), int64(2)},
+		{"float64 vs int", float64(2), 2},
+		{"int64 vs float64", int64(2), float64(2)},
+		{"int vs float64", 2, float64(2)},
+		{"float32 vs int", float32(2), 2},
+		{"int vs float32", 2, float32(2)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v, err := evalOp("==", c.a, c.b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if v != true {
+				t.Fatalf("expected %v == %v to be true, got %v", c.a, c.b, v)
+			}
+			if !equalLoose(c.a, c.b) {
+				t.Fatalf("expected equalLoose(%v, %v) to be true", c.a, c.b)
+			}
+		})
+	}
+}
+
+// TestArithmeticResultEqualsIntLiteral guards against the regression where an
+// arithmetic result (always float64) compared with == against an int literal
+// (e.g. "a + 1 == 3") was silently false.
+func TestArithmeticResultEqualsIntLiteral(t *testing.T) {
+	v, err := Eval("a + 1 == 3", map[string]any{"a": 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v != true {
+		t.Fatalf("expected a + 1 == 3 to be true for a=2, got %v", v)
+	}
+}
+
+// TestBareStringValueNamedLikeWordOperator guards against the regression where
+// a quoted string value equal to a word-operator's text (e.g. "to", "in",
+// "and") was misclassified as starting an expression instead of a plain
+// value, silently dropping the assignment.
+func TestBareStringValueNamedLikeWordOperator(t *testing.T) {
+	for _, word := range []string{"to", "in", "and", "or", "has"} {
+		t.Run(word, func(t *testing.T) {
+			src := "direction \"" + word + "\"\n"
+			var out map[string]any
+			if err := UnmarshalWithOptions([]byte(src), &out, nil); err != nil {
+				t.Fatal(err)
+			}
+			if out["direction"] != word {
+				t.Fatalf("expected direction == %q, got %#v", word, out["direction"])
+			}
+		})
+	}
+}

@@ -371,7 +371,7 @@ func (p *parser) parseConditionalBlock(first token) Node {
 
 func (p *parser) startsExpressionAfterName() bool {
 	t := p.peek()
-	return t.kind == tokDot || t.kind == tokOperator || isExprOperator(t.text)
+	return t.kind == tokDot || t.kind == tokOperator || (t.kind == tokIdent && isExprOperator(t.text))
 }
 
 func (p *parser) dottedAssignmentAhead() bool {
@@ -389,7 +389,7 @@ func (p *parser) dottedAssignmentAhead() bool {
 	if t.kind == tokLParen {
 		return false
 	}
-	if t.kind == tokOperator || isExprOperator(t.text) {
+	if t.kind == tokOperator || (t.kind == tokIdent && isExprOperator(t.text)) {
 		return false
 	}
 	return true
@@ -1532,7 +1532,7 @@ func (p *parser) isExpressionLine() bool {
 		if depth == 0 && (t.kind == tokNewline || t.kind == tokRBrace || t.kind == tokEOF) {
 			return false
 		}
-		if depth == 0 && (t.kind == tokOperator || isExprOperator(t.text)) {
+		if depth == 0 && (t.kind == tokOperator || (t.kind == tokIdent && isExprOperator(t.text))) {
 			return true
 		}
 		if t.kind == tokLBracket || t.kind == tokLParen {
