@@ -213,7 +213,9 @@ func (p *parser) parseNode() Node {
 			return p.parseParam()
 		}
 	case "const":
-		return p.parseConst()
+		if p.peekN(1).kind == tokIdent {
+			return p.parseConst()
+		}
 	case "schema":
 		if p.peekN(1).kind == tokIdent && p.peekN(2).kind == tokLBrace {
 			return p.parseSchema()
@@ -1568,10 +1570,10 @@ func (p *parser) isExpressionLine() bool {
 		if depth == 0 && (t.kind == tokOperator || (t.kind == tokIdent && isExprOperator(t.text))) {
 			return true
 		}
-		if t.kind == tokLBracket || t.kind == tokLParen {
+		if t.kind == tokLBracket || t.kind == tokLParen || t.kind == tokLBrace {
 			depth++
 		}
-		if t.kind == tokRBracket || t.kind == tokRParen {
+		if t.kind == tokRBracket || t.kind == tokRParen || t.kind == tokRBrace {
 			depth--
 		}
 	}

@@ -24,13 +24,24 @@ module "iam-access-catalog" {
     }
     row "review-privileged-access" {
       priority 60 status active owner "security-platform" rationale "privileged access requires approval and MFA" effective_from "2020-01-01"
-      when { any { resource.sensitivity == "high" subject.mfa == false request.action == "admin" } }
+      when {
+        any {
+          resource.sensitivity == "high"
+          subject.mfa == false
+          request.action == "admin"
+        }
+      }
       then { outcome { decision require_review reason "privileged access requires review" attributes { route "access-review" queue "security-approvals" } metadata { severity "high" } } advice require_mfa { method "webauthn" } }
       reason "privileged access requires review" reason_code "PRIVILEGED_REVIEW" tags ["privileged", "manual-review"]
     }
     row "allow-role-access" {
       priority 20 status active owner "security-platform" rationale "matching role with MFA can access normal resources" effective_from "2020-01-01"
-      when { subject.blocked == false subject.role == resource.required_role subject.mfa == true resource.sensitivity != "high" }
+      when {
+        subject.blocked == false
+        subject.role == resource.required_role
+        subject.mfa == true
+        resource.sensitivity != "high"
+      }
       then { outcome { decision allow reason "role access allowed" attributes { route "grant" queue "none" } metadata { severity "low" } } }
       reason "role access allowed" reason_code "ROLE_ALLOWED" tags ["access"]
     }

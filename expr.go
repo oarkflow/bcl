@@ -534,7 +534,14 @@ func evalProgramRaw(raw string, vars map[string]any, opts *EvalOptions) (any, er
 }
 
 func (e *exprParser) parse() (any, error) {
-	return e.parseExpr(0)
+	v, err := e.parseExpr(0)
+	if err != nil {
+		return nil, err
+	}
+	if t := e.peek(); t.kind != tokEOF && t.kind != tokNewline {
+		return nil, fmt.Errorf("unexpected token %q after expression", t.text)
+	}
+	return v, nil
 }
 
 func (e *exprParser) parseExpr(minPrec int) (any, error) {
@@ -668,9 +675,10 @@ func (e *exprParser) prefix() (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if e.peek().kind == tokRParen {
-			e.next()
+		if e.peek().kind != tokRParen {
+			return nil, fmt.Errorf("expected ')'")
 		}
+		e.next()
 		return v, nil
 	case tokLBracket:
 		var out []any
@@ -684,9 +692,10 @@ func (e *exprParser) prefix() (any, error) {
 				e.next()
 			}
 		}
-		if e.peek().kind == tokRBracket {
-			e.next()
+		if e.peek().kind != tokRBracket {
+			return nil, fmt.Errorf("expected ']'")
 		}
+		e.next()
 		return out, nil
 	case tokIdent:
 		if t.text == "true" && e.peek().kind != tokDot {
@@ -736,17 +745,18 @@ func (e *exprParser) call(name string) (any, error) {
 			e.next()
 		}
 	}
-	if e.peek().kind == tokRParen {
-		e.next()
+	if e.peek().kind != tokRParen {
+		return nil, fmt.Errorf("expected ')' after call arguments")
 	}
+	e.next()
 	return evalCall(name, args, e.opts)
 }
 
 func infixPrecedence(op string) (int, bool) {
 	switch op {
-	case "or":
+	case "or", "||":
 		return 2, true
-	case "and":
+	case "and", "&&":
 		return 3, true
 	case "==", "!=", ">", ">=", "<", "<=", "in", "not_in", "contains", "starts_with", "ends_with", "matches", "has", "has_any", "has_all", "equals", "greater_than", "less_than", "greater_or_equal", "less_or_equal":
 		return 4, true
@@ -1643,9 +1653,9 @@ func evalOp(op string, a, b any) (any, error) {
 		return hasAny(a, b), nil
 	case "has_all":
 		return hasAll(a, b), nil
-	case "and":
+	case "and", "&&":
 		return truthy(a) && truthy(b), nil
-	case "or":
+	case "or", "||":
 		return truthy(a) || truthy(b), nil
 	default:
 		return nil, fmt.Errorf("unsupported operator %q", op)

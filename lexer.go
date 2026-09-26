@@ -200,6 +200,18 @@ done:
 		return l.string(start, r)
 	case '`':
 		return l.rawString(start)
+	case '&':
+		if l.peekN(1) == '&' {
+			l.advance()
+			l.advance()
+			return l.tok(tokOperator, "&&", start), nil
+		}
+	case '|':
+		if l.peekN(1) == '|' {
+			l.advance()
+			l.advance()
+			return l.tok(tokOperator, "||", start), nil
+		}
 	}
 	if isIdentStart(r) || r == '*' {
 		return l.ident(start), nil
