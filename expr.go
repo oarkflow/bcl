@@ -23,9 +23,13 @@ type EvalOptions struct {
 	AllowHash     bool
 	AllowEncoding bool
 	AllowTime     bool
-	Variables     map[string]any
-	Functions     map[string]EvalFunction
-	Now           func() time.Time
+	// StrictFunctions makes calling an unregistered, non-builtin function an
+	// error instead of the legacy behavior of returning the sole argument
+	// unchanged (for arity 1) or a {"$call": name, "args": args} map.
+	StrictFunctions bool
+	Variables       map[string]any
+	Functions       map[string]EvalFunction
+	Now             func() time.Time
 }
 
 type EvalFunction func(args []any, opts *EvalOptions) (any, error)
@@ -170,6 +174,9 @@ func CompileExpression(raw string) (*ExpressionProgram, error) {
 		return nil, err
 	}
 	_ = toks
+	if err := checkExprSyntax(raw); err != nil {
+		return nil, err
+	}
 	prog := &ExpressionProgram{Raw: raw}
 	exprProgramCache.Lock()
 	if existing, ok := exprProgramCache.m[raw]; ok {
@@ -516,6 +523,55 @@ type exprParser struct {
 	pos  int
 	vars map[string]any
 	opts *EvalOptions
+	// checkOnly makes the parser validate grammar only: names and calls
+	// produce a nil placeholder instead of looking up variables or invoking
+	// functions, and operators skip their arithmetic/comparison. This lets
+	// CompileExpression detect syntax errors without any data.
+	checkOnly bool
+}
+
+// checkExprSyntax validates the grammar of a raw expression (or `match ...`
+// program) without computing a value, so it needs no variables and calls no
+// custom functions. It is what CompileExpression uses to catch typos like
+// `(a`, `a ==`, or `x y` at compile time instead of first evaluation.
+func checkExprSyntax(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if strings.HasPrefix(raw, "match ") || strings.HasPrefix(raw, "match(") {
+		return checkMatchSyntax(raw)
+	}
+	toks, err := exprTokens(raw)
+	if err != nil {
+		return err
+	}
+	_, err = (&exprParser{toks: toks, opts: defaultEvalOptions(), checkOnly: true}).parse()
+	return err
+}
+
+func checkMatchSyntax(raw string) error {
+	prog, err := compileMatchProgram(raw)
+	if err != nil {
+		return err
+	}
+	if err := checkExprSyntax(prog.Subject); err != nil {
+		return err
+	}
+	for _, c := range prog.Cases {
+		if c.Guard != "" {
+			if err := checkExprSyntax(c.Guard); err != nil {
+				return err
+			}
+		}
+		if err := checkExprSyntax(c.Result); err != nil {
+			return err
+		}
+	}
+	if prog.Default != "" {
+		return checkExprSyntax(prog.Default)
+	}
+	return nil
 }
 
 func evalProgramRaw(raw string, vars map[string]any, opts *EvalOptions) (any, error) {
@@ -563,8 +619,13 @@ func (e *exprParser) parseExpr(minPrec int) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			if e.peek().kind == tokRBracket {
-				e.next()
+			if e.peek().kind != tokRBracket {
+				return nil, fmt.Errorf("expected ']'")
+			}
+			e.next()
+			if e.checkOnly {
+				left = nil
+				continue
 			}
 			left, err = exprIndex(left, idx)
 			if err != nil {
@@ -577,7 +638,9 @@ func (e *exprParser) parseExpr(minPrec int) (any, error) {
 				return left, nil
 			}
 			e.next()
-			if t.text == "exists" {
+			if e.checkOnly {
+				left = nil
+			} else if t.text == "exists" {
 				left = left != nil
 			} else {
 				left = isEmpty(left)
@@ -599,6 +662,10 @@ func (e *exprParser) parseExpr(minPrec int) (any, error) {
 			hi, err := e.parseExpr(5)
 			if err != nil {
 				return nil, err
+			}
+			if e.checkOnly {
+				left = nil
+				continue
 			}
 			cl, okl := compare(left, lo)
 			ch, okh := compare(left, hi)
@@ -622,7 +689,9 @@ func (e *exprParser) parseExpr(minPrec int) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			if truthy(left) {
+			if e.checkOnly {
+				left = nil
+			} else if truthy(left) {
 				left = thenVal
 			} else {
 				left = elseVal
@@ -638,6 +707,10 @@ func (e *exprParser) parseExpr(minPrec int) (any, error) {
 		right, err := e.parseExpr(prec + 1)
 		if err != nil {
 			return nil, err
+		}
+		if e.checkOnly {
+			left = nil
+			continue
 		}
 		left, err = evalOp(op, left, right)
 		if err != nil {
@@ -657,11 +730,20 @@ func (e *exprParser) prefix() (any, error) {
 		switch t.text {
 		case "!":
 			v, err := e.parseExpr(8)
-			return !truthy(v), err
+			if err != nil {
+				return nil, err
+			}
+			if e.checkOnly {
+				return nil, nil
+			}
+			return !truthy(v), nil
 		case "-":
 			v, err := e.parseExpr(8)
 			if err != nil {
 				return nil, err
+			}
+			if e.checkOnly {
+				return nil, nil
 			}
 			f, ok := num(v)
 			if !ok {
@@ -714,6 +796,9 @@ func (e *exprParser) prefix() (any, error) {
 			return OptionalValue{Present: false}, nil
 		}
 		if e.isTimeNow(t) {
+			if e.checkOnly {
+				return nil, nil
+			}
 			if !e.opts.AllowTime {
 				return nil, fmt.Errorf("time.now requires time capability")
 			}
@@ -725,6 +810,13 @@ func (e *exprParser) prefix() (any, error) {
 		}
 		if e.peek().kind == tokLParen {
 			return e.call(t.text)
+		}
+		if e.checkOnly {
+			for e.peek().kind == tokDot {
+				e.next()
+				e.next()
+			}
+			return nil, nil
 		}
 		return e.lookupRef(t), nil
 	default:
@@ -749,6 +841,12 @@ func (e *exprParser) call(name string) (any, error) {
 		return nil, fmt.Errorf("expected ')' after call arguments")
 	}
 	e.next()
+	if e.checkOnly {
+		if e.opts != nil && e.opts.StrictFunctions && !isKnownFunctionName(name, e.opts) {
+			return nil, fmt.Errorf("unknown function %q", name)
+		}
+		return nil, nil
+	}
 	return evalCall(name, args, e.opts)
 }
 
@@ -767,6 +865,44 @@ func infixPrecedence(op string) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+var builtinCallNames = map[string]bool{
+	"SOME": true, "ALL": true, "ANY": true, "EXISTS": true,
+	"lower": true, "upper": true, "trim": true, "title": true,
+	"starts_with": true, "ends_with": true, "trim_prefix": true, "trim_suffix": true,
+	"repeat": true, "pad_left": true, "pad_right": true, "substr": true, "substring": true,
+	"len": true, "length": true, "replace": true, "split": true, "join": true,
+	"contains": true, "index_of": true, "last_index_of": true, "exists": true, "empty": true,
+	"not_empty": true, "first": true, "last": true, "at": true, "slice": true,
+	"append": true, "push": true, "prepend": true, "reverse": true, "sort": true,
+	"unique": true, "compact": true, "flatten": true, "union": true, "intersect": true,
+	"intersection": true, "difference": true, "without": true, "range": true,
+	"keys": true, "values": true, "get": true, "has_key": true, "has_path": true,
+	"entries": true, "merge": true, "pick": true, "omit": true,
+	"str": true, "string": true, "to_string": true, "int": true, "to_int": true,
+	"float": true, "to_float": true, "bool": true, "to_bool": true,
+	"abs": true, "floor": true, "ceil": true, "round": true, "sqrt": true, "pow": true,
+	"log": true, "ln": true, "log10": true, "exp": true, "sin": true, "cos": true,
+	"tan": true, "asin": true, "acos": true, "atan": true, "sign": true,
+	"min": true, "max": true, "sum": true, "avg": true, "product": true, "median": true,
+	"clamp": true, "regex": true, "regex_match": true, "regex_replace": true,
+	"cidr": true, "ip": true, "time": true, "date": true, "datetime": true,
+	"timestamp": true, "current_timestamp": true, "today": true, "current_date": true,
+	"current_time": true, "unix_timestamp": true, "unix_millis": true, "duration": true,
+	"now": true, "uuid": true, "uuid_v4": true, "random_uuid": true,
+	"unique_id": true, "uid": true, "json": true, "concat": true, "coalesce": true,
+	"base64": true, "sha256": true,
+}
+
+// isKnownFunctionName reports whether name is callable without error: either
+// registered in opts.Functions or one of evalCall's builtins. It performs no
+// side effects, so it is safe to use during a syntax-only check.
+func isKnownFunctionName(name string, opts *EvalOptions) bool {
+	if opts != nil && opts.Functions != nil && opts.Functions[name] != nil {
+		return true
+	}
+	return builtinCallNames[name]
 }
 
 func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
@@ -1544,6 +1680,9 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 		sum := sha256.Sum256([]byte(fmt.Sprint(args[0])))
 		return hex.EncodeToString(sum[:]), nil
 	default:
+		if opts.StrictFunctions {
+			return nil, fmt.Errorf("unknown function %q", name)
+		}
 		if len(args) == 1 {
 			return args[0], nil
 		}

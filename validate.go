@@ -756,8 +756,13 @@ func validateValueAdvanced(v Value, diags *[]Diagnostic, refs map[string][]Span,
 		if x.Raw == "" {
 			*diags = append(*diags, Diagnostic{Severity: "error", Message: "empty expression", Span: x.Span})
 		}
-		if _, err := CompileExpression(x.Raw); err != nil && !strings.Contains(err.Error(), "unexpected expression token") {
-			*diags = append(*diags, Diagnostic{Severity: "error", Message: "invalid expression: " + err.Error(), Span: x.Span})
+		// Raw text captured after a command-statement keyword (e.g. `include
+		// { ... }`) is a nested block, not an arithmetic/comparison
+		// expression, and isn't meant to go through CompileExpression.
+		if !isCommandStatement(leadingIdentifier(x.Raw)) {
+			if _, err := CompileExpression(x.Raw); err != nil && !strings.Contains(err.Error(), "unexpected expression token") {
+				*diags = append(*diags, Diagnostic{Severity: "error", Message: "invalid expression: " + err.Error(), Span: x.Span})
+			}
 		}
 		validateMatchExpressionSyntax(x.Raw, x.Span, diags)
 	case *List:
