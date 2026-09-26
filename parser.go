@@ -240,7 +240,7 @@ func (p *parser) parseNode() Node {
 		bodyStart := p.next()
 		return &Block{Type: "use", ID: targetType.text + "." + targetID.text, Body: p.parseNodes(tokRBrace), Span: spanJoin(name.span, bodyStart.span)}
 	}
-	if name.text == "when" && p.peek().kind != tokLBrace {
+	if name.text == "when" && p.peek().kind != tokLBrace && p.conditionalBlockAhead() {
 		return p.parseConditionalBlock(name)
 	}
 	if p.peek().kind == tokLParen {
@@ -351,6 +351,31 @@ func (p *parser) parseSpreadTarget() token {
 		sp = spanJoin(sp, part.span)
 	}
 	return token{text: b.String(), span: sp}
+}
+
+// conditionalBlockAhead reports whether the upcoming tokens form a
+// `when <condition> { ... }` block, i.e. a `{` appears before the
+// condition's line ends. Without this check, `when` used as a plain
+// attribute (e.g. `when "some expression"`) would be misparsed as an
+// unterminated conditional block.
+func (p *parser) conditionalBlockAhead() bool {
+	depth := 0
+	for i := p.pos; i < len(p.toks); i++ {
+		t := p.toks[i]
+		if depth == 0 && t.kind == tokLBrace {
+			return true
+		}
+		if depth == 0 && (t.kind == tokNewline || t.kind == tokRBrace || t.kind == tokEOF) {
+			return false
+		}
+		if t.kind == tokLBracket || t.kind == tokLParen {
+			depth++
+		}
+		if t.kind == tokRBracket || t.kind == tokRParen {
+			depth--
+		}
+	}
+	return false
 }
 
 func (p *parser) parseConditionalBlock(first token) Node {
@@ -1758,7 +1783,7 @@ func spanJoin(a Span, b Span) Span {
 
 func isExprOperator(s string) bool {
 	switch s {
-	case "in", "not_in", "contains", "starts_with", "ends_with", "matches", "has", "has_any", "has_all", "between", "exists", "empty", "equals", "greater_than", "less_than", "greater_or_equal", "less_or_equal", "to", "and", "or":
+	case "in", "not_in", "contains", "starts_with", "ends_with", "matches", "has", "has_any", "has_all", "between", "exists", "empty", "equals", "greater_than", "less_than", "greater_or_equal", "less_or_equal", "and", "or":
 		return true
 	default:
 		return false

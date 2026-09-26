@@ -547,6 +547,24 @@ func (e *exprParser) parseExpr(minPrec int) (any, error) {
 		if t.kind == tokEOF || t.kind == tokNewline || t.kind == tokRBrace || t.kind == tokRParen || t.kind == tokRBracket || t.kind == tokComma {
 			return left, nil
 		}
+		if t.kind == tokLBracket {
+			if 8 < minPrec {
+				return left, nil
+			}
+			e.next()
+			idx, err := e.parseExpr(0)
+			if err != nil {
+				return nil, err
+			}
+			if e.peek().kind == tokRBracket {
+				e.next()
+			}
+			left, err = exprIndex(left, idx)
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if t.text == "exists" || t.text == "empty" {
 			if 8 < minPrec {
 				return left, nil
@@ -2736,6 +2754,17 @@ func lookup(vars map[string]any, path string) any {
 		return nil
 	}
 	return cur
+}
+
+func exprIndex(v any, idx any) (any, error) {
+	if m, ok := v.(map[string]any); ok {
+		return m[fmt.Sprint(idx)], nil
+	}
+	i, ok := num(idx)
+	if !ok {
+		return nil, fmt.Errorf("index must be numeric")
+	}
+	return indexValue(v, int(i)), nil
 }
 
 func lookupPart(cur any, part string) any {
