@@ -246,7 +246,9 @@ func (p *ExpressionProgram) Eval(vars map[string]any, opts *EvalOptions) (any, e
 			v := stack[sp-3]
 			clear(stack[sp-3 : sp])
 			sp -= 3
-			stack[sp] = compare(v, lo) >= 0 && compare(v, hi) <= 0
+			cl, okl := compare(v, lo)
+			ch, okh := compare(v, hi)
+			stack[sp] = okl && okh && cl >= 0 && ch <= 0
 			sp++
 		case exprExists:
 			i := sp - 1
@@ -321,7 +323,9 @@ func (p *ExpressionProgram) evalHeap(vars map[string]any, opts *EvalOptions) (an
 			lo := stack[len(stack)-2]
 			v := stack[len(stack)-3]
 			stack = stack[:len(stack)-3]
-			stack = append(stack, compare(v, lo) >= 0 && compare(v, hi) <= 0)
+			cl, okl := compare(v, lo)
+			ch, okh := compare(v, hi)
+			stack = append(stack, okl && okh && cl >= 0 && ch <= 0)
 		case exprExists:
 			i := len(stack) - 1
 			stack[i] = stack[i] != nil
@@ -571,7 +575,9 @@ func (e *exprParser) parseExpr(minPrec int) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			left = compare(left, lo) >= 0 && compare(left, hi) <= 0
+			cl, okl := compare(left, lo)
+			ch, okh := compare(left, hi)
+			left = okl && okh && cl >= 0 && ch <= 0
 			continue
 		}
 		if t.text == "?" {
@@ -1575,7 +1581,10 @@ func evalOp(op string, a, b any) (any, error) {
 		}
 		return ai % bi, nil
 	case ">", ">=", "<", "<=":
-		c := compare(a, b)
+		c, ok := compare(a, b)
+		if !ok {
+			return false, nil
+		}
 		switch op {
 		case ">":
 			return c > 0, nil
@@ -3518,24 +3527,29 @@ func truthy(v any) bool {
 	}
 }
 
-func compare(a, b any) int {
+// compare returns the ordering of a and b, and false if they are not
+// comparable (e.g. nil, or mismatched non-numeric/non-string types).
+// Callers must treat a false ok as "the comparison does not hold" rather
+// than falling back to string comparison, which previously let a nil
+// operand compare as greater than any number.
+func compare(a, b any) (int, bool) {
 	af, aok := num(a)
 	bf, bok := num(b)
 	if aok && bok {
 		if af < bf {
-			return -1
+			return -1, true
 		}
 		if af > bf {
-			return 1
+			return 1, true
 		}
-		return 0
+		return 0, true
 	}
 	as, aIsStr := a.(string)
 	bs, bIsStr := b.(string)
 	if aIsStr && bIsStr {
-		return strings.Compare(as, bs)
+		return strings.Compare(as, bs), true
 	}
-	return strings.Compare(fmt.Sprint(a), fmt.Sprint(b))
+	return 0, false
 }
 
 func num(v any) (float64, bool) {

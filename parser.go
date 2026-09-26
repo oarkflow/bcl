@@ -134,7 +134,9 @@ func (p *parser) parseNodes(until tokenKind) []Node {
 	for {
 		p.skipNodeSeparators()
 		if p.peek().kind == until || p.peek().kind == tokEOF {
-			if until != tokEOF && p.peek().kind == until {
+			if until != tokEOF && p.peek().kind != until {
+				p.error(p.peek(), "unexpected end of file, expected '}'")
+			} else if until != tokEOF {
 				p.next()
 			}
 			return nodes
@@ -290,10 +292,16 @@ func (p *parser) parseNode() Node {
 	if p.startsExpressionAfterName() {
 		return p.parseExprNode(name)
 	}
+	sawEqual := false
 	if p.peek().kind == tokEqual {
+		sawEqual = true
 		p.next()
 	}
 	if p.peek().kind == tokNewline || p.peek().kind == tokRBrace || p.peek().kind == tokEOF {
+		if sawEqual {
+			p.error(p.peek(), "expected value after '='")
+			return nil
+		}
 		return &Assignment{Name: name.text, Value: &Reference{Path: "", Span: name.span}, Span: name.span}
 	}
 	v := p.parseValueUntilLine()
