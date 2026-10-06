@@ -1685,7 +1685,7 @@ func exprIdentifierNames(raw string) []string {
 	}
 	var names []string
 	for _, tok := range toks {
-		if tok.kind == tokIdent && !isExprOperator(tok.text) && !isKeyword(tok.text) {
+		if tok.kind == tokIdent && !isExprOperator(tok.text) && !isKeyword(strings.ToLower(tok.text)) {
 			names = append(names, tok.text)
 		}
 	}

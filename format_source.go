@@ -271,6 +271,10 @@ func fmtNeedsSpace(prev, cur fmtTok) bool {
 			return !cur.adjacent
 		case "(":
 			// A call hugs its callee: uuid(), lower(m), env("HOME").
+			// Operators like IN, NOT, AND, OR do not hug: "x IN (1, 2)".
+			if prev.kind == fmtIdent && isExprOperator(prev.text) {
+				return !cur.adjacent
+			}
 			return !(prev.kind == fmtIdent || prev.kind == fmtPunct && (prev.text == ")" || prev.text == "]"))
 		case "[":
 			// "key ["a"]" (a list value) and "tail[0]" (an index) are spelled the

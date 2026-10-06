@@ -1772,20 +1772,63 @@ func explainConditionFailure(condition map[string]any, vars map[string]any, opts
 }
 
 func explainExpressionFailure(expr string, vars map[string]any, opts *Options) string {
-	for _, op := range []string{" not_in ", " starts_with ", " ends_with ", " contains ", " matches ", " has_any ", " has_all ", " == ", " != ", " >= ", " <= ", " > ", " < ", " in ", " has "} {
-		idx := strings.Index(expr, op)
+	exprLower := strings.ToLower(expr)
+	for _, op := range []string{
+		" not_in ", " not in ",
+		" not_between ", " not between ",
+		" between ",
+		" not_like ", " not like ",
+		" like ",
+		" not_ilike ", " not ilike ",
+		" ilike ",
+		" not_matches ", " not matches ",
+		" matches ",
+		" not_contains ", " not contains ",
+		" contains ",
+		" not_has_any ", " not has_any ",
+		" has_any ",
+		" not_has_all ", " not has_all ",
+		" has_all ",
+		" not_has ", " not has ",
+		" has ",
+		" not_starts_with ", " not starts_with ", " not_startswith ",
+		" starts_with ", " startswith ",
+		" not_ends_with ", " not ends_with ", " not_endswith ",
+		" ends_with ", " endswith ",
+		" is not ", " is_not ",
+		" is ",
+		" equals ", " not_equals ",
+		" greater_or_equal ", " less_or_equal ",
+		" greater_than ", " less_than ",
+		" == ", " != ", " >= ", " <= ", " > ", " < ",
+		" in ",
+	} {
+		idx := strings.Index(exprLower, op)
 		if idx < 0 {
 			continue
 		}
 		leftRaw := strings.TrimSpace(expr[:idx])
 		rightRaw := strings.TrimSpace(expr[idx+len(op):])
 		evalOpts := evalOptionsFrom(opts, vars)
+		if strings.Contains(op, "between") {
+			idxAnd := strings.Index(strings.ToLower(rightRaw), " and ")
+			if idxAnd >= 0 {
+				loRaw := strings.TrimSpace(rightRaw[:idxAnd])
+				hiRaw := strings.TrimSpace(rightRaw[idxAnd+5:])
+				left, leftErr := EvalExpr(leftRaw, evalOpts)
+				lo, loErr := EvalExpr(loRaw, evalOpts)
+				hi, hiErr := EvalExpr(hiRaw, evalOpts)
+				if leftErr == nil && loErr == nil && hiErr == nil {
+					return fmt.Sprintf("condition false: %s %s %s and %s (actual=%v, range=[%v, %v])", leftRaw, strings.TrimSpace(expr[idx:idx+len(op)]), loRaw, hiRaw, left, lo, hi)
+				}
+			}
+		}
 		left, leftErr := EvalExpr(leftRaw, evalOpts)
 		right, rightErr := EvalExpr(rightRaw, evalOpts)
 		if leftErr != nil || rightErr != nil {
 			return ""
 		}
-		return fmt.Sprintf("condition false: %s %s %s (actual=%v expected=%v)", leftRaw, strings.TrimSpace(op), rightRaw, left, right)
+		return fmt.Sprintf("condition false: %s %s %s (actual=%v expected=%v)", leftRaw, strings.TrimSpace(expr[idx:idx+len(op)]), rightRaw, left, right)
 	}
 	return ""
 }

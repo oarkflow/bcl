@@ -233,7 +233,7 @@
       "patterns": [
         {
           "name": "keyword.operator.bcl",
-          "match": "\\+=|==|!=|<=|>=|&&|\\|\\||=>|\\.\\.|[=<>!+*/%-]|\\b(in|not|not_in|contains|starts_with|ends_with|matches|has|has_any|has_all|between|exists|empty|equals|greater_than|less_than|greater_or_equal|less_or_equal|and|or|to|as)\\b"
+          "match": "\\+=|==|!=|<=|>=|&&|\\|\\||=>|\\.\\.|[=<>!+*/%-]|(?i)\\b(in|not|not_in|contains|not_contains|starts_with|startswith|not_starts_with|ends_with|endswith|not_ends_with|matches|not_matches|like|not_like|ilike|not_ilike|has|has_any|has_all|between|not_between|exists|not_exists|empty|not_empty|equals|not_equals|greater_than|less_than|greater_or_equal|less_or_equal|and|or|is|to|as)\\b"
         }
       ]
     },

@@ -1,0 +1,879 @@
+module "sms_routing" {
+  version "1.0"
+  environment "production"
+
+  decision_schema "provider_chain" {
+    effects [allow, deny]
+    default allow
+    strategy first_match
+  }
+
+  decision_table "provider_chain" {
+    default allow
+    hit_policy first
+
+    # =========================================================================
+    # 1. DYNAMIC FAILOVER RULES (Highest Priority: 900 - 1000)
+    # =========================================================================
+
+    row "failover_nepal_ntc" {
+      priority 1000
+      when {
+        all {
+          message.country == "NP"
+          message.provider_failed == "carrier_ntc_smpp"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 10
+            provider "carrier_ncell_smpp"
+            reason "failover from ntc to ncell"
+          }
+        }
+      }
+    }
+
+    row "failover_nepal_ncell" {
+      priority 995
+      when {
+        all {
+          message.country == "NP"
+          message.provider_failed == "carrier_ncell_smpp"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 8
+            provider "sparrow_sms_http"
+            reason "failover from ncell to sparrow aggregator"
+          }
+        }
+      }
+    }
+
+    row "failover_india_airtel" {
+      priority 990
+      when {
+        all {
+          message.country == "IN"
+          message.provider_failed == "airtel_direct_smpp"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 10
+            provider "jio_direct_smpp"
+            reason "failover from airtel to jio smpp"
+          }
+        }
+      }
+    }
+
+    row "failover_india_jio" {
+      priority 985
+      when {
+        all {
+          message.country == "IN"
+          message.provider_failed == "jio_direct_smpp"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 8
+            provider "route_mobile_http"
+            reason "failover from jio to route mobile aggregator"
+          }
+        }
+      }
+    }
+
+    row "failover_us_twilio" {
+      priority 980
+      when {
+        all {
+          message.country IN ("US", "CA")
+          message.provider_failed == "twilio_us_direct"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 8
+            provider "aws_sns_us"
+            reason "failover from twilio to aws sns"
+          }
+        }
+      }
+    }
+
+    row "failover_uk_bt" {
+      priority 975
+      when {
+        all {
+          message.country == "GB"
+          message.provider_failed == "bt_direct_smpp"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 9
+            provider "messagebird_eu"
+            reason "failover from bt smpp to messagebird eu"
+          }
+        }
+      }
+    }
+
+    row "failover_eu_messagebird" {
+      priority 970
+      when {
+        all {
+          message.country IN ("DE", "FR", "NL", "IT", "ES")
+          message.provider_failed == "messagebird_eu"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 8
+            provider "sinch_eu_http"
+            reason "failover from messagebird to sinch eu"
+          }
+        }
+      }
+    }
+
+    row "failover_latam_zenvia" {
+      priority 965
+      when {
+        all {
+          message.country IN ("BR", "AR", "MX", "CL")
+          message.provider_failed == "zenvia_latam_http"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 7
+            provider "infobip_global_http"
+            reason "failover from zenvia to infobip global"
+          }
+        }
+      }
+    }
+
+    row "failover_mena_etisalat" {
+      priority 960
+      when {
+        all {
+          message.country IN ("AE", "SA", "EG")
+          message.provider_failed == "etisalat_mena_smpp"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 7
+            provider "infobip_global_http"
+            reason "failover from etisalat to infobip global"
+          }
+        }
+      }
+    }
+
+    row "failover_africa_talking" {
+      priority 955
+      when {
+        all {
+          message.country IN ("NG", "KE", "ZA", "GH", "UG")
+          message.provider_failed == "africastalking_http"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 7
+            provider "infobip_global_http"
+            reason "failover from africastalking to infobip global"
+          }
+        }
+      }
+    }
+
+    row "failover_apac_singtel" {
+      priority 950
+      when {
+        all {
+          message.country IN ("SG", "JP", "AU", "MY", "ID", "KR")
+          message.provider_failed == "singtel_apac_smpp"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 7
+            provider "infobip_global_http"
+            reason "failover from singtel to infobip global"
+          }
+        }
+      }
+    }
+
+    # =========================================================================
+    # 2. NEPAL RULES (Priority 800 - 890)
+    # =========================================================================
+
+    row "nepal_ntc_vip_otp" {
+      priority 890
+      when {
+        all {
+          message.country == "NP"
+          message.mno == "Nepal Telecom (NTC)"
+          any {
+            message.traffic_type IN ("otp", "critical_alert")
+            message.customer_tier == "vip"
+          }
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 10
+            provider "carrier_ntc_smpp"
+            reason "direct ntc smpp for high priority traffic"
+          }
+        }
+      }
+    }
+
+    row "nepal_ncell_vip_otp" {
+      priority 885
+      when {
+        all {
+          message.country == "NP"
+          message.mno == "Ncell"
+          any {
+            message.traffic_type IN ("otp", "critical_alert")
+            message.customer_tier == "vip"
+          }
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 10
+            provider "carrier_ncell_smpp"
+            reason "direct ncell smpp for high priority traffic"
+          }
+        }
+      }
+    }
+
+    row "nepal_ntc_standard" {
+      priority 870
+      when {
+        all {
+          message.country == "NP"
+          message.mno == "Nepal Telecom (NTC)"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 9
+            provider "carrier_ntc_smpp"
+            reason "carrier ntc direct standard"
+          }
+        }
+      }
+    }
+
+    row "nepal_ncell_standard" {
+      priority 865
+      when {
+        all {
+          message.country == "NP"
+          message.mno == "Ncell"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 9
+            provider "carrier_ncell_smpp"
+            reason "carrier ncell direct standard"
+          }
+        }
+      }
+    }
+
+    row "nepal_marketing_bulk" {
+      priority 860
+      when {
+        all {
+          message.country == "NP"
+          any {
+            message.traffic_type == "marketing"
+            message.customer_tier == "starter"
+          }
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 7
+            provider "sparrow_sms_http"
+            reason "sparrow aggregator for bulk promotional sms"
+          }
+        }
+      }
+    }
+
+    row "nepal_general" {
+      priority 850
+      when {
+        message.country == "NP"
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 8
+            provider "carrier_ntc_smpp"
+            reason "nepal default route"
+          }
+        }
+      }
+    }
+
+    # =========================================================================
+    # 3. INDIA RULES (Priority 700 - 790)
+    # =========================================================================
+
+    row "india_airtel_vip_otp" {
+      priority 790
+      when {
+        all {
+          message.country == "IN"
+          message.mno == "Airtel"
+          any {
+            message.traffic_type IN ("otp", "critical_alert")
+            message.customer_tier == "vip"
+          }
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 10
+            provider "airtel_direct_smpp"
+            reason "bharti airtel direct smpp for otp"
+          }
+        }
+      }
+    }
+
+    row "india_jio_vip_otp" {
+      priority 785
+      when {
+        all {
+          message.country == "IN"
+          message.mno == "Jio"
+          any {
+            message.traffic_type IN ("otp", "critical_alert")
+            message.customer_tier == "vip"
+          }
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 10
+            provider "jio_direct_smpp"
+            reason "reliance jio direct smpp for otp"
+          }
+        }
+      }
+    }
+
+    row "india_marketing_bulk" {
+      priority 770
+      when {
+        all {
+          message.country == "IN"
+          any {
+            message.traffic_type == "marketing"
+            message.customer_tier == "starter"
+          }
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 7
+            provider "route_mobile_http"
+            reason "route mobile bulk aggregator for marketing"
+          }
+        }
+      }
+    }
+
+    row "india_airtel_standard" {
+      priority 760
+      when {
+        all {
+          message.country == "IN"
+          message.mno == "Airtel"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 9
+            provider "airtel_direct_smpp"
+            reason "airtel standard route"
+          }
+        }
+      }
+    }
+
+    row "india_jio_standard" {
+      priority 755
+      when {
+        all {
+          message.country == "IN"
+          message.mno == "Jio"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 9
+            provider "jio_direct_smpp"
+            reason "jio standard route"
+          }
+        }
+      }
+    }
+
+    row "india_general" {
+      priority 750
+      when {
+        message.country == "IN"
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 8
+            provider "airtel_direct_smpp"
+            reason "india default direct smpp"
+          }
+        }
+      }
+    }
+
+    # =========================================================================
+    # 4. NORTH AMERICA RULES (US & CA, Priority 600 - 690)
+    # =========================================================================
+
+    row "us_vip_otp" {
+      priority 690
+      when {
+        all {
+          message.country IN ("US", "CA")
+          any {
+            message.traffic_type IN ("otp", "critical_alert")
+            message.customer_tier == "vip"
+          }
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 10
+            provider "twilio_us_direct"
+            reason "twilio 10dlc verified gateway for otp/vip"
+          }
+        }
+      }
+    }
+
+    row "us_marketing_bulk" {
+      priority 670
+      when {
+        all {
+          message.country == "US"
+          any {
+            message.traffic_type == "marketing"
+            message.customer_tier == "starter"
+          }
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 7
+            provider "bandwidth_us"
+            reason "bandwidth us high volume bulk promo"
+          }
+        }
+      }
+    }
+
+    row "us_transactional_aws" {
+      priority 660
+      when {
+        all {
+          message.country IN ("US", "CA")
+          message.traffic_type == "transactional"
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 8
+            provider "aws_sns_us"
+            reason "aws sns transactional messaging"
+          }
+        }
+      }
+    }
+
+    row "us_ca_general" {
+      priority 650
+      when {
+        message.country IN ("US", "CA")
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 8
+            provider "twilio_us_direct"
+            reason "north america general gateway"
+          }
+        }
+      }
+    }
+
+    # =========================================================================
+    # 5. UNITED KINGDOM RULES (Priority 500 - 590)
+    # =========================================================================
+
+    row "uk_vip_otp" {
+      priority 590
+      when {
+        all {
+          message.country == "GB"
+          any {
+            message.traffic_type IN ("otp", "critical_alert")
+            message.customer_tier == "vip"
+          }
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 10
+            provider "bt_direct_smpp"
+            reason "british telecom direct smpp for otp"
+          }
+        }
+      }
+    }
+
+    row "uk_marketing_sinch" {
+      priority 570
+      when {
+        all {
+          message.country == "GB"
+          any {
+            message.traffic_type == "marketing"
+            message.customer_tier == "starter"
+          }
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 7
+            provider "sinch_eu_http"
+            reason "sinch eu marketing aggregator"
+          }
+        }
+      }
+    }
+
+    row "uk_general" {
+      priority 550
+      when {
+        message.country == "GB"
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 9
+            provider "bt_direct_smpp"
+            reason "uk direct smpp default"
+          }
+        }
+      }
+    }
+
+    # =========================================================================
+    # 6. EUROPE RULES (DE, FR, NL, IT, ES, Priority 400 - 490)
+    # =========================================================================
+
+    row "eu_marketing_sinch" {
+      priority 480
+      when {
+        all {
+          message.country IN ("DE", "FR", "NL", "IT", "ES")
+          any {
+            message.traffic_type == "marketing"
+            message.customer_tier == "starter"
+          }
+        }
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 7
+            provider "sinch_eu_http"
+            reason "sinch europe bulk promo"
+          }
+        }
+      }
+    }
+
+    row "eu_general" {
+      priority 450
+      when {
+        message.country IN ("DE", "FR", "NL", "IT", "ES")
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 9
+            provider "messagebird_eu"
+            reason "messagebird europe gateway"
+          }
+        }
+      }
+    }
+
+    # =========================================================================
+    # 7. MIDDLE EAST & MENA RULES (AE, SA, EG, Priority 350 - 390)
+    # =========================================================================
+
+    row "mena_general" {
+      priority 350
+      when {
+        message.country IN ("AE", "SA", "EG")
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 10
+            provider "etisalat_mena_smpp"
+            reason "etisalat mena direct smpp"
+          }
+        }
+      }
+    }
+
+    # =========================================================================
+    # 8. LATIN AMERICA RULES (BR, AR, MX, CL, Priority 300 - 340)
+    # =========================================================================
+
+    row "latam_general" {
+      priority 300
+      when {
+        message.country IN ("BR", "AR", "MX", "CL")
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 9
+            provider "zenvia_latam_http"
+            reason "zenvia latam gateway"
+          }
+        }
+      }
+    }
+
+    # =========================================================================
+    # 9. AFRICA RULES (NG, KE, ZA, GH, UG, Priority 250 - 290)
+    # =========================================================================
+
+    row "africa_general" {
+      priority 250
+      when {
+        message.country IN ("NG", "KE", "ZA", "GH", "UG")
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 9
+            provider "africastalking_http"
+            reason "africas talking regional gateway"
+          }
+        }
+      }
+    }
+
+    # =========================================================================
+    # 10. ASIA-PACIFIC RULES (SG, JP, AU, MY, ID, KR, Priority 200 - 240)
+    # =========================================================================
+
+    row "apac_general" {
+      priority 200
+      when {
+        message.country IN ("SG", "JP", "AU", "MY", "ID", "KR")
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 1
+            priority 10
+            provider "singtel_apac_smpp"
+            reason "singtel apac direct smpp"
+          }
+        }
+      }
+    }
+
+    # =========================================================================
+    # 11. GLOBAL FALLBACK RULES (Priority 50 - 100)
+    # =========================================================================
+
+    row "global_marketing_fallback" {
+      priority 90
+      when {
+        message.traffic_type == "marketing"
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 6
+            provider "infobip_global_http"
+            reason "infobip global marketing fallback"
+          }
+        }
+      }
+    }
+
+    row "global_default_infobip" {
+      priority 50
+      when {
+        message.to != ""
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 2
+            priority 7
+            provider "infobip_global_http"
+            reason "infobip global tier 2 fallback"
+          }
+        }
+      }
+    }
+
+    row "global_ultimate_vonage" {
+      priority 10
+      when {
+        true
+      }
+      then {
+        outcome {
+          decision allow
+          attributes {
+            tier 3
+            priority 5
+            provider "vonage_global_fallback"
+            reason "vonage global ultimate fallback"
+          }
+        }
+      }
+    }
+  }
+}

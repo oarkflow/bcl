@@ -82,6 +82,28 @@ func main() {
 		},
 	})
 
+	runWithEngine("SMS dynamic failover (carrier_ntc_smpp failover to ncell)", "packages/sms_provider_routing.bcl", "provider_chain", map[string]any{
+		"message": map[string]any{
+			"country":         "NP",
+			"provider_failed": "carrier_ntc_smpp",
+		},
+	})
+
+	runWithEngine("SMS VIP OTP North America (IN tuple check)", "packages/sms_provider_routing.bcl", "provider_chain", map[string]any{
+		"message": map[string]any{
+			"country":       "US",
+			"traffic_type":  "otp",
+			"customer_tier": "vip",
+		},
+	})
+
+	runWithEngine("SMS ultimate fallback (when { true })", "packages/sms_provider_routing.bcl", "provider_chain", map[string]any{
+		"message": map[string]any{
+			"country":      "XX",
+			"traffic_type": "transactional",
+		},
+	})
+
 	runCompleteDecisionEssentials()
 	runStrictValidationExample()
 	runInlinePatternDecision()

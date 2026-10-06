@@ -1,0 +1,198 @@
+bcl {
+  version "1.0"
+  strict true
+}
+
+# -----------------------------------------------------------------------------
+# 19-operators-and-expressions: Comprehensive showcase of all BCL operators
+# -----------------------------------------------------------------------------
+
+# 1. Collection & Membership checks: IN, NOT IN, CONTAINS, HAS, HAS_ANY, HAS_ALL
+rule "collection-membership" {
+  when {
+    all {
+      # IN with tuple syntax: ("US", "CA")
+      request.country IN ("US", "CA", "NP", "IN")
+
+      # NOT IN with bracket list syntax: ["blocked", "suspended"]
+      subject.status NOT IN ["blocked", "suspended"]
+
+      # String and slice containment
+      request.path CONTAINS "admin"
+      request.tags HAS "urgent"
+      subject.roles HAS_ANY ["admin", "operator", "superadmin"]
+      subject.permissions HAS_ALL ["read", "write"]
+    }
+  }
+  then {
+    emit "audit.collection_matched"
+  }
+}
+
+# 2. Range checks: BETWEEN ... AND ..., NOT BETWEEN ... AND ...
+rule "range-checks" {
+  when {
+    all {
+      # Numeric ranges
+      request.score BETWEEN 80 AND 100
+      request.retry_count NOT BETWEEN 5 AND 10
+
+      # Date and timestamp ranges
+      request.date BETWEEN "2026-01-01" AND "2026-12-31"
+      request.timestamp BETWEEN "2026-05-01T00:00:00Z" AND "2026-05-31T23:59:59Z"
+    }
+  }
+  then {
+    emit "audit.range_matched"
+  }
+}
+
+# 3. Pattern matching: LIKE, ILIKE, MATCHES
+rule "pattern-matching" {
+  when {
+    all {
+      # SQL-style wildcards: % matches any characters, _ matches single character
+      request.provider LIKE "%direct_smpp"
+      request.code LIKE "OTP_%"
+
+      # Case-insensitive SQL pattern matching
+      request.channel ILIKE "%sms%"
+
+      # Negated patterns
+      request.user_agent NOT LIKE "%bot%"
+      request.domain NOT ILIKE "%spam%"
+
+      # Regular expressions
+      request.phone MATCHES "^\\+[1-9][0-9]{7,14}$"
+      request.ip NOT MATCHES "^192\\.168\\."
+    }
+  }
+  then {
+    emit "audit.pattern_matched"
+  }
+}
+
+# 4. Affix checks: STARTS_WITH, ENDS_WITH
+rule "affix-checks" {
+  when {
+    all {
+      request.phone STARTS_WITH "+977"
+      request.filename ENDS_WITH ".json"
+      request.phone NOT STARTS_WITH "+0"
+      request.filename NOT ENDS_WITH ".tmp"
+    }
+  }
+  then {
+    emit "audit.affix_matched"
+  }
+}
+
+# 5. Null, Empty, and State predicates: IS NULL, IS NOT NULL, IS EMPTY, IS TRUE, IS FALSE
+rule "state-predicates" {
+  when {
+    all {
+      request.deleted_at IS NULL
+      request.session_id IS NOT NULL
+      request.error IS EMPTY
+      request.payload IS NOT EMPTY
+      request.is_verified IS TRUE
+      request.is_sandbox IS FALSE
+      request.opt_in EXISTS
+    }
+  }
+  then {
+    emit "audit.state_matched"
+  }
+}
+
+# 6. Relational synonyms & Equality
+rule "relational-synonyms" {
+  when {
+    all {
+      request.priority greater_than 50
+      request.attempts less_or_equal 3
+      request.tier equals "premium"
+      request.mode not_equals "dry_run"
+      request.kind IS "sms"
+      request.kind IS NOT "email"
+    }
+  }
+  then {
+    emit "audit.relational_matched"
+  }
+}
+
+# 7. Function forms of operators: like(), ilike(), between(), not_between(), in(), not_in(), startswith(), endswith()
+rule "functional-operators" {
+  when {
+    all {
+      like(request.provider, "%smpp%")
+      ilike(request.sender, "notify_%")
+      between(request.score, 70, 100)
+      not_between(request.score, 0, 50)
+      in(request.country, ["NP", "IN", "US"])
+      not_in(request.country, ["KP", "IR"])
+      startswith(request.phone, "+1")
+      endswith(request.path, "/status")
+    }
+  }
+  then {
+    emit "audit.functional_matched"
+  }
+}
+
+# 8. Dynamic checks with variables on the Left and Right of operators
+rule "variable-operands-left-and-right" {
+  when {
+    all {
+      # Collection checks where right operand is a variable/reference
+      request.country IN config.allowed_countries
+      request.country NOT IN config.blocked_countries
+
+      # Collection checks where left operand is a variable collection and right is an item variable
+      config.allowed_countries CONTAINS request.country
+      config.allowed_countries HAS request.country
+      config.blocked_countries NOT CONTAINS request.country
+      config.blocked_countries NOT HAS request.country
+
+      # Intersect & subset checks where both operands are collections in variables
+      subject.roles HAS_ANY config.required_roles
+      subject.permissions HAS_ALL config.required_permissions
+      subject.roles NOT HAS_ANY config.forbidden_roles
+
+      # Range checks where all bounds are variables
+      request.score BETWEEN config.min_score AND config.max_score
+      request.score NOT BETWEEN config.floor_score AND config.min_score
+
+      # Pattern matching where pattern is stored in a configuration variable
+      request.provider LIKE config.provider_pattern
+      request.provider ILIKE config.provider_ilike_pattern
+      request.phone MATCHES config.phone_regex
+
+      # Affixes where prefix and suffix are variables
+      request.phone STARTS_WITH config.country_prefix
+      request.filename ENDS_WITH config.expected_extension
+
+      # Identity and relational checks between variables
+      request.channel IS config.preferred_channel
+      request.channel IS NOT config.deprecated_channel
+      request.role equals config.admin_role
+      request.score greater_than config.min_score
+      config.min_score < request.score
+      request.tenant_id == subject.tenant_id
+    }
+  }
+  then {
+    emit "audit.variable_operands_matched"
+  }
+}
+
+# 9. Boolean literal condition in rules: when { true }
+rule "catch-all-fallback" {
+  when {
+    true
+  }
+  then {
+    action "route_to_fallback"
+  }
+}

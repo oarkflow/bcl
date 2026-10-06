@@ -181,6 +181,12 @@ func (p *parser) parseNode() Node {
 		body := p.parseNodes(tokRBrace)
 		return &Object{Fields: body, Span: lb.span}
 	}
+	if t.kind == tokOperator && (t.text == "!" || t.text == "-") {
+		return p.parseExprNode(p.next())
+	}
+	if t.kind == tokLParen {
+		return p.parseExprNode(p.next())
+	}
 	if t.kind != tokIdent && t.kind != tokString && t.kind != tokNumber {
 		p.error(t, "expected declaration, assignment, or block")
 		return nil
@@ -244,6 +250,9 @@ func (p *parser) parseNode() Node {
 	}
 	if name.text == "when" && p.peek().kind != tokLBrace && p.conditionalBlockAhead() {
 		return p.parseConditionalBlock(name)
+	}
+	if strings.EqualFold(name.text, "not") && p.peek().kind != tokLBrace && p.peek().kind != tokEqual {
+		return p.parseExprNode(name)
 	}
 	if p.peek().kind == tokLParen {
 		return p.parseExprNode(name)
@@ -1630,6 +1639,14 @@ func buildCondition(op string, body []Node, sp Span) Value {
 		case *Assignment:
 			if expr, ok := x.Value.(*Expr); ok {
 				cond.Children = append(cond.Children, &Condition{Op: "expr", Expr: expr, Span: expr.Span})
+			} else if strings.EqualFold(x.Name, "true") || strings.EqualFold(x.Name, "false") {
+				cond.Children = append(cond.Children, &Condition{Op: "expr", Expr: &Expr{Raw: strings.ToLower(x.Name), Span: x.Span}, Span: x.Span})
+			} else if lit, ok := x.Value.(*Literal); ok && lit.Type == "bool" {
+				raw := "false"
+				if lit.Data == true {
+					raw = "true"
+				}
+				cond.Children = append(cond.Children, &Condition{Op: "expr", Expr: &Expr{Raw: raw, Span: lit.Span}, Span: lit.Span})
 			}
 		case *Block:
 			if x.Type == "all" || x.Type == "any" || x.Type == "not" || x.Type == "none" {
@@ -1784,8 +1801,12 @@ func spanJoin(a Span, b Span) Span {
 }
 
 func isExprOperator(s string) bool {
-	switch s {
-	case "in", "not_in", "contains", "starts_with", "ends_with", "matches", "has", "has_any", "has_all", "between", "exists", "empty", "equals", "greater_than", "less_than", "greater_or_equal", "less_or_equal", "and", "or":
+	switch strings.ToLower(s) {
+	case "in", "not_in", "contains", "not_contains", "starts_with", "startswith", "not_starts_with", "not_startswith",
+		"ends_with", "endswith", "not_ends_with", "not_endswith", "matches", "not_matches", "like", "not_like",
+		"ilike", "not_ilike", "has", "not_has", "has_any", "not_has_any", "has_all", "not_has_all", "between", "not_between",
+		"exists", "not_exists", "empty", "not_empty", "equals", "not_equals", "greater_than", "less_than",
+		"greater_or_equal", "less_or_equal", "and", "or", "not", "is", "is_not":
 		return true
 	default:
 		return false

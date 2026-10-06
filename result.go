@@ -552,8 +552,70 @@ func evalSimpleExprBool(expr string, input map[string]any) (bool, bool, error) {
 	if strings.HasPrefix(expr, "match ") || strings.HasPrefix(expr, "match(") {
 		return false, false, nil
 	}
-	for _, op := range []string{" not_in ", " starts_with ", " ends_with ", " contains ", " has_any ", " has_all ", " == ", " != ", " >= ", " <= ", " > ", " < ", " in ", " has "} {
-		idx := strings.Index(expr, op)
+	exprLower := strings.ToLower(expr)
+
+	// Range checks: between / not between
+	for _, bOp := range []struct {
+		name  string
+		isNot bool
+	}{
+		{" not between ", true},
+		{" not_between ", true},
+		{" between ", false},
+	} {
+		idx := strings.Index(exprLower, bOp.name)
+		if idx >= 0 {
+			leftRaw := strings.TrimSpace(expr[:idx])
+			restRaw := strings.TrimSpace(expr[idx+len(bOp.name):])
+			idxAnd := strings.Index(strings.ToLower(restRaw), " and ")
+			if idxAnd >= 0 {
+				loRaw := strings.TrimSpace(restRaw[:idxAnd])
+				hiRaw := strings.TrimSpace(restRaw[idxAnd+5:])
+				left, ok1 := simpleExprOperand(leftRaw, input)
+				lo, ok2 := simpleExprOperand(loRaw, input)
+				hi, ok3 := simpleExprOperand(hiRaw, input)
+				if ok1 && ok2 && ok3 {
+					cl, okl := compare(left, lo)
+					ch, okh := compare(left, hi)
+					inRange := okl && okh && cl >= 0 && ch <= 0
+					if bOp.isNot {
+						inRange = !inRange
+					}
+					return inRange, true, nil
+				}
+			}
+		}
+	}
+
+	for _, op := range []string{
+		" not_in ", " not in ",
+		" not_like ", " not like ",
+		" like ",
+		" not_ilike ", " not ilike ",
+		" ilike ",
+		" not_matches ", " not matches ",
+		" matches ",
+		" not_contains ", " not contains ",
+		" contains ",
+		" not_has_any ", " not has_any ",
+		" has_any ",
+		" not_has_all ", " not has_all ",
+		" has_all ",
+		" not_has ", " not has ",
+		" has ",
+		" not_starts_with ", " not starts_with ", " not_startswith ",
+		" starts_with ", " startswith ",
+		" not_ends_with ", " not ends_with ", " not_endswith ",
+		" ends_with ", " endswith ",
+		" is not ", " is_not ",
+		" is ",
+		" equals ", " not_equals ",
+		" greater_or_equal ", " less_or_equal ",
+		" greater_than ", " less_than ",
+		" == ", " != ", " >= ", " <= ", " > ", " < ",
+		" in ",
+	} {
+		idx := strings.Index(exprLower, op)
 		if idx < 0 {
 			continue
 		}

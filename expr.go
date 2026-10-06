@@ -465,7 +465,7 @@ func (c *exprCompiler) call(name string) ([]exprInstr, any, bool, error) {
 
 func pureConstCall(name string) bool {
 	switch name {
-	case "abs", "acos", "append", "asin", "atan", "at", "avg", "bool", "ceil", "clamp", "coalesce", "compact", "concat", "contains", "cos", "difference", "duration", "empty", "ends_with", "entries", "exists", "exp", "first", "flatten", "float", "floor", "get", "has_key", "has_path", "index_of", "int", "intersect", "intersection", "join", "json", "keys", "last", "last_index_of", "ln", "log", "log10", "max", "median", "merge", "min", "not_empty", "omit", "pad_left", "pad_right", "pick", "product", "pow", "prepend", "push", "range", "regex", "regex_match", "regex_replace", "repeat", "reverse", "round", "sin", "sign", "slice", "sort", "split", "sqrt", "starts_with", "str", "string", "substr", "substring", "sum", "tan", "title", "to_bool", "to_float", "to_int", "to_string", "trim", "trim_prefix", "trim_suffix", "union", "unique", "values", "without":
+	case "abs", "acos", "append", "asin", "atan", "at", "avg", "between", "bool", "ceil", "clamp", "coalesce", "compact", "concat", "contains", "cos", "difference", "duration", "empty", "endswith", "ends_with", "entries", "exists", "exp", "first", "flatten", "float", "floor", "get", "has_key", "has_path", "ilike", "in", "index_of", "int", "intersect", "intersection", "join", "json", "keys", "last", "last_index_of", "like", "ln", "log", "log10", "max", "median", "merge", "min", "not_between", "not_empty", "not_in", "omit", "pad_left", "pad_right", "pick", "product", "pow", "prepend", "push", "range", "regex", "regex_match", "regex_replace", "repeat", "reverse", "round", "sin", "sign", "slice", "sort", "split", "sqrt", "startswith", "starts_with", "str", "string", "substr", "substring", "sum", "tan", "title", "to_bool", "to_float", "to_int", "to_string", "trim", "trim_prefix", "trim_suffix", "union", "unique", "values", "without":
 		return true
 	default:
 		return false
@@ -633,33 +633,370 @@ func (e *exprParser) parseExpr(minPrec int) (any, error) {
 			}
 			continue
 		}
-		if t.text == "exists" || t.text == "empty" {
+		low := strings.ToLower(t.text)
+		if low == "exists" || low == "empty" {
 			if 8 < minPrec {
 				return left, nil
 			}
 			e.next()
 			if e.checkOnly {
 				left = nil
-			} else if t.text == "exists" {
+			} else if low == "exists" {
 				left = left != nil
 			} else {
 				left = isEmpty(left)
 			}
 			continue
 		}
-		if t.text == "between" {
+		if low == "is" {
 			if 4 < minPrec {
 				return left, nil
 			}
-			e.next()
-			lo, err := e.parseExpr(5)
+			e.next() // consume "is"
+			isNeg := false
+			if strings.EqualFold(e.peek().text, "not") {
+				isNeg = true
+				e.next() // consume "not"
+			}
+			nextLow := strings.ToLower(e.peek().text)
+			switch nextLow {
+			case "null", "nil":
+				e.next()
+				if e.checkOnly {
+					left = nil
+				} else if isNeg {
+					left = (left != nil)
+				} else {
+					left = (left == nil)
+				}
+				continue
+			case "empty":
+				e.next()
+				if e.checkOnly {
+					left = nil
+				} else if isNeg {
+					left = !isEmpty(left)
+				} else {
+					left = isEmpty(left)
+				}
+				continue
+			case "true":
+				e.next()
+				if e.checkOnly {
+					left = nil
+				} else if isNeg {
+					left = !truthy(left)
+				} else {
+					left = truthy(left)
+				}
+				continue
+			case "false":
+				e.next()
+				if e.checkOnly {
+					left = nil
+				} else if isNeg {
+					left = truthy(left)
+				} else {
+					left = !truthy(left)
+				}
+				continue
+			default:
+				right, err := e.parseExpr(5)
+				if err != nil {
+					return nil, err
+				}
+				if e.checkOnly {
+					left = nil
+				} else if isNeg {
+					left = !equalLoose(left, right)
+				} else {
+					left = equalLoose(left, right)
+				}
+				continue
+			}
+		}
+		if low == "not" {
+			nextLow := strings.ToLower(e.peekN(1).text)
+			switch nextLow {
+			case "in":
+				if 4 < minPrec {
+					return left, nil
+				}
+				e.next() // consume "not"
+				e.next() // consume "in"
+				var right any
+				if e.peek().kind == tokLParen {
+					e.next() // consume '('
+					var items []any
+					for e.peek().kind != tokRParen && e.peek().kind != tokEOF {
+						item, err := e.parseExpr(0)
+						if err != nil {
+							return nil, err
+						}
+						items = append(items, item)
+						if e.peek().kind == tokComma {
+							e.next()
+						}
+					}
+					if e.peek().kind != tokRParen {
+						return nil, fmt.Errorf("expected ')' after NOT IN list")
+					}
+					e.next() // consume ')'
+					right = items
+				} else {
+					var err error
+					right, err = e.parseExpr(5)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if e.checkOnly {
+					left = nil
+				} else {
+					v, err := evalOp("not_in", left, right)
+					if err != nil {
+						return nil, err
+					}
+					left = v
+				}
+				continue
+			case "between":
+				if 4 < minPrec {
+					return left, nil
+				}
+				e.next() // consume "not"
+				e.next() // consume "between"
+				lo, err := e.parseExpr(4)
+				if err != nil {
+					return nil, err
+				}
+				if !strings.EqualFold(e.peek().text, "and") {
+					return nil, fmt.Errorf("expected 'AND' in not between expression")
+				}
+				e.next() // consume "and"
+				hi, err := e.parseExpr(4)
+				if err != nil {
+					return nil, err
+				}
+				if e.checkOnly {
+					left = nil
+				} else {
+					cl, okl := compare(left, lo)
+					ch, okh := compare(left, hi)
+					left = !(okl && okh && cl >= 0 && ch <= 0)
+				}
+				continue
+			case "like":
+				if 4 < minPrec {
+					return left, nil
+				}
+				e.next()
+				e.next()
+				right, err := e.parseExpr(5)
+				if err != nil {
+					return nil, err
+				}
+				if e.checkOnly {
+					left = nil
+				} else {
+					left, err = evalOp("not_like", left, right)
+					if err != nil {
+						return nil, err
+					}
+				}
+				continue
+			case "ilike":
+				if 4 < minPrec {
+					return left, nil
+				}
+				e.next()
+				e.next()
+				right, err := e.parseExpr(5)
+				if err != nil {
+					return nil, err
+				}
+				if e.checkOnly {
+					left = nil
+				} else {
+					left, err = evalOp("not_ilike", left, right)
+					if err != nil {
+						return nil, err
+					}
+				}
+				continue
+			case "matches":
+				if 4 < minPrec {
+					return left, nil
+				}
+				e.next()
+				e.next()
+				right, err := e.parseExpr(5)
+				if err != nil {
+					return nil, err
+				}
+				if e.checkOnly {
+					left = nil
+				} else {
+					left, err = evalOp("not_matches", left, right)
+					if err != nil {
+						return nil, err
+					}
+				}
+				continue
+			case "contains", "has":
+				if 4 < minPrec {
+					return left, nil
+				}
+				e.next()
+				e.next()
+				right, err := e.parseExpr(5)
+				if err != nil {
+					return nil, err
+				}
+				if e.checkOnly {
+					left = nil
+				} else {
+					left, err = evalOp("not_contains", left, right)
+					if err != nil {
+						return nil, err
+					}
+				}
+				continue
+			case "has_any":
+				if 4 < minPrec {
+					return left, nil
+				}
+				e.next()
+				e.next()
+				right, err := e.parseExpr(5)
+				if err != nil {
+					return nil, err
+				}
+				if e.checkOnly {
+					left = nil
+				} else {
+					left, err = evalOp("not_has_any", left, right)
+					if err != nil {
+						return nil, err
+					}
+				}
+				continue
+			case "has_all":
+				if 4 < minPrec {
+					return left, nil
+				}
+				e.next()
+				e.next()
+				right, err := e.parseExpr(5)
+				if err != nil {
+					return nil, err
+				}
+				if e.checkOnly {
+					left = nil
+				} else {
+					left, err = evalOp("not_has_all", left, right)
+					if err != nil {
+						return nil, err
+					}
+				}
+				continue
+			case "starts_with", "startswith":
+				if 4 < minPrec {
+					return left, nil
+				}
+				e.next()
+				e.next()
+				right, err := e.parseExpr(5)
+				if err != nil {
+					return nil, err
+				}
+				if e.checkOnly {
+					left = nil
+				} else {
+					left, err = evalOp("not_starts_with", left, right)
+					if err != nil {
+						return nil, err
+					}
+				}
+				continue
+			case "ends_with", "endswith":
+				if 4 < minPrec {
+					return left, nil
+				}
+				e.next()
+				e.next()
+				right, err := e.parseExpr(5)
+				if err != nil {
+					return nil, err
+				}
+				if e.checkOnly {
+					left = nil
+				} else {
+					left, err = evalOp("not_ends_with", left, right)
+					if err != nil {
+						return nil, err
+					}
+				}
+				continue
+			case "equals":
+				if 4 < minPrec {
+					return left, nil
+				}
+				e.next()
+				e.next()
+				right, err := e.parseExpr(5)
+				if err != nil {
+					return nil, err
+				}
+				if e.checkOnly {
+					left = nil
+				} else {
+					left, err = evalOp("!=", left, right)
+					if err != nil {
+						return nil, err
+					}
+				}
+				continue
+			case "exists":
+				if 8 < minPrec {
+					return left, nil
+				}
+				e.next()
+				e.next()
+				if e.checkOnly {
+					left = nil
+				} else {
+					left = (left == nil)
+				}
+				continue
+			case "empty":
+				if 8 < minPrec {
+					return left, nil
+				}
+				e.next()
+				e.next()
+				if e.checkOnly {
+					left = nil
+				} else {
+					left = !isEmpty(left)
+				}
+				continue
+			}
+		}
+		if low == "between" {
+			if 4 < minPrec {
+				return left, nil
+			}
+			e.next() // consume "between"
+			lo, err := e.parseExpr(4)
 			if err != nil {
 				return nil, err
 			}
-			if e.peek().text == "and" {
-				e.next()
+			if !strings.EqualFold(e.peek().text, "and") {
+				return nil, fmt.Errorf("expected 'AND' in between expression")
 			}
-			hi, err := e.parseExpr(5)
+			e.next() // consume "and"
+			hi, err := e.parseExpr(4)
 			if err != nil {
 				return nil, err
 			}
@@ -670,6 +1007,48 @@ func (e *exprParser) parseExpr(minPrec int) (any, error) {
 			cl, okl := compare(left, lo)
 			ch, okh := compare(left, hi)
 			left = okl && okh && cl >= 0 && ch <= 0
+			continue
+		}
+		if low == "in" {
+			if 4 < minPrec {
+				return left, nil
+			}
+			e.next() // consume "in"
+			var right any
+			if e.peek().kind == tokLParen {
+				e.next() // consume '('
+				var items []any
+				for e.peek().kind != tokRParen && e.peek().kind != tokEOF {
+					item, err := e.parseExpr(0)
+					if err != nil {
+						return nil, err
+					}
+					items = append(items, item)
+					if e.peek().kind == tokComma {
+						e.next()
+					}
+				}
+				if e.peek().kind != tokRParen {
+					return nil, fmt.Errorf("expected ')' after IN list")
+				}
+				e.next() // consume ')'
+				right = items
+			} else {
+				var err error
+				right, err = e.parseExpr(5)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if e.checkOnly {
+				left = nil
+			} else {
+				v, err := evalOp("in", left, right)
+				if err != nil {
+					return nil, err
+				}
+				left = v
+			}
 			continue
 		}
 		if t.text == "?" {
@@ -699,6 +1078,9 @@ func (e *exprParser) parseExpr(minPrec int) (any, error) {
 			continue
 		}
 		op := t.text
+		if t.kind == tokIdent {
+			op = strings.ToLower(op)
+		}
 		prec, ok := infixPrecedence(op)
 		if !ok || prec < minPrec {
 			return left, nil
@@ -753,9 +1135,35 @@ func (e *exprParser) prefix() (any, error) {
 		}
 		return nil, fmt.Errorf("unexpected expression token %q", t.text)
 	case tokLParen:
+		if e.peek().kind == tokRParen {
+			e.next()
+			return []any{}, nil
+		}
 		v, err := e.parseExpr(0)
 		if err != nil {
 			return nil, err
+		}
+		if e.peek().kind == tokComma {
+			items := []any{v}
+			for e.peek().kind == tokComma {
+				e.next()
+				if e.peek().kind == tokRParen {
+					break
+				}
+				item, err := e.parseExpr(0)
+				if err != nil {
+					return nil, err
+				}
+				items = append(items, item)
+			}
+			if e.peek().kind != tokRParen {
+				return nil, fmt.Errorf("expected ')'")
+			}
+			e.next()
+			if e.checkOnly {
+				return nil, nil
+			}
+			return items, nil
 		}
 		if e.peek().kind != tokRParen {
 			return nil, fmt.Errorf("expected ')'")
@@ -780,14 +1188,24 @@ func (e *exprParser) prefix() (any, error) {
 		e.next()
 		return out, nil
 	case tokIdent:
-		if t.text == "true" && e.peek().kind != tokDot {
+		if strings.EqualFold(t.text, "true") && e.peek().kind != tokDot {
 			return true, nil
 		}
-		if t.text == "false" && e.peek().kind != tokDot {
+		if strings.EqualFold(t.text, "false") && e.peek().kind != tokDot {
 			return false, nil
 		}
-		if t.text == "null" && e.peek().kind != tokDot {
+		if (strings.EqualFold(t.text, "null") || strings.EqualFold(t.text, "nil")) && e.peek().kind != tokDot {
 			return nil, nil
+		}
+		if strings.EqualFold(t.text, "not") && e.peek().kind != tokDot {
+			v, err := e.parseExpr(8)
+			if err != nil {
+				return nil, err
+			}
+			if e.checkOnly {
+				return nil, nil
+			}
+			return !truthy(v), nil
 		}
 		if t.text == "ANY" && e.peek().kind != tokDot && e.peek().kind != tokLParen {
 			return SymbolANY, nil
@@ -851,12 +1269,23 @@ func (e *exprParser) call(name string) (any, error) {
 }
 
 func infixPrecedence(op string) (int, bool) {
+	op = strings.ToLower(strings.TrimSpace(op))
+	op = strings.ReplaceAll(op, " ", "_")
 	switch op {
 	case "or", "||":
 		return 2, true
 	case "and", "&&":
 		return 3, true
-	case "==", "!=", ">", ">=", "<", "<=", "in", "not_in", "contains", "starts_with", "ends_with", "matches", "has", "has_any", "has_all", "equals", "greater_than", "less_than", "greater_or_equal", "less_or_equal":
+	case "==", "!=", ">", ">=", "<", "<=",
+		"is", "is_not",
+		"in", "not_in",
+		"like", "not_like", "ilike", "not_ilike",
+		"matches", "not_matches",
+		"contains", "not_contains", "has", "not_has", "has_any", "not_has_any", "has_all", "not_has_all",
+		"starts_with", "startswith", "not_starts_with", "not_startswith",
+		"ends_with", "endswith", "not_ends_with", "not_endswith",
+		"equals", "not_equals",
+		"greater_than", "less_than", "greater_or_equal", "less_or_equal":
 		return 4, true
 	case "+", "-":
 		return 5, true
@@ -870,7 +1299,8 @@ func infixPrecedence(op string) (int, bool) {
 var builtinCallNames = map[string]bool{
 	"SOME": true, "ALL": true, "ANY": true, "EXISTS": true,
 	"lower": true, "upper": true, "trim": true, "title": true,
-	"starts_with": true, "ends_with": true, "trim_prefix": true, "trim_suffix": true,
+	"starts_with": true, "startswith": true, "ends_with": true, "endswith": true,
+	"trim_prefix": true, "trim_suffix": true,
 	"repeat": true, "pad_left": true, "pad_right": true, "substr": true, "substring": true,
 	"len": true, "length": true, "replace": true, "split": true, "join": true,
 	"contains": true, "index_of": true, "last_index_of": true, "exists": true, "empty": true,
@@ -893,6 +1323,8 @@ var builtinCallNames = map[string]bool{
 	"now": true, "uuid": true, "uuid_v4": true, "random_uuid": true,
 	"unique_id": true, "uid": true, "json": true, "concat": true, "coalesce": true,
 	"base64": true, "sha256": true,
+	"like": true, "ilike": true, "between": true, "not_between": true,
+	"in": true, "not_in": true,
 }
 
 // isKnownFunctionName reports whether name is callable without error: either
@@ -950,16 +1382,50 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 			return nil, fmt.Errorf("title requires 1 argument")
 		}
 		return strings.Title(fmt.Sprint(args[0])), nil
-	case "starts_with":
+	case "starts_with", "startswith":
 		if len(args) != 2 {
 			return nil, fmt.Errorf("starts_with requires 2 arguments")
 		}
 		return strings.HasPrefix(fmt.Sprint(args[0]), fmt.Sprint(args[1])), nil
-	case "ends_with":
+	case "ends_with", "endswith":
 		if len(args) != 2 {
 			return nil, fmt.Errorf("ends_with requires 2 arguments")
 		}
 		return strings.HasSuffix(fmt.Sprint(args[0]), fmt.Sprint(args[1])), nil
+	case "like":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("like requires 2 arguments")
+		}
+		return evalLike(args[0], args[1], false)
+	case "ilike":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("ilike requires 2 arguments")
+		}
+		return evalLike(args[0], args[1], true)
+	case "between":
+		if len(args) != 3 {
+			return nil, fmt.Errorf("between requires 3 arguments")
+		}
+		cl, okl := compare(args[0], args[1])
+		ch, okh := compare(args[0], args[2])
+		return okl && okh && cl >= 0 && ch <= 0, nil
+	case "not_between":
+		if len(args) != 3 {
+			return nil, fmt.Errorf("not_between requires 3 arguments")
+		}
+		cl, okl := compare(args[0], args[1])
+		ch, okh := compare(args[0], args[2])
+		return !(okl && okh && cl >= 0 && ch <= 0), nil
+	case "in":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("in requires 2 arguments")
+		}
+		return evalOp("in", args[0], args[1])
+	case "not_in":
+		if len(args) != 2 {
+			return nil, fmt.Errorf("not_in requires 2 arguments")
+		}
+		return evalOp("not_in", args[0], args[1])
 	case "trim_prefix":
 		if len(args) != 2 {
 			return nil, fmt.Errorf("trim_prefix requires 2 arguments")
@@ -1691,9 +2157,13 @@ func evalCall(name string, args []any, opts *EvalOptions) (any, error) {
 }
 
 func evalOp(op string, a, b any) (any, error) {
+	op = strings.ToLower(strings.TrimSpace(op))
+	op = strings.ReplaceAll(op, " ", "_")
 	switch op {
-	case "equals":
+	case "equals", "is":
 		return evalOp("==", a, b)
+	case "not_equals", "is_not":
+		return evalOp("!=", a, b)
 	case "greater_than":
 		return evalOp(">", a, b)
 	case "less_than":
@@ -1762,36 +2232,87 @@ func evalOp(op string, a, b any) (any, error) {
 		default:
 			return c <= 0, nil
 		}
-	case "in", "contains", "has":
+	case "in":
 		if ipnet, ok := b.(*net.IPNet); ok {
 			return ipnet.Contains(net.ParseIP(fmt.Sprint(a))), nil
 		}
-		return contains(b, a) || contains(a, b), nil
+		return contains(b, a), nil
 	case "not_in":
-		ok, _ := evalOp("in", a, b)
+		ok, err := evalOp("in", a, b)
+		if err != nil {
+			return nil, err
+		}
 		return !ok.(bool), nil
-	case "starts_with":
+	case "contains", "has":
+		if ipnet, ok := a.(*net.IPNet); ok {
+			return ipnet.Contains(net.ParseIP(fmt.Sprint(b))), nil
+		}
+		return contains(a, b) || contains(b, a), nil
+	case "not_contains", "not_has":
+		ok, err := evalOp("contains", a, b)
+		if err != nil {
+			return nil, err
+		}
+		return !ok.(bool), nil
+	case "like":
+		return evalLike(a, b, false)
+	case "not_like":
+		ok, err := evalLike(a, b, false)
+		if err != nil {
+			return nil, err
+		}
+		return !ok, nil
+	case "ilike":
+		return evalLike(a, b, true)
+	case "not_ilike":
+		ok, err := evalLike(a, b, true)
+		if err != nil {
+			return nil, err
+		}
+		return !ok, nil
+	case "starts_with", "startswith":
 		return strings.HasPrefix(fmt.Sprint(a), fmt.Sprint(b)), nil
-	case "ends_with":
+	case "not_starts_with", "not_startswith":
+		return !strings.HasPrefix(fmt.Sprint(a), fmt.Sprint(b)), nil
+	case "ends_with", "endswith":
 		return strings.HasSuffix(fmt.Sprint(a), fmt.Sprint(b)), nil
+	case "not_ends_with", "not_endswith":
+		return !strings.HasSuffix(fmt.Sprint(a), fmt.Sprint(b)), nil
 	case "matches":
 		if isPatternValue(b) {
-			binds := map[string]any{}
-			return matchPatternValue(a, b, binds), nil
+			binds := patternBindPool.Get().(map[string]any)
+			clear(binds)
+			matched := matchPatternValue(a, b, binds)
+			patternBindPool.Put(binds)
+			return matched, nil
 		}
-		re, ok := b.(*regexp.Regexp)
-		if !ok {
+		patternStr := fmt.Sprint(b)
+		var re *regexp.Regexp
+		if cached, ok := regexCache.Load("re:" + patternStr); ok {
+			re = cached.(*regexp.Regexp)
+		} else {
 			var err error
-			re, err = regexp.Compile(fmt.Sprint(b))
+			re, err = regexp.Compile(patternStr)
 			if err != nil {
 				return false, err
 			}
+			regexCache.Store("re:"+patternStr, re)
 		}
 		return re.MatchString(fmt.Sprint(a)), nil
+	case "not_matches":
+		ok, err := evalOp("matches", a, b)
+		if err != nil {
+			return nil, err
+		}
+		return !ok.(bool), nil
 	case "has_any":
 		return hasAny(a, b), nil
+	case "not_has_any":
+		return !hasAny(a, b), nil
 	case "has_all":
 		return hasAll(a, b), nil
+	case "not_has_all":
+		return !hasAll(a, b), nil
 	case "and", "&&":
 		return truthy(a) && truthy(b), nil
 	case "or", "||":
@@ -1936,8 +2457,70 @@ func evalSimpleExprBoolOverlay(expr string, vars, binds map[string]any) (bool, b
 	if strings.HasPrefix(expr, "match ") || strings.HasPrefix(expr, "match(") {
 		return false, false, nil
 	}
-	for _, op := range []string{" not_in ", " starts_with ", " ends_with ", " contains ", " has_any ", " has_all ", " == ", " != ", " >= ", " <= ", " > ", " < ", " in ", " has "} {
-		idx := strings.Index(expr, op)
+	exprLower := strings.ToLower(expr)
+
+	// Range checks: between / not between
+	for _, bOp := range []struct {
+		name  string
+		isNot bool
+	}{
+		{" not between ", true},
+		{" not_between ", true},
+		{" between ", false},
+	} {
+		idx := strings.Index(exprLower, bOp.name)
+		if idx >= 0 {
+			leftRaw := strings.TrimSpace(expr[:idx])
+			restRaw := strings.TrimSpace(expr[idx+len(bOp.name):])
+			idxAnd := strings.Index(strings.ToLower(restRaw), " and ")
+			if idxAnd >= 0 {
+				loRaw := strings.TrimSpace(restRaw[:idxAnd])
+				hiRaw := strings.TrimSpace(restRaw[idxAnd+5:])
+				left, ok1 := simplePatternOperand(leftRaw, vars, binds)
+				lo, ok2 := simplePatternOperand(loRaw, vars, binds)
+				hi, ok3 := simplePatternOperand(hiRaw, vars, binds)
+				if ok1 && ok2 && ok3 {
+					cl, okl := compare(left, lo)
+					ch, okh := compare(left, hi)
+					inRange := okl && okh && cl >= 0 && ch <= 0
+					if bOp.isNot {
+						inRange = !inRange
+					}
+					return inRange, true, nil
+				}
+			}
+		}
+	}
+
+	for _, op := range []string{
+		" not_in ", " not in ",
+		" not_like ", " not like ",
+		" like ",
+		" not_ilike ", " not ilike ",
+		" ilike ",
+		" not_matches ", " not matches ",
+		" matches ",
+		" not_contains ", " not contains ",
+		" contains ",
+		" not_has_any ", " not has_any ",
+		" has_any ",
+		" not_has_all ", " not has_all ",
+		" has_all ",
+		" not_has ", " not has ",
+		" has ",
+		" not_starts_with ", " not starts_with ", " not_startswith ",
+		" starts_with ", " startswith ",
+		" not_ends_with ", " not ends_with ", " not_endswith ",
+		" ends_with ", " endswith ",
+		" is not ", " is_not ",
+		" is ",
+		" equals ", " not_equals ",
+		" greater_or_equal ", " less_or_equal ",
+		" greater_than ", " less_than ",
+		" == ", " != ", " >= ", " <= ", " > ", " < ",
+		" in ",
+	} {
+		idx := strings.Index(exprLower, op)
 		if idx < 0 {
 			continue
 		}
@@ -3001,6 +3584,14 @@ func containsValue(container, value any) bool {
 		return false
 	}
 	rv := reflect.ValueOf(container)
+	if rv.Kind() == reflect.Map {
+		for _, k := range rv.MapKeys() {
+			if equalLoose(k.Interface(), value) {
+				return true
+			}
+		}
+		return false
+	}
 	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
 		return false
 	}
@@ -3710,6 +4301,101 @@ func truthy(v any) bool {
 // Callers must treat a false ok as "the comparison does not hold" rather
 // than falling back to string comparison, which previously let a nil
 // operand compare as greater than any number.
+func likeToRegex(pattern string, caseInsensitive bool) string {
+	var sb strings.Builder
+	sb.WriteString("(?s)")
+	if caseInsensitive {
+		sb.WriteString("(?i)")
+	}
+	sb.WriteString("^")
+	escaped := false
+	for _, r := range pattern {
+		if escaped {
+			sb.WriteString(regexp.QuoteMeta(string(r)))
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if r == '%' {
+			sb.WriteString(".*")
+			continue
+		}
+		if r == '_' {
+			sb.WriteString(".")
+			continue
+		}
+		sb.WriteString(regexp.QuoteMeta(string(r)))
+	}
+	if escaped {
+		sb.WriteString(regexp.QuoteMeta("\\"))
+	}
+	sb.WriteString("$")
+	return sb.String()
+}
+
+func evalLike(a, b any, caseInsensitive bool) (bool, error) {
+	as := fmt.Sprint(a)
+	bs := fmt.Sprint(b)
+	key := "like:"
+	if caseInsensitive {
+		key = "ilike:"
+	}
+	key += bs
+	var re *regexp.Regexp
+	if cached, ok := regexCache.Load(key); ok {
+		re = cached.(*regexp.Regexp)
+	} else {
+		rxStr := likeToRegex(bs, caseInsensitive)
+		var err error
+		re, err = regexp.Compile(rxStr)
+		if err != nil {
+			return false, err
+		}
+		regexCache.Store(key, re)
+	}
+	return re.MatchString(as), nil
+}
+
+func toTime(v any) (time.Time, bool) {
+	switch t := v.(type) {
+	case time.Time:
+		return t.UTC(), true
+	case *time.Time:
+		if t != nil {
+			return t.UTC(), true
+		}
+		return time.Time{}, false
+	case string:
+		t = strings.TrimSpace(t)
+		if len(t) < 4 {
+			return time.Time{}, false
+		}
+		if t[0] < '0' || t[0] > '9' {
+			return time.Time{}, false
+		}
+		layouts := []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02T15:04:05",
+			"2006-01-02 15:04:05",
+			"2006-01-02 15:04",
+			"2006-01-02",
+			"2006/01/02",
+			"15:04:05",
+			"15:04",
+		}
+		for _, layout := range layouts {
+			if parsed, err := time.Parse(layout, t); err == nil {
+				return parsed.UTC(), true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
 func compare(a, b any) (int, bool) {
 	af, aok := num(a)
 	bf, bok := num(b)
@@ -3721,6 +4407,27 @@ func compare(a, b any) (int, bool) {
 			return 1, true
 		}
 		return 0, true
+	}
+	_, aIsTime := a.(time.Time)
+	if !aIsTime {
+		_, aIsTime = a.(*time.Time)
+	}
+	_, bIsTime := b.(time.Time)
+	if !bIsTime {
+		_, bIsTime = b.(*time.Time)
+	}
+	if aIsTime || bIsTime {
+		if at, okA := toTime(a); okA {
+			if bt, okB := toTime(b); okB {
+				if at.Before(bt) {
+					return -1, true
+				}
+				if at.After(bt) {
+					return 1, true
+				}
+				return 0, true
+			}
+		}
 	}
 	as, aIsStr := a.(string)
 	bs, bIsStr := b.(string)
