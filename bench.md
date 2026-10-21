@@ -24,6 +24,30 @@ cpu: Apple M2 Pro
 
 ## Current Highlights
 
+### Text codec comparison
+
+`BenchmarkCodecComparison` encodes the same three-field struct with BCL and
+`encoding/json`. On Apple M2 Pro with Go 1.27.0 (`-benchtime=750ms`,
+two runs, representative result):
+
+| Codec | Wire bytes | Marshal ns/op | Marshal B/op | Unmarshal ns/op | Unmarshal B/op |
+|---|---:|---:|---:|---:|---:|
+| BCL `Marshal` / `Unmarshal` | 42 | 135 | 96 | 150 | 48 |
+| BCL `Marshal` / `UnmarshalSimple` | 42 | 135 | 96 | 140 | 16 |
+| JSON | 49 | 211 | 128 | 282 | 32 |
+
+This is one small payload, not a general ranking. The fast marshal path writes
+plain scalar structs directly; plain `Unmarshal` handles simple top-level
+literal assignments to built-in struct fields and falls back to the compiler.
+`UnmarshalSimple` accepts only that narrow data subset and returns
+`ErrSimpleUnmarshalUnsupported` before changing the destination otherwise.
+That strict API uses less decode memory than JSON here (16 vs 32 B/op), while
+general `Unmarshal` uses more (48 B/op). `UnmarshalWithOptions` always uses the
+compiler. gRPC is a transport; a comparison with it must specify the message
+codec (usually Protocol Buffers), framing, and compression. A compact data codec
+would need its own schema and wire format while the existing
+BCL syntax remains useful for human-authored configuration and policy.
+
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
 | Parse small | ~2,774 | 2,129 | 25 |
@@ -36,8 +60,8 @@ cpu: Apple M2 Pro
 | Format policy | ~31,969 | 31,178 | 259 |
 | Eval expression | ~261 | 104 | 5 |
 | Eval condition | ~453 | 16 | 1 |
-| Marshal struct | ~933 | 408 | 13 |
-| Unmarshal struct | ~5,117 | 3,718 | 47 |
+| Marshal struct | ~190 | 80 | 1 |
+| Unmarshal struct | ~156 | 48 | 2 |
 | Evaluate decision table | ~1,445 | 1,544 | 15 |
 | Evaluate decision table (into) | ~1,330 | 984 | 13 |
 | Compile `example/main.bcl` | ~487,393 | 336 KB | 2,775 |
@@ -64,7 +88,7 @@ cpu: Apple M2 Pro
 - Expression references are compiled into path parts and evaluated without allocating joined path strings for normal `subject.roles` style paths.
 - `has_any` and `has_all` avoid reflect slice conversion allocations and simple string equality avoids `reflect.DeepEqual`/`fmt.Sprint`.
 - Validation compiles expressions without evaluating them.
-- `Unmarshal` decodes directly from normalized maps into Go values instead of JSON round-tripping.
+- `Unmarshal` decodes simple literal structs directly and uses the compiler for richer BCL. The compiler path assigns from normalized maps without a JSON round trip.
 - Normalization uses sized maps for known block/object shapes.
 - Formatter grows its output buffer from input size.
 - `isEmpty` uses typed type switches instead of `fmt.Sprint(v) == ""`.

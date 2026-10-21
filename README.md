@@ -51,6 +51,13 @@ if err := bcl.Unmarshal(src, &cfg); err != nil {
 }
 ```
 
+For flat structs and hot data paths that contain only top-level string, bool,
+and signed integer assignments, `UnmarshalSimple` avoids the compiler and uses
+less memory. It supports up to 16 assignments and returns
+`ErrSimpleUnmarshalUnsupported` without changing the destination when the input
+needs the full BCL language. Use `Unmarshal` for expressions, blocks, and other
+BCL features.
+
 Or compile to a normalized document when you want the diagnostics, the block
 index, and the schema results:
 

@@ -4,18 +4,23 @@ import (
 	"bytes"
 	"encoding"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/oarkflow/convert"
 )
 
 func Marshal(v any) ([]byte, error) {
+	if out, ok := marshalSimpleStruct(v); ok {
+		return out, nil
+	}
 	var b bytes.Buffer
 	if err := writeGoValue(&b, reflect.ValueOf(v), 0, ""); err != nil {
 		return nil, err
@@ -24,7 +29,24 @@ func Marshal(v any) ([]byte, error) {
 }
 
 func Unmarshal(data []byte, v any) error {
+	if unmarshalSimpleStruct(data, v) {
+		return nil
+	}
 	return UnmarshalWithOptions(data, v, &Options{AllowEnv: true})
+}
+
+// ErrSimpleUnmarshalUnsupported means the input or destination needs the full
+// BCL compiler. UnmarshalSimple leaves the destination unchanged in this case.
+var ErrSimpleUnmarshalUnsupported = errors.New("bcl: simple unmarshal does not support this input or destination")
+
+// UnmarshalSimple decodes top-level string, bool, and signed integer literals
+// into built-in struct fields without compiling a BCL document. It supports at
+// most 16 assignments. Use Unmarshal for the full language.
+func UnmarshalSimple(data []byte, v any) error {
+	if unmarshalSimpleStruct(data, v) {
+		return nil
+	}
+	return ErrSimpleUnmarshalUnsupported
 }
 
 func UnmarshalWithOptions(data []byte, v any, opts *Options) error {
@@ -39,11 +61,12 @@ func UnmarshalWithOptions(data []byte, v any, opts *Options) error {
 	if rv.Kind() != reflect.Pointer || rv.IsNil() {
 		return fmt.Errorf("bcl: Unmarshal target must be a non-nil pointer")
 	}
-	src := make(map[string]any, len(n.Body)+1)
-	for k, v := range n.Body {
-		src[k] = v
-	}
+	src := n.Body
 	if len(n.Blocks) > 0 {
+		src = make(map[string]any, len(n.Body)+1)
+		for k, v := range n.Body {
+			src[k] = v
+		}
 		src["$blocks"] = n.Blocks
 	}
 	return assignGoValue(rv.Elem(), src)
@@ -464,13 +487,16 @@ func writeScalar(b *bytes.Buffer, rv reflect.Value) {
 	case reflect.String:
 		b.WriteString(quoteBCLString(rv.String()))
 	case reflect.Bool:
-		fmt.Fprintf(b, "%t", rv.Bool())
+		b.WriteString(strconv.FormatBool(rv.Bool()))
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		fmt.Fprintf(b, "%d", rv.Int())
+		var buf [20]byte
+		b.Write(strconv.AppendInt(buf[:0], rv.Int(), 10))
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		fmt.Fprintf(b, "%d", rv.Uint())
+		var buf [20]byte
+		b.Write(strconv.AppendUint(buf[:0], rv.Uint(), 10))
 	case reflect.Float32, reflect.Float64:
-		fmt.Fprintf(b, "%g", rv.Float())
+		var buf [32]byte
+		b.Write(strconv.AppendFloat(buf[:0], rv.Float(), 'g', 6, 64))
 	default:
 		j, _ := json.Marshal(rv.Interface())
 		b.Write(j)

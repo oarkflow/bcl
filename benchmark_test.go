@@ -1,6 +1,7 @@
 package bcl
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"testing"
@@ -359,6 +360,74 @@ workers 8
 			b.Fatal(err)
 		}
 	}
+}
+
+type codecBenchConfig struct {
+	Name    string `bcl:"name" json:"name"`
+	Enabled bool   `bcl:"enabled" json:"enabled"`
+	Workers int    `bcl:"workers" json:"workers"`
+}
+
+var codecBenchResult codecBenchConfig
+
+// BenchmarkCodecComparison uses the same fields and values for both text codecs.
+// Reported wire bytes exclude transport framing and compression.
+func BenchmarkCodecComparison(b *testing.B) {
+	cfg := codecBenchConfig{Name: "ProcessGate", Enabled: true, Workers: 8}
+	bclData, err := Marshal(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	jsonData, err := json.Marshal(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Run("BCL/marshal", func(b *testing.B) {
+		for b.Loop() {
+			if _, err := Marshal(cfg); err != nil {
+				b.Fatal(err)
+			}
+		}
+		b.ReportMetric(float64(len(bclData)), "wire-B")
+	})
+	b.Run("JSON/marshal", func(b *testing.B) {
+		for b.Loop() {
+			if _, err := json.Marshal(cfg); err != nil {
+				b.Fatal(err)
+			}
+		}
+		b.ReportMetric(float64(len(jsonData)), "wire-B")
+	})
+	b.Run("BCL/unmarshal", func(b *testing.B) {
+		for b.Loop() {
+			var got codecBenchConfig
+			if err := Unmarshal(bclData, &got); err != nil {
+				b.Fatal(err)
+			}
+			codecBenchResult = got
+		}
+		b.ReportMetric(float64(len(bclData)), "wire-B")
+	})
+	b.Run("BCL/simple-unmarshal", func(b *testing.B) {
+		for b.Loop() {
+			var got codecBenchConfig
+			if err := UnmarshalSimple(bclData, &got); err != nil {
+				b.Fatal(err)
+			}
+			codecBenchResult = got
+		}
+		b.ReportMetric(float64(len(bclData)), "wire-B")
+	})
+	b.Run("JSON/unmarshal", func(b *testing.B) {
+		for b.Loop() {
+			var got codecBenchConfig
+			if err := json.Unmarshal(jsonData, &got); err != nil {
+				b.Fatal(err)
+			}
+			codecBenchResult = got
+		}
+		b.ReportMetric(float64(len(jsonData)), "wire-B")
+	})
 }
 
 func BenchmarkCompileExampleMain(b *testing.B) {
